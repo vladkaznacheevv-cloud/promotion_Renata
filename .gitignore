@@ -6,4 +6,4 @@ venv/
 .idea/
 *.log
 setings.py
-.DS_store
+.DS_store.env 
