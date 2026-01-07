@@ -31,4 +31,4 @@ jobs:
       # 4. Запускаем тесты
       - name: Run tests
         run: |
-          pytest tests/
+          python -m pytest tests/test_bot.py
