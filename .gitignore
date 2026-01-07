@@ -7,3 +7,4 @@ venv/
 *.log
 setings.py
 .DS_store.env 
+.env.example
