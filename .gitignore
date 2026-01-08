@@ -8,3 +8,4 @@ venv/
 setings.py
 .DS_store.env 
 .env.example
+.env 
