@@ -1,14 +1,20 @@
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
 import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from models import User, Base
-from database import async_session, engine
+from core.models import User, Base
+from core.database import async_session, engine
 from dotenv import load_dotenv
+from fastapi import FastAPI
+from core.database import engine, Sessionlocal 
+from core.models import Base, User, Deal
 import os
+
+app = FastAPI()
+
+Base.metadata.create_all(bind=engine)
 
 load_dotenv()
 
@@ -17,6 +23,20 @@ logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("❌ Переменная BOT_TOKEN не найдена в .env")
+
+@app.get("/users")
+def get_users():
+    db = SessionLocal()
+    users = db.query(User).all()
+    return users
+
+@app.post("/users")
+def create_user(user_data: dict):
+    db = SessionLocal()
+    user = User(tg_id=user_data['tg_id'], name=user_data['name'])
+    db.add(user)
+    db.commit()
+    return {"status": "created"}
 
 async def create_tables():
     async with engine.begin() as conn:

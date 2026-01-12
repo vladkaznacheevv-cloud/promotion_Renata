@@ -1,4 +1,3 @@
-# create_models.py
 code = '''from sqlalchemy import (
     BigInteger, Boolean, Column, DateTime, DECIMAL, Enum, ForeignKey,
     Integer, String, Text
