@@ -5,7 +5,6 @@ from sqlalchemy.orm import sessionmaker
 
 load_dotenv()
 
-# Формируем URL для async PostgreSQL
 DATABASE_URL = (
     f"postgresql+asyncpg://"
     f"{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}@"
@@ -13,13 +12,19 @@ DATABASE_URL = (
     f"{os.getenv('DB_NAME')}"
 )
 
-# Добавляем SSL, если нужно
 if os.getenv("DB_SSLMODE") == "require":
     DATABASE_URL += "?ssl=require"
 
-engine = create_async_engine(DATABASE_URL, echo=False, future=True)
-async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+engine = create_async_engine(
+    DATABASE_URL,
+    echo=False,
+    pool_pre_ping=True,
+    pool_recycle=300,
+    pool_size=10,
+    max_overflow=20
+)
 
+async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 async def get_db():
     async with async_session() as session:
         yield session
