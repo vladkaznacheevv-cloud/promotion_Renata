@@ -3,23 +3,21 @@ from sqlalchemy.orm import Session
 from core.database import SessionLocal
 from core.models import User
 
-app = FastAPI()
+router = APIRouter()
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+@router.get("/users")
+async def get_users(session: AsyncSession = Depends(get_async_session)):
+    users = await session.execute(select(User))
+    return users.scalars().all()
 
-@app.get("/users")
-def get_users(db: Session = Depends(get_db)):
-    users = db.query(User).all()
-    return users
-
-@app.post("/users")
-def create_user(user_data: dict, db: Session = Depends(get_db)):
-    user = User(tg_id=user_data['tg_id'], name=user_data['name'])
-    db.add(user)
-    db.commit()
-    return {"status": "created"}
+@router.post("/users")
+async def create_user(user_data: dict, session: AsyncSession = Depends(get_async_session)):
+    user = User(
+        tg_id=user_data['tg_id'],
+        first_name=user_data.get('first_name', ''),
+        last_name=user_data.get('last_name', ''),
+        username=user_data.get('username', '')
+    )
+    session.add(user)
+    await session.commit()
+    return {"status": "created", "user_id": user.id}
