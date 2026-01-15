@@ -18,11 +18,9 @@ if not DB_USER or not DB_PASSWORD or not DB_HOST or not DB_PORT or not DB_NAME:
     raise ValueError("❌ Не все переменные БД указаны в .env")
 
 encoded_password = quote_plus(DB_PASSWORD)
-
 DATABASE_URL = (
     f"postgresql+asyncpg://{DB_USER}:{encoded_password}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 )
-
 if os.getenv("DB_SSLMODE") == "require":
     DATABASE_URL += "?ssl=require"
 
@@ -33,5 +31,5 @@ async def get_db():
     async with async_session() as session:
         yield session
 
-sync_engine = create_engine(DATABASE_URL.replace("+asyncpg", ""))
-SessionLocal = sessionmaker(bind=sync_engine, expire_on_commit=False)
+# Добавляем для совместимости с тестами
+SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
