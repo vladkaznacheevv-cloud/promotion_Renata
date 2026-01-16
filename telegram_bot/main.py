@@ -1,181 +1,101 @@
 import os
-import json
 import asyncio
 import logging
-from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, 
     MessageHandler, ContextTypes, filters
 )
-from telegram.error import TelegramError
 from dotenv import load_dotenv
-from openai import OpenAI
+
+# Core сервисы
+from core.database import async_session
+from core.users.service import UserService
+from core.events.service import EventService
+from core.ai.ai_service import AIService
+from core.payments.service import PaymentService
+from core.analytics.service import AnalyticsService
+
+from telegram_bot.keyboards import get_main_menu, get_events_keyboard
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# ============ КОНФИГ ============
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-AI_ASSISTANT_NAME = os.getenv("AI_ASSISTANT_NAME", "Mimo")
+AI_API_KEY = os.getenv("AI_API_KEY")
+AI_MODEL = os.getenv("AI_MODEL", "mimo-v2-flash")
 
-# ============ AI-КЛИЕНТ ============
-class AIClient:
-    def __init__(self):
-        self.client = OpenAI(
-            api_key=OPENAI_API_KEY,
-            base_url="https://api.xiaomimimo.com/v1"
-        )
-        self.system_prompt = (
-            "Ты дружелюбный ассистент проекта Renata Promotion. "
-            "Отвечай кратко, по делу и вежливо."
-        )
-    
-    async def get_response(self, user_message: str, history: list = None) -> str:
-        messages = [{"role": "system", "content": self.system_prompt}]
-        if history:
-            messages.extend(history[-10:])
-        messages.append({"role": "user", "content": user_message})
-        
-        try:
-            response = self.client.chat.completions.create(
-                model="mimo-v2-flash",
-                messages=messages,
-                max_completion_tokens=1024,
-                temperature=0.3,
-                top_p=0.95,
-                extra_body={
-                    "thinking": {"type": "disabled"}
-                }
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            return f"❌ Ошибка AI: {str(e)}"
-
-ai_client = AIClient()
+# Инициализация сервисов
+ai_service = AIService(api_key=AI_API_KEY, model=AI_MODEL)
 chat_histories = {}
 
-# ============ КЛАВИАТУРЫ ============
-def get_main_menu():
-    keyboard = [
-        [InlineKeyboardButton("📅 Мероприятия", callback_data="events")],
-        [InlineKeyboardButton("🤖 AI-Ассистент", callback_data="ai_chat")],
-        [InlineKeyboardButton("💎 VIP-Канал", callback_data="vip_channel")],
-        [InlineKeyboardButton("📞 Помощь", callback_data="help")],
-    ]
-    return InlineKeyboardMarkup(keyboard)
+# ============ Хендлеры ============
 
-def get_events_keyboard():
-    events = [
-        {"id": 1, "title": "🎵 Концерт 'Ностальгия'", "date": "25 янв", "price": "1000₽"},
-        {"id": 2, "title": "🎓 Мастер-класс SMM", "date": "1 фев", "price": "Бесплатно"},
-        {"id": 3, "title": "🎨 Арт-вечеринка", "date": "15 янв", "price": "500₽"},
-    ]
-    keyboard = []
-    for event in events:
-        keyboard.append([InlineKeyboardButton(
-            f"{event['title']} | {event['date']}", 
-            callback_data=f"event_{event['id']}"
-        )])
-    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="main_menu")])
-    return InlineKeyboardMarkup(keyboard)
-
-def get_payment_keyboard():
-    keyboard = [
-        [InlineKeyboardButton("💳 Оплатить 500₽", callback_data="pay_500")],
-        [InlineKeyboardButton("🔙 Назад", callback_data="main_menu")],
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-def get_vip_keyboard():
-    keyboard = [
-        [InlineKeyboardButton("🔗 Вступить в канал", url="https://t.me/+XXXXX")],
-        [InlineKeyboardButton("🔙 В главное меню", callback_data="main_menu")],
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-# ============ МЕРОПРИЯТИЯ ============
-EVENTS_DATA = {
-    1: {"title": "🎵 Концерт 'Ностальгия'", "desc": "Вечер хитов 90-х", "date": "25 января", "loc": "Клуб 'Метро'", "price": "1000₽"},
-    2: {"title": "🎓 Мастер-класс SMM", "desc": "Обучение продвижению", "date": "1 февраля", "loc": "Онлайн", "price": "Бесплатно"},
-    3: {"title": "🎨 Арт-вечеринка", "desc": "Рисование и музыка", "date": "15 января", "loc": "Галерея 'Арт'", "price": "500₽"},
-}
-
-# ============ ХЕНДЛЕРЫ ============
-# /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    
+    async with async_session() as session:
+        user_service = UserService(session)
+        
+        # Создаём/обновляем пользователя
+        from core.users.schemas import UserCreate
+        await user_service.get_or_create(
+            UserCreate(
+                tg_id=user.id,
+                first_name=user.first_name or "",
+                last_name=user.last_name or "",
+                username=user.username,
+                source='bot'
+            )
+        )
+    
     text = (
         f"🎉 Привет, {user.first_name}!\n\n"
-        "Я — бот проекта Renata Promotion.\n\n"
+        "Renata Promotion — твой проводник в мир мероприятий!\n\n"
         "📅 Мероприятия\n"
+        "🎓 Консультации\n"
         "🤖 AI-помощник\n"
         "💎 VIP-канал\n\n"
         "Выбери раздел 👇"
     )
     await update.message.reply_text(text, reply_markup=get_main_menu())
 
-# Главное меню
-async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    try:
-        await query.answer()  # СРАЗУ отвечаем!
-    except:
-        pass
-    try:
-        await query.edit_message_text("📋 Главное меню", reply_markup=get_main_menu())
-    except:
-        pass
 
-# Мероприятия
-async def events(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    try:
-        await query.answer()
-    except:
-        pass
-    try:
-        text = "📅 *Ближайшие мероприятия*\n\n"
-        for e in EVENTS_DATA.values():
-            text += f"*{e['title']}* — {e['date']} ({e['price']})\n"
-        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=get_events_keyboard())
-    except:
-        pass
+    await query.answer()
+    
+    async with async_session() as session:
+        event_service = EventService(session)
+        events = await event_service.get_active()
+        
+        if not events:
+            text = "📅 Скоро появятся новые мероприятия!"
+            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]])
+        else:
+            text = "📅 *Ближайшие мероприятия*\n\n"
+            for event in events:
+                text += f"• {event.title} — {event.date.strftime('%d.%m в %H:%M')}\n"
+            keyboard = get_events_keyboard(events)
+        
+        await query.edit_message_text(text, reply_markup=keyboard, parse_mode='Markdown')
 
-# Детали мероприятия
-async def event_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    try:
-        await query.answer()
-    except:
-        pass
-    try:
-        event_id = int(query.data.split('_')[1])
-        e = EVENTS_DATA.get(event_id)
-        if e:
-            text = f"*{e['title']}*\n\n{e['desc']}\n\n📆 {e['date']}\n📍 {e['loc']}\n💰 {e['price']}"
-            await query.edit_message_text(text, parse_mode='Markdown', reply_markup=get_events_keyboard())
-    except:
-        pass
 
-# AI-Ассистент
-async def ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    try:
-        await query.answer()
-    except:
-        pass
-    try:
-        user_id = update.effective_user.id
-        chat_histories[user_id] = []
-        await query.edit_message_text(
-            f"🤖 *{AI_ASSISTANT_NAME}* готов!\n\nНапиши вопрос, отвечу на всё.",
-            parse_mode='Markdown',
-            reply_markup=get_main_menu()
-        )
-    except:
-        pass
+    await query.answer()
+    
+    user_id = update.effective_user.id
+    chat_histories[user_id] = []
+    
+    await query.edit_message_text(
+        "🤖 *Mimo* готов ответить на твои вопросы!\n\n"
+        "Напиши что тебя интересует — о мероприятиях, консультациях или VIP-канале.",
+        parse_mode='Markdown',
+        reply_markup=get_main_menu()
+    )
+
 
 async def handle_ai_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -184,103 +104,81 @@ async def handle_ai_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_message.startswith('/'):
         return
     
-    # Сначала скажем "печатает..."
-    await update.message.reply_text("🤖 Mimo печатает...")
-    
     history = chat_histories.get(user_id, [])
-    ai_response = await ai_client.get_response(user_message, history)
-    history.extend([{"role": "user", "content": user_message}, {"role": "assistant", "content": ai_response}])
-    chat_histories[user_id] = history
+    response, new_history = await ai_service.chat(user_message, history)
+    chat_histories[user_id] = new_history
     
-    await update.message.reply_text(ai_response)
+    await update.message.reply_text(response)
 
-# VIP-канал
-async def vip_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def show_vip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    try:
-        await query.answer()
-    except:
-        pass
-    try:
-        await query.edit_message_text(
-            "💎 *VIP-Канал*\n\n"
-            "Эксклюзивный контент, закрытые мероприятия, общение с организаторами.\n\n"
-            "Стоимость: 500₽/месяц",
-            parse_mode='Markdown',
-            reply_markup=get_payment_keyboard()
-        )
-    except:
-        pass
+    await query.answer()
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💳 Оплатить 500₽", callback_data="pay_vip")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="main_menu")],
+    ])
+    
+    await query.edit_message_text(
+        "💎 *VIP-Канал*\n\n"
+        "Эксклюзивный контент, закрытые мероприятия, общение с организаторами.\n\n"
+        "500₽/месяц",
+        parse_mode='Markdown',
+        reply_markup=keyboard
+    )
 
-# Оплата (заглушка)
-async def payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def show_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    try:
-        await query.answer()
-    except:
-        pass
-    try:
-        await query.edit_message_text(
-            "💳 *Оплата*\n\n"
-            "Переход в ЮKassa...\n\n"
-            "(В разработке)",
-            parse_mode='Markdown',
-            reply_markup=get_main_menu()
-        )
-    except:
-        pass
+    await query.answer()
+    
+    text = """
+📚 *Помощь*
 
-# Помощь
-async def help_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    try:
-        await query.answer()
-    except:
-        pass
-    try:
-        text = """
-📚 *Справка*
-
-• /start — запустить
-• /menu — меню
+• /start — перезапуск бота
+• Напиши мне — получу ответ
 
 📅 Мероприятия — расписание
+🎓 Консультации — запись
 🤖 AI — задай вопрос
-💎 VIP — оплата доступа
+💎 VIP — доступ к каналу
 
-❓ support@renata.ru
-"""
-        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=get_main_menu())
-    except:
-        pass
+📧 support@renata.ru
+    """
+    await query.edit_message_text(text, reply_markup=get_main_menu(), parse_mode='Markdown')
+
+
+async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("📋 Главное меню", reply_markup=get_main_menu())
+
 
 # ============ MAIN ============
 async def main():
     app = Application.builder().token(BOT_TOKEN).build()
     
-    # Добавь эту строку!
     await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
     
     # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("menu", main_menu))
-    app.add_handler(CommandHandler("help", help_menu))
     
     # Коллбэки
     app.add_handler(CallbackQueryHandler(main_menu, pattern="main_menu"))
-    app.add_handler(CallbackQueryHandler(events, pattern="events"))
-    app.add_handler(CallbackQueryHandler(event_detail, pattern="event_"))
-    app.add_handler(CallbackQueryHandler(ai_chat, pattern="ai_chat"))
-    app.add_handler(CallbackQueryHandler(vip_channel, pattern="vip_channel"))
-    app.add_handler(CallbackQueryHandler(payment, pattern="pay_"))
-    app.add_handler(CallbackQueryHandler(help_menu, pattern="help"))
+    app.add_handler(CallbackQueryHandler(show_events, pattern="events"))
+    app.add_handler(CallbackQueryHandler(show_ai_chat, pattern="ai_chat"))
+    app.add_handler(CallbackQueryHandler(show_vip, pattern="vip_channel"))
+    app.add_handler(CallbackQueryHandler(show_help, pattern="help"))
     
-    # AI-сообщения
+    # AI сообщения
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_ai_message))
     
-    print("🚀 Бот запущен...")
-    await app.start()
-    await app.updater.start_polling()
+    logger.info("🚀 Renata Bot запущен!")
+    print("🚀 Renata Bot запущен!")
     
     try:
         while True:
