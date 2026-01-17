@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from core.database import engine, Base
 from core.models import User
-from .api import router
+from ..core.api.api import router
 
 app = FastAPI(title="CRM for Psych Project")
 

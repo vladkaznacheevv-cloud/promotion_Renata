@@ -1,11 +1,13 @@
 import os
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy import create_engine
 from urllib.parse import quote_plus
 from dotenv import load_dotenv
 
 load_dotenv()
+
+Base = declarative_base()
 
 try:
     DB_USER = os.getenv("DB_USER")
@@ -13,7 +15,6 @@ try:
     DB_HOST = os.getenv("DB_HOST")
     DB_PORT = os.getenv("DB_PORT")
     DB_NAME = os.getenv("DB_NAME")
-    DB_SSLMODE = os.getenv("DB_SSLMODE", "prefer")
     
     if DB_USER and DB_PASSWORD and DB_HOST and DB_PORT and DB_NAME:
         encoded_password = quote_plus(DB_PASSWORD)
@@ -29,20 +30,14 @@ try:
         async def get_db():
             async with async_session() as session:
                 yield session
-        
-        sync_engine = create_engine(DATABASE_URL.replace("+asyncpg", ""))
-        SessionLocal = sessionmaker(bind=sync_engine, expire_on_commit=False)
     else:
-        # Заглушки для тестов и CI/CD
+        # Заглушки для тестов
         engine = None
         async_session = None
-        SessionLocal = None
         get_db = lambda: iter([None])
         
 except Exception as e:
-    # Для случаев когда нет зависимостей или ошибок
     print(f"⚠️ Database not configured: {e}")
     engine = None
     async_session = None
-    SessionLocal = None
     get_db = lambda: iter([None])

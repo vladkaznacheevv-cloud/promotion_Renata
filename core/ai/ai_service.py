@@ -1,4 +1,6 @@
 import logging
+import json
+import redis.asyncio as redis
 from typing import List, Optional
 from openai import OpenAI
 from core.ai.prompts import SYSTEM_PROMPT
