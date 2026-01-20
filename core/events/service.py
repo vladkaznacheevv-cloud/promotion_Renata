@@ -1,79 +1,129 @@
-import logging
-from typing import Optional, List
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
-from core.events.models import Event, UserEvent
-from core.events.schemas import EventCreate, EventUpdate
+# core/events/service.py
 
-logger = logging.getLogger(__name__)
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Optional, List
+
+from sqlalchemy import select, and_
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from core.events.models import Event, UserEvent
+
 
 class EventService:
     def __init__(self, session: AsyncSession):
         self.session = session
-    
-    async def create(self, data: EventCreate) -> Event:
-        event = Event(**data.model_dump())
-        self.session.add(event)
-        await self.session.commit()
-        await self.session.refresh(event)
-        logger.info(f"Мероприятие создано: id={event.id}, title={event.title}")
-        return event
-    
+
+    # -------------------------
+    # Events
+    # -------------------------
     async def get_by_id(self, event_id: int) -> Optional[Event]:
-        result = await self.session.execute(
-            select(Event).where(Event.id == event_id)
-        )
-        return result.scalar_one_or_none()
-    
-    async def get_active(self) -> List[Event]:
-        result = await self.session.execute(
+        res = await self.session.execute(select(Event).where(Event.id == event_id))
+        return res.scalar_one_or_none()
+
+    async def list_active(self, limit: int = 50) -> List[Event]:
+        res = await self.session.execute(
             select(Event)
-            .where(Event.status == Event.STATUS_PUBLISHED)
-            .order_by(Event.date)
-        )
-        return result.scalars().all()
-    
-    async def get_upcoming(self, limit: int = 10) -> List[Event]:
-        result = await self.session.execute(
-            select(Event)
-            .where(Event.status == Event.STATUS_PUBLISHED, Event.date >= func.now())
-            .order_by(Event.date)
+            .where(Event.is_active.is_(True))
+            .order_by(Event.created_at.desc())
             .limit(limit)
         )
-        return result.scalars().all()
-    
-    async def update(self, event_id: int, data: EventUpdate) -> Optional[Event]:
-        event = await self.get_by_id(event_id)
-        if event:
-            for key, value in data.model_dump(exclude_unset=True).items():
-                setattr(event, key, value)
-            await self.session.commit()
-            logger.info(f"Мероприятие обновлено: id={event_id}")
-            return event
-        return None
-    
-    async def register_user(self, user_id: int, event_id: int) -> UserEvent:
-        """Зарегистрировать пользователя на мероприятие"""
-        participant = UserEvent(
-            user_id=user_id,
-            event_id=event_id,
-            status=UserEvent.STATUS_REGISTERED
+        return list(res.scalars().all())
+
+    async def create(
+        self,
+        title: str,
+        description: Optional[str] = None,
+        starts_at: Optional[datetime] = None,
+        ends_at: Optional[datetime] = None,
+        location: Optional[str] = None,
+        price: Optional[float] = None,
+        capacity: Optional[int] = None,
+        is_active: bool = True,
+    ) -> Event:
+        event = Event(
+            title=title,
+            description=description,
+            starts_at=starts_at,
+            ends_at=ends_at,
+            location=location,
+            price=price,
+            capacity=capacity,
+            is_active=is_active,
         )
-        self.session.add(participant)
-        
-        # Увеличиваем счётчик проданных мест
+        self.session.add(event)
+        await self.session.flush()
+        return event
+
+    async def set_active(self, event_id: int, is_active: bool) -> Optional[Event]:
         event = await self.get_by_id(event_id)
-        if event:
-            event.seats_sold += 1
-            participant.status = UserEvent.STATUS_CONFIRMED
-        
+        if not event:
+            return None
+        event.is_active = is_active
+        await self.session.flush()
+        return event
+
+    # -------------------------
+    # UserEvent (link)
+    # -------------------------
+    async def register_user(
+        self,
+        user_id: int,
+        event_id: int,
+        status: str = "registered",
+    ) -> UserEvent:
+        """
+        Регистрирует пользователя на событие.
+        Если уже есть запись — просто обновит status.
+        """
+        res = await self.session.execute(
+            select(UserEvent).where(
+                and_(UserEvent.user_id == user_id, UserEvent.event_id == event_id)
+            )
+        )
+        link = res.scalar_one_or_none()
+        if link:
+            link.status = status
+            await self.session.flush()
+            return link
+
+        link = UserEvent(user_id=user_id, event_id=event_id, status=status)
+        self.session.add(link)
+        await self.session.flush()
+        return link
+
+    async def unregister_user(self, user_id: int, event_id: int) -> bool:
+        """
+        Мягкая отмена: ставим статус cancelled (а не удаляем строку).
+        """
+        res = await self.session.execute(
+            select(UserEvent).where(
+                and_(UserEvent.user_id == user_id, UserEvent.event_id == event_id)
+            )
+        )
+        link = res.scalar_one_or_none()
+        if not link:
+            return False
+
+        link.status = "cancelled"
+        await self.session.flush()
+        return True
+
+    async def list_user_events(self, user_id: int, limit: int = 50) -> List[UserEvent]:
+        res = await self.session.execute(
+            select(UserEvent)
+            .where(UserEvent.user_id == user_id)
+            .order_by(UserEvent.created_at.desc())
+            .limit(limit)
+        )
+        return list(res.scalars().all())
+
+    # -------------------------
+    # Convenience
+    # -------------------------
+    async def commit(self) -> None:
         await self.session.commit()
-        await self.session.refresh(participant)
-        logger.info(f"Пользователь {user_id} зарегистрирован на мероприятие {event_id}")
-        return participant
-    
-    async def get_participants(self, event_id: int) -> List[UserEvent]:
-        result = await self.session.execute(
-            select(UserEvent).where(UserEvent.event_id == event_id)
-        )
-        return result.scalars().all()
+
+    async def rollback(self) -> None:
+        await self.session.rollback()

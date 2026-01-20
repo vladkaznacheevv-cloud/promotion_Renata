@@ -1,6 +1,5 @@
-# core/api/api.py
-
 from fastapi import FastAPI
+import core.models
 from core.api.users import router as users_router
 from core.api.events import router as events_router
 from core.api.consultations import router as consultations_router

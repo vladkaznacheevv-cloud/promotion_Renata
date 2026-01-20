@@ -14,23 +14,24 @@ from sqlalchemy.orm import relationship
 from core.database import Base
 
 
-class Event(Base):
-    __tablename__ = "events"
+class Consultation(Base):
+    __tablename__ = "consultations"
 
     id = Column(BigInteger, primary_key=True, index=True)
+
+    # В БД: text
+    type = Column(Text, nullable=False)
 
     title = Column(Text, nullable=False)
     description = Column(Text, nullable=True)
 
-    starts_at = Column(DateTime(timezone=True), nullable=True)
-    ends_at = Column(DateTime(timezone=True), nullable=True)
+    duration_minutes = Column(Integer, nullable=True)
 
-    location = Column(Text, nullable=True)
-
-    # В БД numeric (фактически numeric(12,2) — если так создавал)
+    # В БД: numeric (без scale в introspection, но фактически numeric(12,2))
     price = Column(Numeric(12, 2), nullable=True)
 
-    capacity = Column(Integer, nullable=True)
+    # В БД: integer
+    available_slots = Column(Integer, nullable=True)
 
     is_active = Column(Boolean, nullable=False, server_default="true")
 
@@ -38,17 +39,17 @@ class Event(Base):
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     user_links = relationship(
-        "UserEvent",
-        back_populates="event",
+        "UserConsultation",
+        back_populates="consultation",
         cascade="all, delete-orphan",
     )
 
     def __repr__(self):
-        return f"<Event(id={self.id}, title={self.title})>"
+        return f"<Consultation(id={self.id}, title={self.title}, type={self.type})>"
 
 
-class UserEvent(Base):
-    __tablename__ = "user_events"
+class UserConsultation(Base):
+    __tablename__ = "user_consultations"
 
     id = Column(BigInteger, primary_key=True, index=True)
 
@@ -58,18 +59,24 @@ class UserEvent(Base):
         nullable=False,
         index=True,
     )
-    event_id = Column(
+
+    consultation_id = Column(
         BigInteger,
-        ForeignKey("events.id", ondelete="RESTRICT"),
+        ForeignKey("consultations.id", ondelete="RESTRICT"),
         nullable=False,
         index=True,
     )
 
-    # В БД: text + DEFAULT 'registered'
-    status = Column(Text, nullable=False, server_default="registered")
+    scheduled_at = Column(DateTime(timezone=True), nullable=True)
+
+    zoom_link = Column(Text, nullable=True)
+    notes = Column(Text, nullable=True)
+
+    # В БД: text + DEFAULT 'scheduled'
+    status = Column(Text, nullable=False, server_default="scheduled")
 
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
-    user = relationship("User", back_populates="events")
-    event = relationship("Event", back_populates="user_links")
+    user = relationship("User", back_populates="consultations")
+    consultation = relationship("Consultation", back_populates="user_links")

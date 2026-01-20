@@ -1,70 +1,102 @@
-import logging
-import uuid
-from typing import Optional, List
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from core.payments.models import Payment
-from core.payments.schemas import PaymentCreate
+# core/payments/service.py
 
-logger = logging.getLogger(__name__)
+from __future__ import annotations
+
+from typing import Optional, List, Dict, Any
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from core.payments.models import Payment
 
 class PaymentService:
     def __init__(self, session: AsyncSession):
         self.session = session
-    
-    async def create(self, data: PaymentCreate) -> Payment:
-        """Создать платёж"""
-        payment = Payment(**data.model_dump())
-        self.session.add(payment)
-        await self.session.commit()
-        await self.session.refresh(payment)
-        logger.info(f"Платёж создан: id={payment.id}, user_id={data.user_id}")
-        return payment
-    
+
     async def get_by_id(self, payment_id: int) -> Optional[Payment]:
-        result = await self.session.execute(
-            select(Payment).where(Payment.id == payment_id)
+        res = await self.session.execute(select(Payment).where(Payment.id == payment_id))
+        return res.scalar_one_or_none()
+
+    async def list_by_user(self, user_id: int, limit: int = 50) -> List[Payment]:
+        res = await self.session.execute(
+            select(Payment)
+            .where(Payment.user_id == user_id)
+            .order_by(Payment.created_at.desc())
+            .limit(limit)
         )
-        return result.scalar_one_or_none()
-    
-    async def get_by_yookassa_id(self, yookassa_id: str) -> Optional[Payment]:
-        result = await self.session.execute(
-            select(Payment).where(Payment.payment_id == yookassa_id)
+        return list(res.scalars().all())
+
+    async def create_pending(
+        self,
+        user_id: int,
+        amount: int,
+        provider: Optional[str] = None,
+        external_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Payment:
+        p = Payment(
+            user_id=user_id,
+            amount=amount,
+            status="pending",
+            provider=provider,
+            external_id=external_id,
+            metadata_=metadata,
         )
-        return result.scalar_one_or_none()
-    
-    async def mark_as_paid(self, payment_id: int, yookassa_id: str = None) -> Optional[Payment]:
-        """Отметить как оплаченный"""
-        payment = await self.get_by_id(payment_id)
-        if payment:
-            payment.status = Payment.STATUS_PAID
-            if yookassa_id:
-                payment.payment_id = yookassa_id
-            await self.session.commit()
-            logger.info(f"Платёж оплачен: id={payment_id}")
-            return payment
-        return None
-    
-    async def mark_as_cancelled(self, payment_id: int) -> Optional[Payment]:
-        """Отметить как отменённый"""
-        payment = await self.get_by_id(payment_id)
-        if payment:
-            payment.status = Payment.STATUS_CANCELLED
-            await self.session.commit()
-            logger.info(f"Платёж отменён: id={payment_id}")
-            return payment
-        return None
-    
-    async def get_user_payments(self, user_id: int) -> List[Payment]:
-        result = await self.session.execute(
-            select(Payment).where(Payment.user_id == user_id).order_by(Payment.created_at.desc())
+        self.session.add(p)
+        await self.session.flush()
+        return p
+
+    async def set_status(
+        self,
+        payment_id: int,
+        status: str,
+        external_id: Optional[str] = None,
+        provider: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Payment]:
+        p = await self.get_by_id(payment_id)
+        if not p:
+            return None
+
+        p.status = status
+        if external_id is not None:
+            p.external_id = external_id
+        if provider is not None:
+            p.provider = provider
+        if metadata is not None:
+            # перезапишем или можно сделать merge — если нужно, скажи
+            p.metadata_ = metadata
+
+        await self.session.flush()
+        return p
+
+    async def mark_paid(
+        self,
+        payment_id: int,
+        external_id: Optional[str] = None,
+        provider: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Payment]:
+        return await self.set_status(
+            payment_id=payment_id,
+            status="paid",
+            external_id=external_id,
+            provider=provider,
+            metadata=metadata,
         )
-        return result.scalars().all()
-    
-    async def get_total_revenue(self) -> int:
-        """Общая сумма оплат"""
-        result = await self.session.execute(
-            select(Payment).where(Payment.status == Payment.STATUS_PAID)
-        )
-        payments = result.scalars().all()
-        return sum(p.amount for p in payments)
+
+    async def mark_failed(
+        self,
+        payment_id: int,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Payment]:
+        return await self.set_status(payment_id=payment_id, status="failed", metadata=metadata)
+
+    # -------------------------
+    # Convenience
+    # -------------------------
+    async def commit(self) -> None:
+        await self.session.commit()
+
+    async def rollback(self) -> None:
+        await self.session.rollback()

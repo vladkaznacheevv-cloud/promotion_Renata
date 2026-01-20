@@ -1,30 +1,36 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+
 def get_main_menu():
     keyboard = [
         [InlineKeyboardButton("📅 Мероприятия", callback_data="events")],
         [InlineKeyboardButton("🎓 Консультации", callback_data="consultations")],
         [InlineKeyboardButton("🤖 AI-Ассистент", callback_data="ai_chat")],
-        [InlineKeyboardButton("💎 VIP-Канал", callback_data="vip_channel")],
         [InlineKeyboardButton("📞 Помощь", callback_data="help")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
-def get_events_keyboard(events):
-    keyboard = []
-    for event in events:
-        keyboard.append([
-            InlineKeyboardButton(
-                f"{event.title} | {event.date.strftime('%d.%m')}", 
-                callback_data=f"event_{event.id}"
-            )
-        ])
-    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="main_menu")])
+
+def get_back_to_menu_kb():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В меню", callback_data="main_menu")]])
+
+
+def get_consultations_menu():
+    # Экран 1 → выбор: форматы/цены или AI
+    keyboard = [
+        [InlineKeyboardButton("🎓 Форматы и цены", callback_data="consult_formats")],
+        [InlineKeyboardButton("🤖 Спросить AI", callback_data="ai_chat")],
+        [InlineKeyboardButton("🔙 В меню", callback_data="main_menu")],
+    ]
     return InlineKeyboardMarkup(keyboard)
 
-def get_payment_keyboard(payment_url: str):
+
+def get_consultation_formats_menu():
+    # Экран 2 → записаться
     keyboard = [
-        [InlineKeyboardButton("💳 Оплатить", url=payment_url)],
-        [InlineKeyboardButton("🔙 Назад", callback_data="main_menu")],
+        [InlineKeyboardButton("📅 Записаться (индивидуально)", callback_data="book_individual")],
+        [InlineKeyboardButton("📅 Записаться (группа)", callback_data="book_group")],
+        [InlineKeyboardButton("🤖 Спросить AI", callback_data="ai_chat")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="consultations")],
     ]
     return InlineKeyboardMarkup(keyboard)

@@ -7,3 +7,6 @@ venv/
 *.log
 setings.py
 .DS_store.env 
+*.egg-info/
+dist/
+build/
