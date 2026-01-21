@@ -1,52 +1,43 @@
 import os
-import sys
-import pytest
-from unittest.mock import patch, MagicMock
+import importlib
+from unittest.mock import patch
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 def test_imports():
-    """Тест импортов основных модулей"""
-    try:
-        from core.models import User, Base, Deal
-        with patch.dict(os.environ, {
-            'DB_USER': 'test',
-            'DB_PASSWORD': 'test',
-            'DB_HOST': 'localhost',
-            'DB_PORT': '5432',
-            'DB_NAME': 'test_db',
-        }):
-            from core.database import engine, async_session, get_db
-        assert True
-    except Exception as e:
-        assert False, f"Fatal import main: {e}"
+    """Тест импортов основных модулей (под текущую архитектуру)"""
+    from core.database import Base
+    from core.users.models import User
+    from core.consultations.models import Consultation, UserConsultation
+
+    assert Base is not None
+    assert User is not None
+    assert Consultation is not None
+    assert UserConsultation is not None
+
 
 def test_models_exist():
     """Тест существования основных моделей"""
-    from core.models import User, Deal
-    
-    assert hasattr(User, '__tablename__')
-    assert User.__tablename__ == 'users'
-    assert hasattr(User, 'tg_id')
-    assert hasattr(User, 'first_name')
-    
-    assert hasattr(Deal, '__tablename__')
-    assert Deal.__tablename__ == 'deals'
-    assert hasattr(Deal, 'user_tg_id')
-    assert hasattr(Deal, 'status')
+    from core.users.models import User
+    from core.consultations.models import Consultation, UserConsultation
+
+    assert User.__tablename__ == "users"
+    assert Consultation.__tablename__ == "consultations"
+    assert UserConsultation.__tablename__ == "user_consultations"
+
 
 def test_database_config():
-    """Тест конфигурации базы данных"""
+    """Тест конфигурации базы данных: engine должен создаваться при env"""
     with patch.dict(os.environ, {
-        'DB_USER': 'test',
-        'DB_PASSWORD': 'test',
-        'DB_HOST': 'localhost',
-        'DB_PORT': '5432',
-        'DB_NAME': 'test_db',
+        "DB_USER": "test",
+        "DB_PASSWORD": "test",
+        "DB_HOST": "localhost",
+        "DB_PORT": "5432",
+        "DB_NAME": "test_db",
     }):
-        from core.database import engine
-        assert engine is not None
+        import core.database as db
+        importlib.reload(db)
+        assert db.engine is not None
+
 
 def test_basic():
-    """Базовый тест"""
     assert True
