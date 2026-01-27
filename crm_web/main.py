@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from core.database import engine, Base
+from core.db.database import engine, Base
 from core.models import User
 from ..core.api.api import router
 

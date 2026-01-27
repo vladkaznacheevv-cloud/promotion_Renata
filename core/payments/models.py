@@ -10,7 +10,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship
 
-from core.database import Base
+from core.db import Base
 
 
 class Payment(Base):

@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 import core.models
+from core.db.database import init_db
 from core.api.users import router as users_router
 from core.api.events import router as events_router
 from core.api.consultations import router as consultations_router
@@ -9,6 +10,10 @@ from core.api.ai import router as ai_router
 
 app = FastAPI(title="Renata Promotion API")
 
+@app.on_event("startup")
+async def startup():
+    init_db()  
+    
 app.include_router(users_router, prefix="/api/users", tags=["Пользователи"])
 app.include_router(events_router, prefix="/api/events", tags=["Мероприятия"])
 app.include_router(consultations_router, prefix="/api/consultations", tags=["Консультации"])

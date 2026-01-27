@@ -1,8 +1,8 @@
 import os
 import logging
-import core.models  # важно: регистрирует модели для SQLAlchemy, если где-то есть create_all
-
 from dotenv import load_dotenv
+import core.models
+import core.db.database as db
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -12,14 +12,11 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-
-# Core
-from core.database import async_session
+from core.db.database import init_db, async_session
 from core.users.service import UserService
 from core.events.service import EventService
 from core.ai.ai_service import AIService
 
-# Keyboards
 from telegram_bot.keyboards import (
     get_main_menu,
     get_back_to_menu_kb,
@@ -38,6 +35,8 @@ ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")  # опционально
 
 # Services
 ai_service = AIService(api_key=AI_API_KEY, model=AI_MODEL)
+logger.info("AI configured: key=%s model=%s", bool(AI_API_KEY), AI_MODEL)
+
 
 # In-memory (позже можно вынести историю в Redis/DB)
 chat_histories: dict[int, list[dict]] = {}
@@ -46,8 +45,6 @@ chat_histories: dict[int, list[dict]] = {}
 WAITING_LEAD_KEY = "waiting_lead"  # None | "individual" | "group"
 AI_MODE_KEY = "ai_mode"            # bool
 
-
-# ======= Контент (ультра-коротко, 1–2 экрана) =======
 GESTALT_SHORT_SCREEN_1 = (
     "🧠 *Гештальт-терапия*\n\n"
     "Помогает:\n"
@@ -94,7 +91,8 @@ async def ensure_user(update: Update, source: str = "bot"):
     if tg_user is None:
         return None
 
-    async with async_session() as session:
+    db.init_db()
+    async with db.async_session() as session:
         user_service = UserService(session)
         user = await user_service.get_or_create_by_tg_id(
             tg_id=tg_user.id,
@@ -144,7 +142,8 @@ async def show_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # опционально: фиксируем пользователя и здесь тоже
     await ensure_user(update, source="bot")
 
-    async with async_session() as session:
+    db.init_db()
+    async with db.async_session() as session:
         event_service = EventService(session)
         events = await event_service.list_active()  # было get_active()
 
@@ -385,6 +384,7 @@ def main():
 
     app = build_app()
     logger.info("🚀 Renata Bot запущен!")
+    init_db()
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

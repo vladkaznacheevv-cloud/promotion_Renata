@@ -1,6 +1,6 @@
 from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession
-from core.database import async_session
+from core.db.database import async_session
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """Зависимость для получения сессии БД"""

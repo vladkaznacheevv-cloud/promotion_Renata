@@ -5,7 +5,7 @@ from typing import List, Tuple
 from openai import OpenAI
 from core.ai.prompts import SYSTEM_PROMPT
 
-from core.database import async_session
+from core.db.database import async_session
 from core.events.service import EventService
 
 logger = logging.getLogger(__name__)
