@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional, List
 
-from sqlalchemy import select, and_
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.consultations.models import Consultation, UserConsultation
@@ -20,13 +20,20 @@ class ConsultationService:
         res = await self.session.execute(select(Consultation).where(Consultation.id == consultation_id))
         return res.scalar_one_or_none()
 
-    async def list_active(self, limit: int = 50) -> List[Consultation]:
-        res = await self.session.execute(
+    async def list_active(
+        self,
+        limit: int = 50,
+        consultation_type: Optional[str] = None,
+    ) -> List[Consultation]:
+        query = (
             select(Consultation)
             .where(Consultation.is_active.is_(True))
             .order_by(Consultation.created_at.desc())
             .limit(limit)
         )
+        if consultation_type is not None:
+            query = query.where(Consultation.type == consultation_type)
+        res = await self.session.execute(query)
         return list(res.scalars().all())
 
     async def create(

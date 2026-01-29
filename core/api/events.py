@@ -3,7 +3,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.api.deps import get_db
-from core.events.models import Event
 from core.events.schemas import EventCreate, EventUpdate, EventResponse
 from core.events.service import EventService
 
@@ -13,20 +12,13 @@ router = APIRouter()
 @router.get("/", response_model=List[EventResponse])
 async def get_events(
     limit: int = Query(100, ge=1, le=1000),
-    event_type: Optional[str] = None,
-    status: Optional[str] = None,
+    offset: int = Query(0, ge=0),
+    is_active: Optional[bool] = None,
     db: AsyncSession = Depends(get_db)
 ):
     """Получить мероприятия"""
     service = EventService(db)
-    events = await service.get_active()
-    
-    if event_type:
-        events = [e for e in events if e.type == event_type]
-    if status:
-        events = [e for e in events if e.status == status]
-    
-    return events
+    return await service.get_all(limit=limit, offset=offset, is_active=is_active)
 
 
 @router.get("/upcoming", response_model=List[EventResponse])
@@ -56,7 +48,7 @@ async def create_event(
 ):
     """Создать мероприятие"""
     service = EventService(db)
-    return await service.create(event_data)
+    return await service.create(**event_data.model_dump())
 
 
 @router.patch("/{event_id}", response_model=EventResponse)

@@ -3,15 +3,12 @@ import os
 from urllib.parse import quote_plus
 
 from dotenv import load_dotenv
-from sqlalchemy.orm import declarative_base
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, AsyncEngine
 from sqlalchemy.orm import sessionmaker
 
 from core.db import Base
 
 load_dotenv()
-
-Base = declarative_base()
 
 engine: AsyncEngine | None = None
 async_session: sessionmaker | None = None

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Optional
+import logging
+from datetime import datetime, timedelta
+from typing import Optional, List
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.users.models import User
@@ -24,6 +25,7 @@ class UserService:
 
     def __init__(self, session: AsyncSession):
         self.session = session
+        self.logger = logging.getLogger(__name__)
 
     # -------------------------
     # Base getters
@@ -35,6 +37,27 @@ class UserService:
     async def get_by_tg_id(self, tg_id: int) -> Optional[User]:
         res = await self.session.execute(select(User).where(User.tg_id == tg_id))
         return res.scalar_one_or_none()
+
+    async def get_all(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        status: Optional[str] = None,
+        is_vip: Optional[bool] = None,
+    ) -> List[User]:
+        query = select(User).limit(limit).offset(offset)
+        if status is not None:
+            query = query.where(User.status == status)
+        if is_vip is not None:
+            query = query.where(User.is_vip.is_(is_vip))
+        res = await self.session.execute(query)
+        return list(res.scalars().all())
+
+    async def get_vip_users(self) -> List[User]:
+        res = await self.session.execute(
+            select(User).where(User.is_vip.is_(True))
+        )
+        return list(res.scalars().all())
 
     # -------------------------
     # Create / upsert
@@ -71,6 +94,8 @@ class UserService:
         first_name: Optional[str] = None,
         last_name: Optional[str] = None,
         username: Optional[str] = None,
+        phone: Optional[str] = None,
+        email: Optional[str] = None,
         source: str = "bot",
         update_if_exists: bool = True,
     ) -> User:
@@ -87,6 +112,8 @@ class UserService:
                 first_name=first_name,
                 last_name=last_name,
                 username=username,
+                phone=phone,
+                email=email,
                 status="new",
                 source=source,
             )
@@ -102,6 +129,12 @@ class UserService:
             if username is not None and username != user.username:
                 user.username = username
                 changed = True
+            if phone is not None and phone != user.phone:
+                user.phone = phone
+                changed = True
+            if email is not None and email != user.email:
+                user.email = email
+                changed = True
             # source обычно не хотим перетирать чем-то странным, но если пустой — заполним
             if (user.source is None or user.source == "") and source:
                 user.source = source
@@ -112,6 +145,43 @@ class UserService:
                 await self.session.flush()
 
         return user
+
+    async def get_or_create(self, data) -> User:
+        return await self.get_or_create_by_tg_id(
+            tg_id=data.tg_id,
+            first_name=data.first_name,
+            last_name=data.last_name,
+            username=data.username,
+            phone=data.phone,
+            email=data.email,
+            source=data.source,
+        )
+
+    async def update(self, tg_id: int, data) -> Optional[User]:
+        user = await self.get_by_tg_id(tg_id)
+        if user is None:
+            return None
+
+        for field, value in data.model_dump(exclude_unset=True).items():
+            setattr(user, field, value)
+
+        await self.session.flush()
+        return user
+
+    async def log_event(
+        self,
+        user_tg_id: int,
+        event_type: str,
+        event_data: dict,
+        description: Optional[str] = None,
+    ) -> None:
+        self.logger.info(
+            "User event: tg_id=%s type=%s description=%s data=%s",
+            user_tg_id,
+            event_type,
+            description,
+            event_data,
+        )
 
     # -------------------------
     # Updates (profile / contacts)
@@ -190,6 +260,10 @@ class UserService:
 
         await self.session.flush()
         return user
+
+    async def make_vip(self, tg_id: int, days: int = 30) -> Optional[User]:
+        vip_until = datetime.utcnow() + timedelta(days=days)
+        return await self.set_vip(tg_id=tg_id, is_vip=True, vip_until=vip_until)
 
     async def revoke_vip(self, tg_id: int) -> Optional[User]:
         user = await self.get_by_tg_id(tg_id)

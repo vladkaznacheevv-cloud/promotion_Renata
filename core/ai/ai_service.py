@@ -5,7 +5,7 @@ from typing import List, Tuple
 from openai import OpenAI
 from core.ai.prompts import SYSTEM_PROMPT
 
-from core.db.database import async_session
+from core.db.database import async_session, init_db
 from core.events.service import EventService
 
 logger = logging.getLogger(__name__)
@@ -22,9 +22,11 @@ class AIService:
     async def _events_facts(self, limit: int = 10) -> str:
         """Подгружаем актуальные мероприятия из PostgreSQL и делаем facts-блок."""
         try:
+            if async_session is None:
+                init_db()
             async with async_session() as session:
                 event_service = EventService(session)
-                events = await event_service.get_active()
+                events = await event_service.list_active(limit=limit)
         except Exception as e:
             logger.exception("Failed to load events from DB: %s", e)
             return "АКТУАЛЬНЫЕ МЕРОПРИЯТИЯ: (ошибка загрузки из базы)"
@@ -37,7 +39,7 @@ class AIService:
         ]
         for ev in events[:limit]:
             # добавь поля price/location/url если они есть в модели
-            dt = ev.date.strftime("%d.%m.%Y %H:%M")
+            dt = ev.starts_at.strftime("%d.%m.%Y %H:%M") if ev.starts_at else "без даты"
             lines.append(f"- id={ev.id} | {ev.title} | {dt}")
         return "\n".join(lines)
 

@@ -1,12 +1,11 @@
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.api.deps import get_db
 from core.ai.ai_service import AIService
 from core.users.service import UserService
-from core.users.models import User
 
 router = APIRouter()
 

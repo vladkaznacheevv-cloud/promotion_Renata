@@ -31,6 +31,29 @@ class EventService:
         )
         return list(res.scalars().all())
 
+    async def get_all(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        is_active: Optional[bool] = None,
+    ) -> List[Event]:
+        query = select(Event).limit(limit).offset(offset)
+        if is_active is not None:
+            query = query.where(Event.is_active.is_(is_active))
+        res = await self.session.execute(query)
+        return list(res.scalars().all())
+
+    async def get_upcoming(self, limit: int = 10) -> List[Event]:
+        now = datetime.utcnow()
+        res = await self.session.execute(
+            select(Event)
+            .where(Event.starts_at.is_not(None))
+            .where(Event.starts_at >= now)
+            .order_by(Event.starts_at.asc())
+            .limit(limit)
+        )
+        return list(res.scalars().all())
+
     async def create(
         self,
         title: str,
@@ -53,6 +76,17 @@ class EventService:
             is_active=is_active,
         )
         self.session.add(event)
+        await self.session.flush()
+        return event
+
+    async def update(self, event_id: int, data) -> Optional[Event]:
+        event = await self.get_by_id(event_id)
+        if not event:
+            return None
+
+        for field, value in data.model_dump(exclude_unset=True).items():
+            setattr(event, field, value)
+
         await self.session.flush()
         return event
 

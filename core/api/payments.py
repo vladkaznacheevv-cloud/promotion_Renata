@@ -1,10 +1,7 @@
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
-
 from core.api.deps import get_db
-from core.payments.models import Payment
 from core.payments.schemas import PaymentCreate, PaymentResponse
 from core.payments.service import PaymentService
 
@@ -22,13 +19,10 @@ async def get_payments(
     service = PaymentService(db)
     
     if user_id:
-        return await service.get_user_payments(user_id)
-    
+        return await service.get_user_payments(user_id, limit=limit)
+
     # Для админки - все платежи
-    result = await db.execute(
-        select(Payment).order_by(Payment.created_at.desc()).limit(limit)
-    )
-    return result.scalars().all()
+    return await service.list_all(limit=limit, status=status)
 
 
 @router.get("/{payment_id}", response_model=PaymentResponse)
@@ -59,7 +53,7 @@ async def confirm_payment(
 ):
     """Подтвердить оплату (webhook от YooKassa)"""
     service = PaymentService(db)
-    payment = await service.mark_as_paid(payment_id, yookassa_id)
+    payment = await service.mark_as_paid(payment_id, external_id=yookassa_id, provider="yookassa")
     if not payment:
         raise HTTPException(status_code=404, detail="Платёж не найден")
     return {"status": "paid", "payment_id": payment.id}
