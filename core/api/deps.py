@@ -1,10 +1,14 @@
 from typing import AsyncGenerator
+from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from core.db.database import async_session
+from core.db import database as db
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """Зависимость для получения сессии БД"""
-    async with async_session() as session:
+    if db.async_session is None:
+        raise HTTPException(status_code=503, detail="Database is not available")
+
+    async with db.async_session() as session:
         try:
             yield session
             await session.commit()

@@ -36,6 +36,28 @@ class UserService:
         res = await self.session.execute(select(User).where(User.tg_id == tg_id))
         return res.scalar_one_or_none()
 
+    async def get_all(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        status: Optional[str] = None,
+        is_vip: Optional[bool] = None,
+    ) -> list[User]:
+        query = select(User).order_by(User.created_at.desc()).offset(offset).limit(limit)
+        if status is not None:
+            query = query.where(User.status == status)
+        if is_vip is not None:
+            query = query.where(User.is_vip == is_vip)
+
+        res = await self.session.execute(query)
+        return list(res.scalars().all())
+
+    async def get_vip_users(self, limit: int = 100) -> list[User]:
+        res = await self.session.execute(
+            select(User).where(User.is_vip.is_(True)).order_by(User.created_at.desc()).limit(limit)
+        )
+        return list(res.scalars().all())
+
     # -------------------------
     # Create / upsert
     # -------------------------
@@ -71,6 +93,8 @@ class UserService:
         first_name: Optional[str] = None,
         last_name: Optional[str] = None,
         username: Optional[str] = None,
+        phone: Optional[str] = None,
+        email: Optional[str] = None,
         source: str = "bot",
         update_if_exists: bool = True,
     ) -> User:
@@ -87,6 +111,8 @@ class UserService:
                 first_name=first_name,
                 last_name=last_name,
                 username=username,
+                phone=phone,
+                email=email,
                 status="new",
                 source=source,
             )
@@ -102,6 +128,12 @@ class UserService:
             if username is not None and username != user.username:
                 user.username = username
                 changed = True
+            if phone is not None and phone != user.phone:
+                user.phone = phone
+                changed = True
+            if email is not None and email != user.email:
+                user.email = email
+                changed = True
             # source обычно не хотим перетирать чем-то странным, но если пустой — заполним
             if (user.source is None or user.source == "") and source:
                 user.source = source
@@ -112,6 +144,19 @@ class UserService:
                 await self.session.flush()
 
         return user
+
+    async def get_or_create(self, data) -> User:
+        payload = data.model_dump() if hasattr(data, "model_dump") else dict(data)
+        return await self.get_or_create_by_tg_id(
+            tg_id=payload.get("tg_id"),
+            first_name=payload.get("first_name"),
+            last_name=payload.get("last_name"),
+            username=payload.get("username"),
+            phone=payload.get("phone"),
+            email=payload.get("email"),
+            source=payload.get("source", "bot"),
+            update_if_exists=True,
+        )
 
     # -------------------------
     # Updates (profile / contacts)
@@ -131,6 +176,18 @@ class UserService:
         if email is not None:
             user.email = email
 
+        await self.session.flush()
+        return user
+
+    async def update(self, tg_id: int, data) -> Optional[User]:
+        user = await self.get_by_tg_id(tg_id)
+        if user is None:
+            return None
+
+        payload = data.model_dump(exclude_unset=True) if hasattr(data, "model_dump") else dict(data)
+        for key, value in payload.items():
+            if hasattr(user, key):
+                setattr(user, key, value)
         await self.session.flush()
         return user
 
@@ -190,6 +247,12 @@ class UserService:
 
         await self.session.flush()
         return user
+
+    async def make_vip(self, tg_id: int, days: int = 30) -> Optional[User]:
+        from datetime import datetime, timedelta
+
+        vip_until = datetime.utcnow() + timedelta(days=days)
+        return await self.set_vip(tg_id=tg_id, is_vip=True, vip_until=vip_until)
 
     async def revoke_vip(self, tg_id: int) -> Optional[User]:
         user = await self.get_by_tg_id(tg_id)

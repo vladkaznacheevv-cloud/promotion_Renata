@@ -31,6 +31,21 @@ class EventService:
         )
         return list(res.scalars().all())
 
+    async def get_active(self, limit: int = 50) -> List[Event]:
+        return await self.list_active(limit=limit)
+
+    async def get_upcoming(self, limit: int = 50) -> List[Event]:
+        now = datetime.utcnow()
+        res = await self.session.execute(
+            select(Event)
+            .where(Event.is_active.is_(True))
+            .where(Event.starts_at.is_not(None))
+            .where(Event.starts_at >= now)
+            .order_by(Event.starts_at.asc())
+            .limit(limit)
+        )
+        return list(res.scalars().all())
+
     async def create(
         self,
         title: str,
@@ -61,6 +76,18 @@ class EventService:
         if not event:
             return None
         event.is_active = is_active
+        await self.session.flush()
+        return event
+
+    async def update(self, event_id: int, data) -> Optional[Event]:
+        event = await self.get_by_id(event_id)
+        if not event:
+            return None
+
+        payload = data.model_dump(exclude_unset=True) if hasattr(data, "model_dump") else dict(data)
+        for key, value in payload.items():
+            if hasattr(event, key):
+                setattr(event, key, value)
         await self.session.flush()
         return event
 

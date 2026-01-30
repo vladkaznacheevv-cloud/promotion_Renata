@@ -2,8 +2,12 @@ import os
 import sys
 import subprocess
 import multiprocessing
+from dotenv import load_dotenv
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+# Загружаем .env один раз для всех процессов
+load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 
 # ВАЖНО: для Windows spawn прокидываем PYTHONPATH вручную
 ENV = os.environ.copy()

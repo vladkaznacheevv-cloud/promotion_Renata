@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
-from core.api.deps import get_db, get_current_user
+from core.api.deps import get_db
 from core.users.models import User
 from core.users.schemas import UserCreate, UserUpdate, UserResponse
 from core.users.service import UserService
@@ -21,16 +21,7 @@ async def get_users(
 ):
     """Получить всех пользователей с фильтрацией"""
     service = UserService(db)
-    
-    users = await service.get_all(limit=limit, offset=offset)
-    
-    # Фильтрация на уровне Python (можно оптимизировать)
-    if status:
-        users = [u for u in users if u.status == status]
-    if is_vip is not None:
-        users = [u for u in users if u.is_vip == is_vip]
-    
-    return users
+    return await service.get_all(limit=limit, offset=offset, status=status, is_vip=is_vip)
 
 
 @router.get("/count")

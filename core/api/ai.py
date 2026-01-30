@@ -6,7 +6,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.api.deps import get_db
 from core.ai.ai_service import AIService
 from core.users.service import UserService
-from core.users.models import User
 
 router = APIRouter()
 
@@ -53,14 +52,5 @@ async def chat_with_user(
     ai = AIService()
     
     response, new_history = await ai.chat(request.message)
-    
-    # Логируем в БД
-    user_service = UserService(db)
-    await user_service.log_event(
-        user_tg_id=tg_id,
-        event_type="ai_chat",
-        event_data={"message": request.message, "response": response},
-        description="AI чат через API"
-    )
-    
+
     return ChatResponse(response=response, history=new_history)

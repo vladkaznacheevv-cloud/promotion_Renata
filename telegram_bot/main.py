@@ -12,7 +12,6 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from core.db.database import init_db, async_session
 from core.users.service import UserService
 from core.events.service import EventService
 from core.ai.ai_service import AIService
@@ -22,6 +21,7 @@ from telegram_bot.keyboards import (
     get_back_to_menu_kb,
     get_consultations_menu,
     get_consultation_formats_menu,
+    get_retry_kb,
 )
 
 load_dotenv()
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 AI_API_KEY = os.getenv("AI_API_KEY")
-AI_MODEL = os.getenv("AI_MODEL", "mimo-v2-flash")
+AI_MODEL = os.getenv("AI_MODEL", "mistralai/devstral-2512")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")  # опционально
 
 # Services
@@ -82,6 +82,22 @@ def _reset_states(context: ContextTypes.DEFAULT_TYPE):
     context.user_data[AI_MODE_KEY] = False
 
 
+async def _notify_db_unavailable(update: Update):
+    text = "⚠️ Техработы с базой. Попробуйте позже."
+    keyboard = get_retry_kb()
+
+    if update.callback_query:
+        try:
+            await update.callback_query.answer()
+            await update.callback_query.edit_message_text(text, reply_markup=keyboard)
+            return
+        except Exception:
+            logger.exception("Не удалось обновить сообщение при ошибке БД")
+
+    if update.effective_message:
+        await update.effective_message.reply_text(text, reply_markup=keyboard)
+
+
 async def ensure_user(update: Update, source: str = "bot"):
     """
     Единая точка: создаём/обновляем пользователя в БД по tg_id.
@@ -91,19 +107,24 @@ async def ensure_user(update: Update, source: str = "bot"):
     if tg_user is None:
         return None
 
-    db.init_db()
-    async with db.async_session() as session:
-        user_service = UserService(session)
-        user = await user_service.get_or_create_by_tg_id(
-            tg_id=tg_user.id,
-            first_name=tg_user.first_name,
-            last_name=tg_user.last_name,
-            username=tg_user.username,
-            source=source,
-            update_if_exists=True,
-        )
-        await session.commit()
-        return user
+    try:
+        db.init_db()
+        async with db.async_session() as session:
+            user_service = UserService(session)
+            user = await user_service.get_or_create_by_tg_id(
+                tg_id=tg_user.id,
+                first_name=tg_user.first_name,
+                last_name=tg_user.last_name,
+                username=tg_user.username,
+                source=source,
+                update_if_exists=True,
+            )
+            await session.commit()
+            return user
+    except Exception as e:
+        logger.exception("Ошибка БД в ensure_user: %s", e)
+        await _notify_db_unavailable(update)
+        return None
 
 
 # ============ Handlers ============
@@ -111,6 +132,8 @@ async def ensure_user(update: Update, source: str = "bot"):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # гарантируем наличие user в БД
     user_db = await ensure_user(update, source="bot")
+    if user_db is None:
+        return
 
     _reset_states(context)
 
@@ -140,12 +163,19 @@ async def show_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _reset_states(context)
 
     # опционально: фиксируем пользователя и здесь тоже
-    await ensure_user(update, source="bot")
+    user_db = await ensure_user(update, source="bot")
+    if user_db is None:
+        return
 
-    db.init_db()
-    async with db.async_session() as session:
-        event_service = EventService(session)
-        events = await event_service.list_active()  # было get_active()
+    try:
+        db.init_db()
+        async with db.async_session() as session:
+            event_service = EventService(session)
+            events = await event_service.list_active()  # было get_active()
+    except Exception as e:
+        logger.exception("Ошибка БД в show_events: %s", e)
+        await _notify_db_unavailable(update)
+        return
 
     if not events:
         await query.edit_message_text("📅 Скоро появятся новые мероприятия!", reply_markup=get_back_to_menu_kb())
@@ -169,7 +199,9 @@ async def show_consultations(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.answer()
     _reset_states(context)
 
-    await ensure_user(update, source="bot")
+    user_db = await ensure_user(update, source="bot")
+    if user_db is None:
+        return
 
     await query.edit_message_text(
         GESTALT_SHORT_SCREEN_1,
@@ -183,7 +215,9 @@ async def show_formats_and_prices(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     _reset_states(context)
 
-    await ensure_user(update, source="bot")
+    user_db = await ensure_user(update, source="bot")
+    if user_db is None:
+        return
 
     await query.edit_message_text(
         GESTALT_SHORT_SCREEN_2,
@@ -198,7 +232,9 @@ async def begin_booking_individual(update: Update, context: ContextTypes.DEFAULT
     context.user_data[AI_MODE_KEY] = False
     context.user_data[WAITING_LEAD_KEY] = "individual"
 
-    await ensure_user(update, source="bot")
+    user_db = await ensure_user(update, source="bot")
+    if user_db is None:
+        return
 
     await query.edit_message_text(
         "📩 *Запись на индивидуальную терапию*\n\n"
@@ -218,7 +254,9 @@ async def begin_booking_group(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data[AI_MODE_KEY] = False
     context.user_data[WAITING_LEAD_KEY] = "group"
 
-    await ensure_user(update, source="bot")
+    user_db = await ensure_user(update, source="bot")
+    if user_db is None:
+        return
 
     await query.edit_message_text(
         "📩 *Запись в терапевтическую группу*\n\n"
@@ -244,7 +282,9 @@ async def handle_lead_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     # можно гарантировать user в БД и здесь (на случай если заявка пришла без /start)
-    await ensure_user(update, source="bot")
+    user_db = await ensure_user(update, source="bot")
+    if user_db is None:
+        return
 
     user = update.effective_user
     lead_type = "Индивидуально" if mode == "individual" else "Группа"
@@ -282,7 +322,9 @@ async def show_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    await ensure_user(update, source="bot")
+    user_db = await ensure_user(update, source="bot")
+    if user_db is None:
+        return
 
     user_id = update.effective_user.id
     chat_histories[user_id] = []  # сбрасываем историю при входе
@@ -311,7 +353,9 @@ async def handle_ai_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # гарантируем user (чтобы потом сохранять историю/события/платежи на пользователя)
-    await ensure_user(update, source="bot")
+    user_db = await ensure_user(update, source="bot")
+    if user_db is None:
+        return
 
     user_id = update.effective_user.id
     user_message = (update.message.text or "").strip()
@@ -336,7 +380,9 @@ async def show_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     _reset_states(context)
 
-    await ensure_user(update, source="bot")
+    user_db = await ensure_user(update, source="bot")
+    if user_db is None:
+        return
 
     text = (
         "📚 *Помощь*\n\n"
@@ -349,6 +395,29 @@ async def show_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(text, reply_markup=get_back_to_menu_kb(), parse_mode="Markdown")
 
 
+# --------- Errors / Retry ---------
+
+async def retry_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query:
+        await query.answer()
+
+    user_db = await ensure_user(update, source="bot")
+    if user_db is None:
+        return
+
+    if query:
+        await query.edit_message_text("✅ База снова доступна.", reply_markup=get_main_menu())
+    elif update.effective_message:
+        await update.effective_message.reply_text("✅ База снова доступна.", reply_markup=get_main_menu())
+
+
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.exception("Unhandled error: %s", context.error)
+    if isinstance(update, Update):
+        await _notify_db_unavailable(update)
+
+
 # ============ App ============
 
 def build_app() -> Application:
@@ -359,6 +428,7 @@ def build_app() -> Application:
 
     # Menu callbacks
     app.add_handler(CallbackQueryHandler(main_menu, pattern="^main_menu$"))
+    app.add_handler(CallbackQueryHandler(retry_db, pattern="^retry_db$"))
 
     # Sections
     app.add_handler(CallbackQueryHandler(show_events, pattern="^events$"))
@@ -375,6 +445,8 @@ def build_app() -> Application:
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_lead_message), group=0)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_ai_message), group=1)
 
+    app.add_error_handler(on_error)
+
     return app
 
 
@@ -384,7 +456,10 @@ def main():
 
     app = build_app()
     logger.info("🚀 Renata Bot запущен!")
-    init_db()
+    try:
+        db.init_db()
+    except Exception as e:
+        logger.exception("DB init failed, bot will run without DB: %s", e)
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

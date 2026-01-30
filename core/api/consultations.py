@@ -3,7 +3,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.api.deps import get_db
-from core.consultations.models import Consultation
 from core.consultations.schemas import ConsultationCreate, ConsultationResponse
 from core.consultations.service import ConsultationService
 
@@ -17,7 +16,7 @@ async def get_consultations(
 ):
     """Получить консультации"""
     service = ConsultationService(db)
-    consultations = await service.get_active()
+    consultations = await service.list_active()
     
     if consultation_type:
         consultations = [c for c in consultations if c.type == consultation_type]
@@ -42,4 +41,4 @@ async def create_consultation(
 ):
     """Создать консультацию"""
     service = ConsultationService(db)
-    return await service.create(data)
+    return await service.create(**data.model_dump())

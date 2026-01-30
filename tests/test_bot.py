@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 def test_imports():
     """Тест импортов основных модулей (под текущую архитектуру)"""
-    from core.db.database import Base
+    from core.db import Base
     from core.users.models import User
     from core.consultations.models import Consultation, UserConsultation
 

@@ -1,6 +1,7 @@
+import logging
 from fastapi import FastAPI
 import core.models
-from core.db.database import init_db
+import core.db.database as db
 from core.api.users import router as users_router
 from core.api.events import router as events_router
 from core.api.consultations import router as consultations_router
@@ -9,10 +10,14 @@ from core.api.analytics import router as analytics_router
 from core.api.ai import router as ai_router
 
 app = FastAPI(title="Renata Promotion API")
+logger = logging.getLogger(__name__)
 
 @app.on_event("startup")
 async def startup():
-    init_db()  
+    try:
+        db.init_db()
+    except Exception as e:
+        logger.exception("DB init failed, continuing without DB: %s", e)
     
 app.include_router(users_router, prefix="/api/users", tags=["Пользователи"])
 app.include_router(events_router, prefix="/api/events", tags=["Мероприятия"])
