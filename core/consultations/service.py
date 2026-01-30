@@ -29,6 +29,9 @@ class ConsultationService:
         )
         return list(res.scalars().all())
 
+    async def get_active(self, limit: int = 50) -> List[Consultation]:
+        return await self.list_active(limit=limit)
+
     async def create(
         self,
         type: str,

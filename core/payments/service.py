@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional, List, Dict, Any
 
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.payments.models import Payment
@@ -26,6 +26,9 @@ class PaymentService:
         )
         return list(res.scalars().all())
 
+    async def get_user_payments(self, user_id: int, limit: int = 50) -> List[Payment]:
+        return await self.list_by_user(user_id=user_id, limit=limit)
+
     async def create_pending(
         self,
         user_id: int,
@@ -45,6 +48,16 @@ class PaymentService:
         self.session.add(p)
         await self.session.flush()
         return p
+
+    async def create(self, data) -> Payment:
+        payload = data.model_dump() if hasattr(data, "model_dump") else dict(data)
+        return await self.create_pending(
+            user_id=payload.get("user_id"),
+            amount=payload.get("amount"),
+            provider=payload.get("provider"),
+            external_id=payload.get("external_id"),
+            metadata=payload.get("metadata"),
+        )
 
     async def set_status(
         self,
@@ -85,12 +98,21 @@ class PaymentService:
             metadata=metadata,
         )
 
+    async def mark_as_paid(self, payment_id: int, external_id: Optional[str] = None) -> Optional[Payment]:
+        return await self.mark_paid(payment_id=payment_id, external_id=external_id)
+
     async def mark_failed(
         self,
         payment_id: int,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[Payment]:
         return await self.set_status(payment_id=payment_id, status="failed", metadata=metadata)
+
+    async def get_total_revenue(self) -> int:
+        res = await self.session.execute(
+            select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.status == "paid")
+        )
+        return int(res.scalar() or 0)
 
     # -------------------------
     # Convenience

@@ -2,7 +2,6 @@ import logging
 from typing import Dict, List
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
-from sqlalchemy.orm import selectinload
 from core.users.models import User
 from core.events.models import Event, UserEvent
 from core.payments.models import Payment
@@ -33,7 +32,7 @@ class AnalyticsService:
         
         # Мероприятия
         active_events = await self.session.execute(
-            select(func.count(Event.id)).where(Event.status == Event.STATUS_PUBLISHED)
+            select(func.count(Event.id)).where(Event.is_active.is_(True))
         )
         active_events = active_events.scalar() or 0
         
@@ -44,12 +43,12 @@ class AnalyticsService:
         
         # Платежи
         total_revenue = await self.session.execute(
-            select(func.sum(Payment.amount)).where(Payment.status == Payment.STATUS_PAID)
+            select(func.sum(Payment.amount)).where(Payment.status == "paid")
         )
         total_revenue = total_revenue.scalar() or 0
         
         pending_payments = await self.session.execute(
-            select(func.count(Payment.id)).where(Payment.status == Payment.STATUS_PENDING)
+            select(func.count(Payment.id)).where(Payment.status == "pending")
         )
         pending_payments = pending_payments.scalar() or 0
         
@@ -91,11 +90,11 @@ class AnalyticsService:
         """Выручка по типам продуктов"""
         result = await self.session.execute(
             select(
-                Payment.product_type,
-                func.sum(Payment.amount).label('total')
+                Payment.provider,
+                func.sum(Payment.amount).label("total")
             )
-            .where(Payment.status == Payment.STATUS_PAID)
-            .group_by(Payment.product_type)
+            .where(Payment.status == "paid")
+            .group_by(Payment.provider)
         )
-        
-        return {row.product_type: row.total or 0 for row in result.all()}
+
+        return {row.provider or "unknown": row.total or 0 for row in result.all()}

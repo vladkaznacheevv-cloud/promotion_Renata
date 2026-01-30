@@ -1,7 +1,7 @@
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select
 
 from core.api.deps import get_db
 from core.payments.models import Payment
@@ -22,12 +22,16 @@ async def get_payments(
     service = PaymentService(db)
     
     if user_id:
-        return await service.get_user_payments(user_id)
+        payments = await service.get_user_payments(user_id, limit=limit)
+        if status:
+            payments = [p for p in payments if p.status == status]
+        return payments
     
     # Для админки - все платежи
-    result = await db.execute(
-        select(Payment).order_by(Payment.created_at.desc()).limit(limit)
-    )
+    query = select(Payment).order_by(Payment.created_at.desc()).limit(limit)
+    if status:
+        query = query.where(Payment.status == status)
+    result = await db.execute(query)
     return result.scalars().all()
 
 

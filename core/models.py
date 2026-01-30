@@ -8,7 +8,7 @@ __all__ = [
     "Base",
     "User",
     "Consultation",
-    "UserCosultation"
+    "UserConsultation",
     "Event",
     "UserEvent",
     "Payment",

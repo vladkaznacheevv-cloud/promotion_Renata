@@ -1,6 +1,5 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-
 def get_main_menu():
     keyboard = [
         [InlineKeyboardButton("📅 Мероприятия", callback_data="events")],
@@ -34,3 +33,7 @@ def get_consultation_formats_menu():
         [InlineKeyboardButton("🔙 Назад", callback_data="consultations")],
     ]
     return InlineKeyboardMarkup(keyboard)
+
+
+def get_retry_kb():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("Повторить", callback_data="retry_db")]])
