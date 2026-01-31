@@ -64,15 +64,11 @@ const indexCss = readBytes("src/index.css").toString("utf8");
   assert(indexCss.includes(directive), `index.css missing ${directive}`);
 });
 
-const viteBin =
-  process.platform === "win32"
-    ? path.join(root, "node_modules", ".bin", "vite.cmd")
-    : path.join(root, "node_modules", ".bin", "vite");
-
-assert(fs.existsSync(viteBin), "Vite binary not found. Run npm install first.");
-
-const build = spawnSync(viteBin, ["build"], { stdio: "inherit" });
-assert(build.status === 0, "vite build failed");
+const build = spawnSync("npm", ["run", "build"], {
+  stdio: "inherit",
+  shell: process.platform === "win32",
+});
+assert(build.status === 0, "npm run build failed");
 
 const assetsDir = path.join(root, "dist", "assets");
 assert(fs.existsSync(assetsDir), "dist/assets not found after build");

@@ -22,7 +22,7 @@ services:
 
   web:
     build: .
-    command: uvicorn crm_web.main:app --host 0.0.0.0 --port 8000
+    command: uvicorn core.main:app --host 0.0.0.0 --port 8000
     env_file: .env
     depends_on:
       - db

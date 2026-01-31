@@ -1,4 +1,4 @@
-import { X } from "lucide-react";
+﻿import { X } from "lucide-react";
 
 const colorClasses = {
   blue: { icon: "text-blue-600", hover: "hover:border-blue-400 hover:bg-blue-50" },
@@ -29,6 +29,7 @@ export default function BottomActions({ actions, onClose }) {
                 key={action.id}
                 className={`p-4 rounded-lg border-2 border-dashed border-gray-300 transition-colors text-center ${cls.hover}`}
                 type="button"
+                onClick={action.onClick}
               >
                 <div className={`mb-2 flex justify-center ${cls.icon}`}>{action.icon}</div>
                 <span className="text-sm font-medium text-gray-700">{action.title}</span>
