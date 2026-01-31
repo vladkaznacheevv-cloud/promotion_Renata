@@ -1,4 +1,4 @@
-@tailwind base;
+﻿@tailwind base;
 @tailwind components;
 @tailwind utilities;
 
@@ -9,13 +9,21 @@ html, body, #root {
 
 body {
   margin: 0;
-  /* TEMP: remove after verifying CSS is loaded */
-  background: lime !important;
 }
 
-@layer utilities {
-  .tw-test {
-    outline: 4px solid fuchsia;
-    outline-offset: 4px;
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
   }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.shimmer {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(90deg, #f3f4f6 25%, #e5e7eb 50%, #f3f4f6 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
 }

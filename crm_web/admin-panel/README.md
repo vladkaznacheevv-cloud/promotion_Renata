@@ -1,3 +1,18 @@
+# Admin Panel
+
+## Backend (FastAPI)
+
+From repo root:
+
+```bash
+uvicorn core.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+Health: http://127.0.0.1:8000/health
+Docs: http://127.0.0.1:8000/docs
+
+---
+
 # React + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
@@ -14,3 +29,36 @@ The React Compiler is not enabled on this template because of its impact on dev 
 ## Expanding the ESLint configuration
 
 If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+
+
+## Run Backend + Frontend (Dev)
+
+From repo root:
+
+```bash
+# Backend
+uvicorn core.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+```bash
+# Frontend
+cd crm_web/admin-panel
+npm run dev -- --host 127.0.0.1
+```
+
+Health: http://127.0.0.1:8000/health
+Docs: http://127.0.0.1:8000/docs
+Frontend: http://127.0.0.1:5173
+
+
+
+## CRM dev seed
+
+From repo root (after configuring DB env vars):
+
+```bash
+python scripts/seed_crm.py
+```
+
+This creates tables (if missing) and inserts 2 demo clients + 2 events when the DB is empty.
+

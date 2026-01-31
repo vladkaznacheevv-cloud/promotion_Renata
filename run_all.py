@@ -14,11 +14,11 @@ ENV = os.environ.copy()
 ENV["PYTHONPATH"] = PROJECT_ROOT
 
 def run_api():
-    print("🚀 Запуск FastAPI на http://localhost:8000")
+    print("🚀 Запуск FastAPI на http://127.0.0.1:8000")
     subprocess.run(
         [
             sys.executable, "-m", "uvicorn",
-            "core.api.api:app",
+            "core.main:app",
             "--reload",
             "--host", "0.0.0.0",
             "--port", "8000",
@@ -51,8 +51,8 @@ def main():
         p.start()
         print(f"✅ {p.name} запущен (PID: {p.pid})")
 
-    print("\n🌐 FastAPI docs: http://localhost:8000/docs")
-    print("🌐 ReDoc: http://localhost:8000/redoc")
+    print("\n🌐 FastAPI docs: http://127.0.0.1:8000/docs")
+    print("🌐 ReDoc: http://127.0.0.1:8000/redoc")
     print("🛑 Нажми Ctrl+C для остановки\n")
 
     try:

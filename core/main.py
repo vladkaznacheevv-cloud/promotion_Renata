@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+from core.db import database as db
 
 # API роутеры
 from core.api.users import router as users_router
@@ -12,6 +13,7 @@ from core.api.consultations import router as consultations_router
 from core.api.payments import router as payments_router
 from core.api.analytics import router as analytics_router
 from core.api.ai import router as ai_router
+from core.crm.api import router as crm_router
 
 load_dotenv()
 
@@ -39,7 +41,7 @@ app = FastAPI(
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Ограничь в production!
+    allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -52,6 +54,7 @@ app.include_router(consultations_router, prefix="/api/consultations", tags=["К�
 app.include_router(payments_router, prefix="/api/payments", tags=["Платежи"])
 app.include_router(analytics_router, prefix="/api/analytics", tags=["Аналитика"])
 app.include_router(ai_router, prefix="/api/ai", tags=["AI-чат"])
+app.include_router(crm_router, prefix="/api/crm", tags=["CRM"])
 
 
 # Health check
@@ -72,7 +75,7 @@ async def root():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
-        "main:app",
+        "core.main:app",
         host=os.getenv("API_HOST", "0.0.0.0"),
         port=int(os.getenv("API_PORT", "8000")),
         reload=True
