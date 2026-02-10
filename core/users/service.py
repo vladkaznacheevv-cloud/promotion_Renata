@@ -81,6 +81,8 @@ class UserService:
             email=email,
             status=status,
             source=source,
+            crm_stage=User.CRM_STAGE_NEW,
+            last_activity_at=datetime.utcnow(),
         )
         self.session.add(user)
         # flush нужен, чтобы получить user.id до commit
@@ -134,6 +136,11 @@ class UserService:
             if email is not None and email != user.email:
                 user.email = email
                 changed = True
+            if user.crm_stage is None:
+                user.crm_stage = User.CRM_STAGE_NEW
+                changed = True
+            user.last_activity_at = datetime.utcnow()
+            changed = True
             # source обычно не хотим перетирать чем-то странным, но если пустой — заполним
             if (user.source is None or user.source == "") and source:
                 user.source = source

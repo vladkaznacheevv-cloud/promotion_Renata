@@ -1,69 +1,83 @@
 ﻿import { useEffect, useMemo, useState } from "react";
+import { DollarSign, TrendingUp, Users, Calendar, Bot } from "lucide-react";
 import {
-  BarChart3,
-  Bot,
-  Calendar,
-  Crown,
-  DollarSign,
-  ExternalLink,
-  Menu,
-  MessageSquare,
-  Plus,
-  Search,
-  TrendingUp,
-  UserPlus,
-  Users,
-} from "lucide-react";
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+
 import { getAiStats } from "../api/ai";
-import { createClient, deleteClient, getClients, updateClient } from "../api/clients";
-import { createEvent, deleteEvent, getEvents, updateEvent } from "../api/events";
-import BottomActions from "../components/BottomActions";
-import ClientList from "../components/ClientList";
-import ClientModal from "../components/ClientModal";
+import { getClients } from "../api/clients";
+import { getEvents } from "../api/events";
+import { getCatalog } from "../api/catalog";
+import { getPayments } from "../api/payments";
+import { getRevenueSummary } from "../api/revenue";
+import { getGetCourseSummary } from "../api/integrations";
+import { DEV_MOCKS, getDevFallbackUsed } from "../api/http";
+import { RU, formatCurrencyRub } from "../i18n/ru";
 import DashboardStatCard from "../components/DashboardStatCard";
-import EmptyState from "../components/EmptyState";
 import ErrorBanner from "../components/ErrorBanner";
 import SkeletonCard from "../components/SkeletonCard";
-import EventCard from "../components/EventCard";
-import EventFormModal from "../components/EventFormModal";
-import EventModal from "../components/EventModal";
-import LeftPanel from "../components/LeftPanel";
+import Button from "../components/ui/Button";
+import { Card, CardHeader, CardContent } from "../components/ui/Card";
+import { Tabs } from "../components/ui/Tabs";
 
 export default function DashboardPage() {
-  const [showLeftPanel, setShowLeftPanel] = useState(false);
-  const [showBottomPanel, setShowBottomPanel] = useState(false);
-  const [selectedEvent, setSelectedEvent] = useState(null);
   const [clients, setClients] = useState([]);
   const [events, setEvents] = useState([]);
   const [aiStats, setAiStats] = useState(null);
+  const [revenueSummary, setRevenueSummary] = useState(null);
+  const [payments, setPayments] = useState([]);
+  const [getcourseSummary, setGetcourseSummary] = useState(null);
+  const [catalogItems, setCatalogItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [actionError, setActionError] = useState("");
-
-  const [clientModalOpen, setClientModalOpen] = useState(false);
-  const [eventModalOpen, setEventModalOpen] = useState(false);
-  const [editingClient, setEditingClient] = useState(null);
-  const [editingEvent, setEditingEvent] = useState(null);
+  const [devNotice, setDevNotice] = useState("");
+  const [range, setRange] = useState("30d");
 
   const fetchData = async (withLoading = false) => {
     try {
       if (withLoading) setLoading(true);
       setError("");
-      const [clientsRes, eventsRes, aiRes] = await Promise.all([
+      const [clientsRes, eventsRes, aiRes, revenueRes, paymentsRes, gcRes, catalogRes] = await Promise.all([
         getClients(),
         getEvents(),
         getAiStats(),
+        getRevenueSummary(),
+        getPayments(),
+        getGetCourseSummary(),
+        getCatalog({ limit: 100 }),
       ]);
 
       setClients(clientsRes.items ?? clientsRes);
       setEvents(eventsRes.items ?? eventsRes);
       setAiStats(aiRes);
+      setRevenueSummary(revenueRes);
+      setPayments(paymentsRes.items ?? paymentsRes);
+      setGetcourseSummary(gcRes);
+      setCatalogItems(catalogRes.items ?? []);
+
+      if (DEV_MOCKS && getDevFallbackUsed()) {
+        setDevNotice(RU.messages.backendUnavailableDemo);
+      } else {
+        setDevNotice("");
+      }
     } catch (err) {
       const rawMessage = err?.message || "";
       const message = rawMessage.includes("Failed to fetch")
-        ? "Не удалось подключиться к API. Проверь, что backend запущен и VITE_API_BASE_URL указывает на http://127.0.0.1:8000."
-        : rawMessage || "Ошибка загрузки данных";
-      setError(message);
+        ? RU.messages.apiConnectionFailed
+        : rawMessage || RU.messages.dataLoadError;
+
+      if (DEV_MOCKS) {
+        setDevNotice(RU.messages.backendUnavailableDemo);
+      } else {
+        setError(message);
+      }
     } finally {
       if (withLoading) setLoading(false);
     }
@@ -80,385 +94,290 @@ export default function DashboardPage() {
     };
   }, []);
 
-  const vipCount = useMemo(
-    () => clients.filter((client) => client.status === "VIP Клиент").length,
-    [clients]
-  );
+  const stageCounters = useMemo(() => {
+    const counters = {
+      NEW: 0,
+      ENGAGED: 0,
+      READY_TO_PAY: 0,
+      PAID: 0,
+    };
+    clients.forEach((client) => {
+      const stage = client.stage || "NEW";
+      if (Object.hasOwn(counters, stage)) {
+        counters[stage] += 1;
+      }
+    });
+    return counters;
+  }, [clients]);
 
   const dashboardStats = useMemo(
     () => [
       {
-        title: "Общая выручка",
-        value: "1,875,000 ₽",
+        title: RU.labels.totalRevenue,
+        value: revenueSummary ? formatCurrencyRub(revenueSummary.total || 0) : RU.messages.emDash,
         change: "+15.3%",
         changeType: "positive",
         icon: <DollarSign className="h-6 w-6" />,
       },
       {
-        title: "Активные клиенты",
-        value: clients.length ? clients.length.toLocaleString("ru-RU") : "—",
+        title: RU.labels.activeClients,
+        value: clients.length ? clients.length.toLocaleString("ru-RU") : RU.messages.emDash,
         change: "+12.5%",
         changeType: "positive",
         icon: <Users className="h-6 w-6" />,
       },
       {
-        title: "Мероприятий",
-        value: events.length ? events.length.toLocaleString("ru-RU") : "—",
+        title: RU.labels.eventsCount,
+        value: events.length ? events.length.toLocaleString("ru-RU") : RU.messages.emDash,
         change: "0%",
         changeType: "neutral",
         icon: <Calendar className="h-6 w-6" />,
       },
       {
-        title: "AI ответов",
-        value: aiStats?.totalResponses
-          ? aiStats.totalResponses.toLocaleString("ru-RU")
-          : "—",
+        title: RU.labels.aiResponses,
+        value: aiStats?.totalResponses ? aiStats.totalResponses.toLocaleString("ru-RU") : RU.messages.emDash,
         change: "+42.3%",
         changeType: "positive",
         icon: <Bot className="h-6 w-6" />,
       },
       {
-        title: "VIP клиентов",
-        value: vipCount ? vipCount.toLocaleString("ru-RU") : "—",
-        change: "+25.1%",
-        changeType: "positive",
-        icon: <Crown className="h-6 w-6" />,
+        title: RU.labels.onlineCourses,
+        value: catalogItems.length.toLocaleString("ru-RU"),
+        change: "—",
+        changeType: "neutral",
+        icon: <Calendar className="h-6 w-6" />,
       },
       {
-        title: "Конверсия",
-        value: "38.4%",
-        change: "+3.2%",
+        title: RU.labels.stageNew,
+        value: stageCounters.NEW.toLocaleString("ru-RU"),
+        change: "—",
+        changeType: "neutral",
+        icon: <Users className="h-6 w-6" />,
+      },
+      {
+        title: RU.labels.stageEngaged,
+        value: stageCounters.ENGAGED.toLocaleString("ru-RU"),
+        change: "—",
+        changeType: "neutral",
+        icon: <TrendingUp className="h-6 w-6" />,
+      },
+      {
+        title: RU.labels.stageReadyToPay,
+        value: stageCounters.READY_TO_PAY.toLocaleString("ru-RU"),
+        change: "—",
+        changeType: "neutral",
+        icon: <TrendingUp className="h-6 w-6" />,
+      },
+      {
+        title: RU.labels.stagePaid,
+        value: stageCounters.PAID.toLocaleString("ru-RU"),
+        change: "—",
         changeType: "positive",
         icon: <TrendingUp className="h-6 w-6" />,
       },
     ],
-    [aiStats, clients.length, events.length, vipCount]
+    [aiStats, clients.length, events.length, revenueSummary, stageCounters, catalogItems.length]
   );
 
-  const quickActions = useMemo(
-    () => [
-      {
-        id: 1,
-        title: "Добавить клиента",
-        icon: <UserPlus className="h-5 w-5" />,
-        color: "blue",
-        onClick: () => openClientModal(),
-      },
-      {
-        id: 2,
-        title: "Создать мероприятие",
-        icon: <Plus className="h-5 w-5" />,
-        color: "green",
-        onClick: () => openEventModal(),
-      },
-      { id: 3, title: "Ответить в боте", icon: <MessageSquare className="h-5 w-5" />, color: "purple" },
-      { id: 4, title: "Проверить оплаты", icon: <DollarSign className="h-5 w-5" />, color: "yellow" },
-      { id: 5, title: "Настроить AI", icon: <Bot className="h-5 w-5" />, color: "indigo" },
-      { id: 6, title: "Экспорт данных", icon: <BarChart3 className="h-5 w-5" />, color: "gray" },
-    ],
-    []
+  const paidPayments = useMemo(() => payments.filter((p) => p.status === "paid"), [payments]);
+
+  const revenueSeries = useMemo(() => {
+    const days = range === "7d" ? 7 : range === "90d" ? 90 : 30;
+    const now = new Date();
+    const map = new Map();
+    for (let i = days - 1; i >= 0; i -= 1) {
+      const day = new Date(now);
+      day.setDate(now.getDate() - i);
+      const key = day.toISOString().slice(0, 10);
+      map.set(key, 0);
+    }
+    paidPayments.forEach((payment) => {
+      const key = String(payment.created_at).slice(0, 10);
+      if (map.has(key)) {
+        map.set(key, map.get(key) + (payment.amount || 0));
+      }
+    });
+    return Array.from(map.entries()).map(([date, value]) => ({ date, value }));
+  }, [paidPayments, range]);
+
+  const signupsSeries = useMemo(() => {
+    return events.slice(0, 6).map((event) => ({
+      name: event.title,
+      value: Number(event.attendees ?? 0),
+    }));
+  }, [events]);
+
+  const recentPayments = useMemo(() => payments.slice(0, 5), [payments]);
+  const recentClients = useMemo(
+    () =>
+      clients
+        .filter((c) => c.lastActivity)
+        .sort((a, b) => (a.lastActivity < b.lastActivity ? 1 : -1))
+        .slice(0, 5),
+    [clients]
   );
-
-  const openClientModal = (client = null) => {
-    setEditingClient(client);
-    setActionError("");
-    setClientModalOpen(true);
-  };
-
-  const openEventModal = (event = null) => {
-    setEditingEvent(event);
-    setActionError("");
-    setEventModalOpen(true);
-  };
-
-  const handleSaveClient = async (payload) => {
-    try {
-      setActionError("");
-      if (editingClient) {
-        await updateClient(editingClient.id, payload);
-      } else {
-        await createClient(payload);
-      }
-      setClientModalOpen(false);
-      setEditingClient(null);
-      await fetchData();
-    } catch (err) {
-      setActionError(err?.message || "Ошибка сохранения клиента");
-    }
-  };
-
-  const handleDeleteClient = async (client) => {
-    if (!window.confirm(`Удалить клиента "${client.name}"?`)) return;
-    try {
-      await deleteClient(client.id);
-      await fetchData();
-    } catch (err) {
-      setError(err?.message || "Ошибка удаления клиента");
-    }
-  };
-
-  const handleSaveEvent = async (payload) => {
-    try {
-      setActionError("");
-      if (editingEvent) {
-        await updateEvent(editingEvent.id, payload);
-      } else {
-        await createEvent(payload);
-      }
-      setEventModalOpen(false);
-      setEditingEvent(null);
-      await fetchData();
-    } catch (err) {
-      setActionError(err?.message || "Ошибка сохранения мероприятия");
-    }
-  };
-
-  const handleDeleteEvent = async (event) => {
-    if (!window.confirm(`Удалить мероприятие "${event.title}"?`)) return;
-    try {
-      await deleteEvent(event.id);
-      setSelectedEvent(null);
-      await fetchData();
-    } catch (err) {
-      setError(err?.message || "Ошибка удаления мероприятия");
-    }
-  };
+  const topCatalogItems = useMemo(() => catalogItems.slice(0, 3), [catalogItems]);
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="max-w-7xl mx-auto p-6">
-        <div className="flex min-h-screen">
-          <div className="flex-1 flex flex-col">
-            <header className="bg-white shadow-sm border-b border-gray-200 p-6">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-4">
-                  <button
-                    onClick={() => setShowLeftPanel((prev) => !prev)}
-                    className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
-                    type="button"
-                  >
-                    <Menu className="h-6 w-6 text-gray-600" />
-                  </button>
-                  <div>
-                    <h1 className="text-2xl font-bold text-gray-900">Renata Promotion</h1>
-                    <p className="text-gray-500">Центр управления</p>
-                  </div>
-                </div>
+    <div className="space-y-6">
+      {devNotice && <ErrorBanner message={devNotice} variant="info" />}
+      {error && <ErrorBanner message={error} variant="error" />}
 
-                <div className="flex items-center space-x-4">
-                  <div className="relative">
-                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-                    <input
-                      type="text"
-                      placeholder="Поиск..."
-                      className="pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                    />
-                  </div>
-                  <button
-                    onClick={() => setShowBottomPanel((prev) => !prev)}
-                    className="p-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors"
-                    type="button"
-                  >
-                    <Plus className="h-5 w-5" />
-                  </button>
-                </div>
-              </div>
-            </header>
-
-            <main className="flex-1 overflow-auto p-6">
-              <ErrorBanner message={error} />
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
-                {loading
-                  ? Array.from({ length: 6 }).map((_, index) => (
-                      <SkeletonCard key={index} rows={3} />
-                    ))
-                  : dashboardStats.map((stat) => (
-                      <DashboardStatCard key={stat.title} {...stat} />
-                    ))}
-              </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-                <ClientList
-                  clients={clients}
-                  onAdd={() => openClientModal()}
-                  onEdit={(client) => openClientModal(client)}
-                  onDelete={handleDeleteClient}
-                  isLoading={loading}
-                />
-
-                <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
-                  <h2 className="text-lg font-semibold text-gray-900 mb-4">AI помощник Mimo</h2>
-                  <div className="space-y-4">
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="text-center p-3 bg-purple-50 rounded-lg">
-                        <p className="text-2xl font-bold text-purple-900">
-                          {aiStats?.totalResponses ?? "—"}
-                        </p>
-                        <p className="text-sm text-purple-600">Ответов</p>
-                      </div>
-                      <div className="text-center p-3 bg-green-50 rounded-lg">
-                        <p className="text-2xl font-bold text-green-900">
-                          {aiStats?.avgRating ?? "—"}/5
-                        </p>
-                        <p className="text-sm text-green-600">Рейтинг</p>
-                      </div>
-                    </div>
-                    <div className="space-y-2">
-                      <h3 className="font-medium text-gray-900">Популярные вопросы:</h3>
-                      {aiStats?.topQuestions?.length ? (
-                        aiStats.topQuestions.map((q, index) => (
-                          <div key={`${q.question}-${index}`} className="flex justify-between text-sm">
-                            <span className="text-gray-600">{q.question}</span>
-                            <span className="text-indigo-600 font-medium">{q.count}</span>
-                          </div>
-                        ))
-                      ) : (
-                        <p className="text-sm text-gray-500">Нет данных</p>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </main>
-
-            <div className="bg-white border-t border-gray-200 p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-xl font-bold text-gray-900">Активные мероприятия</h2>
-                <div className="flex space-x-2">
-                  <button
-                    className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
-                    type="button"
-                    onClick={() => openEventModal()}
-                  >
-                    <Plus className="h-4 w-4 inline mr-2" />
-                    Создать
-                  </button>
-                  <button className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50" type="button">
-                    <BarChart3 className="h-4 w-4 inline mr-2" />
-                    Аналитика
-                  </button>
-                </div>
-              </div>
-
-              {loading ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 animate-pulse">
-                  {[1, 2, 3].map((item) => (
-                    <div key={item} className="border rounded-lg p-4">
-                      <div className="h-4 w-32 rounded bg-gray-200 mb-3" />
-                      <div className="h-3 w-full rounded bg-gray-100 mb-2" />
-                      <div className="flex justify-between">
-                        <div className="h-3 w-24 rounded bg-gray-100" />
-                        <div className="h-3 w-16 rounded bg-gray-200" />
-                      </div>
-                      <div className="mt-3 h-3 w-20 rounded bg-gray-100" />
-                    </div>
-                  ))}
-                </div>
-              ) : events.length ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {events.map((event) => (
-                    <EventCard
-                      key={event.id}
-                      event={event}
-                      onSelect={setSelectedEvent}
-                      onEdit={(value) => openEventModal(value)}
-                      onDelete={handleDeleteEvent}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <div className="rounded-lg border border-dashed border-gray-200 p-6 text-sm text-gray-500">
-                  <p className="mb-3">Нет мероприятий.</p>
-                  <button
-                    className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-3 py-2 text-sm text-white hover:bg-indigo-700"
-                    type="button"
-                    onClick={() => openEventModal()}
-                  >
-                    <Plus className="h-4 w-4" />
-                    Создать мероприятие
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold text-slate-900">{RU.labels.dashboardTitle}</h1>
+          <p className="text-sm text-slate-500">{RU.labels.dashboardSubtitle}</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <Tabs
+            tabs={[
+              { label: "7д", value: "7d" },
+              { label: "30д", value: "30d" },
+              { label: "90д", value: "90d" },
+            ]}
+            active={range}
+            onChange={setRange}
+          />
+          <Button variant="secondary">{RU.buttons.export}</Button>
         </div>
       </div>
 
-      {showLeftPanel && <LeftPanel onClose={() => setShowLeftPanel(false)} />}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {loading
+          ? Array.from({ length: 8 }).map((_, index) => <SkeletonCard key={index} rows={3} />)
+          : dashboardStats.map((stat) => <DashboardStatCard key={stat.title} {...stat} />)}
+      </div>
 
-      {showBottomPanel && (
-        <BottomActions actions={quickActions} onClose={() => setShowBottomPanel(false)} />
-      )}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <Card className="lg:col-span-2">
+          <CardHeader className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold">{RU.labels.revenueOverTime}</h2>
+            <span className="text-sm text-slate-500">{RU.labels.paid}</span>
+          </CardHeader>
+          <CardContent className="h-72">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={revenueSeries}>
+                <defs>
+                  <linearGradient id="colorRevenue" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#6366f1" stopOpacity={0.4} />
+                    <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <XAxis dataKey="date" tick={{ fontSize: 12 }} />
+                <YAxis tick={{ fontSize: 12 }} />
+                <Tooltip />
+                <Area type="monotone" dataKey="value" stroke="#6366f1" fill="url(#colorRevenue)" />
+              </AreaChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
 
-      <ClientModal
-        open={clientModalOpen}
-        onClose={() => setClientModalOpen(false)}
-        onSubmit={handleSaveClient}
-        initialData={editingClient}
-        error={actionError}
-      />
+        <Card>
+          <CardHeader>
+            <h2 className="text-lg font-semibold">{RU.labels.signupsByEvents}</h2>
+          </CardHeader>
+          <CardContent className="h-72">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={signupsSeries}>
+                <XAxis dataKey="name" tick={false} />
+                <YAxis tick={{ fontSize: 12 }} />
+                <Tooltip />
+                <Bar dataKey="value" fill="#0ea5e9" radius={[6, 6, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
+      </div>
 
-      <EventFormModal
-        open={eventModalOpen}
-        onClose={() => setEventModalOpen(false)}
-        onSubmit={handleSaveEvent}
-        initialData={editingEvent}
-        error={actionError}
-      />
-
-      <EventModal
-        event={selectedEvent}
-        onClose={() => setSelectedEvent(null)}
-        onEdit={() => {
-          setSelectedEvent(null);
-          openEventModal(selectedEvent);
-        }}
-        onDelete={() => handleDeleteEvent(selectedEvent)}
-      />
-
-      <footer className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 p-4 z-40">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center space-x-6">
-            <span className="text-sm text-gray-500">© 2026 Renata Promotion</span>
-            <div className="flex items-center space-x-4">
-              <div className="flex items-center space-x-2">
-                <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                <span className="text-sm text-gray-600">AI Mimo</span>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <Card className="lg:col-span-2">
+          <CardHeader>
+            <h2 className="text-lg font-semibold">{RU.labels.recentActivity}</h2>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {recentPayments.map((payment) => (
+              <div key={payment.id} className="flex items-center justify-between text-sm">
+                <span className="text-slate-700">
+                  {RU.labels.payment} {payment.client_name || RU.messages.emDash} · {payment.event_title || RU.labels.noEvent}
+                </span>
+                <span className="text-slate-500">{formatCurrencyRub(payment.amount || 0)}</span>
               </div>
-              <div className="flex items-center space-x-2">
-                <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                <span className="text-sm text-gray-600">YooKassa</span>
+            ))}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <h2 className="text-lg font-semibold">{RU.labels.botActivity}</h2>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {recentClients.map((client) => (
+              <div key={client.id} className="flex items-center justify-between text-sm">
+                <span className="text-slate-700">{client.name}</span>
+                <span className="text-slate-500">{client.lastActivity || RU.messages.emDash}</span>
               </div>
-              <div className="flex items-center space-x-2">
-                <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                <span className="text-sm text-gray-600">Telegram Bot</span>
-              </div>
-              <div className="flex items-center space-x-2">
-                <div className="w-2 h-2 bg-yellow-500 rounded-full"></div>
-                <span className="text-sm text-gray-600">GetCourse (скоро)</span>
-              </div>
-            </div>
+            ))}
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card>
+        <CardHeader className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold">{RU.labels.getcourseWidget}</h2>
+          <span className="text-sm text-slate-500">{getcourseSummary?.status || RU.statuses.disabled}</span>
+        </CardHeader>
+        <CardContent className="grid grid-cols-1 md:grid-cols-4 gap-3 text-sm text-slate-700">
+          <div>{RU.labels.getcourseCourses}: {getcourseSummary?.counts?.courses ?? 0}</div>
+          <div>{RU.labels.getcourseProducts}: {getcourseSummary?.counts?.products ?? 0}</div>
+          <div>{RU.labels.getcourseEvents}: {getcourseSummary?.counts?.events ?? 0}</div>
+          <div>{RU.labels.getcourseCatalogItems}: {getcourseSummary?.counts?.catalog_items ?? 0}</div>
+          <div>
+            {RU.labels.getcourseLastSync}:{" "}
+            {getcourseSummary?.lastSyncAt
+              ? new Intl.DateTimeFormat("ru-RU", { dateStyle: "short", timeStyle: "short" }).format(new Date(getcourseSummary.lastSyncAt))
+              : RU.messages.notSet}
           </div>
+          <div>{RU.labels.getcourseCreated}: {getcourseSummary?.importedEvents?.created ?? getcourseSummary?.imported?.created ?? getcourseSummary?.counts?.created ?? 0}</div>
+          <div>{RU.labels.getcourseUpdated}: {getcourseSummary?.importedEvents?.updated ?? getcourseSummary?.imported?.updated ?? getcourseSummary?.counts?.updated ?? 0}</div>
+          <div>{RU.labels.getcourseSkipped}: {getcourseSummary?.importedEvents?.skipped ?? getcourseSummary?.imported?.skipped ?? getcourseSummary?.counts?.skipped ?? 0}</div>
+          <div>{RU.labels.getcourseNoDate}: {getcourseSummary?.importedEvents?.no_date ?? getcourseSummary?.imported?.no_date ?? getcourseSummary?.counts?.no_date ?? 0}</div>
+          <div>{RU.labels.getcourseCreated} ({RU.labels.getcourseImportedCatalog}): {getcourseSummary?.importedCatalog?.created ?? 0}</div>
+          <div>{RU.labels.getcourseUpdated} ({RU.labels.getcourseImportedCatalog}): {getcourseSummary?.importedCatalog?.updated ?? 0}</div>
+          <div>{RU.labels.getcourseSkipped} ({RU.labels.getcourseImportedCatalog}): {getcourseSummary?.importedCatalog?.skipped ?? 0}</div>
+        </CardContent>
+      </Card>
 
-          <div className="flex items-center space-x-4">
-            <span className="text-sm text-gray-500">v1.0.0</span>
-            <button className="text-sm text-indigo-600 hover:text-indigo-800 flex items-center" type="button">
-              <ExternalLink className="h-4 w-4 mr-1" />
-              Документация
-            </button>
-          </div>
-        </div>
-      </footer>
-
-      {(showLeftPanel || showBottomPanel) && (
-        <div
-          className="fixed inset-0 bg-black bg-opacity-25 z-40"
-          onClick={() => {
-            setShowLeftPanel(false);
-            setShowBottomPanel(false);
-          }}
-        />
-      )}
+      <Card>
+        <CardHeader>
+          <h2 className="text-lg font-semibold">{RU.labels.dashboardCatalogTitle}</h2>
+          <p className="text-sm text-slate-500">{RU.labels.dashboardCatalogHint}</p>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {topCatalogItems.length === 0 ? (
+            <div className="text-sm text-slate-500">{RU.labels.catalogEmpty}</div>
+          ) : (
+            topCatalogItems.map((item) => (
+              <div key={item.id} className="flex items-center justify-between gap-3 text-sm">
+                <div>
+                  <div className="font-medium text-slate-900">{item.title}</div>
+                  <div className="text-slate-500">{item.price ? formatCurrencyRub(item.price) : RU.messages.notSet}</div>
+                </div>
+                {item.link_getcourse ? (
+                  <a
+                    href={item.link_getcourse}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-indigo-600 hover:text-indigo-700"
+                  >
+                    {RU.buttons.open}
+                  </a>
+                ) : (
+                  <span className="text-slate-400">{RU.messages.notSet}</span>
+                )}
+              </div>
+            ))
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

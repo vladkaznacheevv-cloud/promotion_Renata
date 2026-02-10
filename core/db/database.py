@@ -60,6 +60,8 @@ def init_db() -> None:
         echo=False,
         future=True,
         connect_args=connect_args,
+        pool_pre_ping=True,
+        pool_recycle=1800,
     )
     async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 

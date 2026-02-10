@@ -3,6 +3,9 @@ from core.users.models import User
 from core.consultations.models import Consultation, UserConsultation
 from core.events.models import Event, UserEvent
 from core.payments.models import Payment
+from core.crm.models import CRMUserActivity, IntegrationState
+from core.auth.models import AdminUser
+from core.catalog.models import CatalogItem
 
 __all__ = [
     "Base",
@@ -12,4 +15,8 @@ __all__ = [
     "Event",
     "UserEvent",
     "Payment",
+    "CRMUserActivity",
+    "IntegrationState",
+    "AdminUser",
+    "CatalogItem",
 ]

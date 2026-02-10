@@ -8,12 +8,16 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "smoke:tailwind": "node scripts/smoke-tailwind.mjs"
+    "smoke:tailwind": "node scripts/smoke-tailwind.mjs",
+    "smoke:integrations": "node scripts/smoke-integrations.mjs",
+    "smoke:catalog": "node scripts/smoke-catalog.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.562.0",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "react-router-dom": "^6.26.2",
+    "recharts": "^2.12.7"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",

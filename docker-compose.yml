@@ -15,21 +15,30 @@ services:
   bot:
     build: .
     env_file: .env
-    depends_on:
-      - db
     environment:
-      DATABASE_URL: postgresql+asyncpg://user:password@db:5432/psych_project
+      BOT_LOCK_PATH: "${BOT_LOCK_PATH:-/tmp/renata_bot.lock}"
+      PYTHONIOENCODING: "utf-8"
+      LANG: "C.UTF-8"
+      LC_ALL: "C.UTF-8"
 
   web:
     build: .
     command: uvicorn core.main:app --host 0.0.0.0 --port 8000
     env_file: .env
-    depends_on:
-      - db
     ports:
       - "8000:8000"
-    environment:
-      DATABASE_URL: postgresql+asyncpg://user:password@db:5432/psych_project
+
+  frontend:
+    build:
+      context: ./crm_web/admin-panel
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: /api
+        VITE_DEV_MOCKS: "false"
+    depends_on:
+      - web
+    ports:
+      - "80:80"
 
 volumes:
   postgres_data:
