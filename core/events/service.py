@@ -53,6 +53,7 @@ class EventService:
         starts_at: Optional[datetime] = None,
         ends_at: Optional[datetime] = None,
         location: Optional[str] = None,
+        link_getcourse: Optional[str] = None,
         price: Optional[float] = None,
         capacity: Optional[int] = None,
         is_active: bool = True,
@@ -63,6 +64,7 @@ class EventService:
             starts_at=starts_at,
             ends_at=ends_at,
             location=location,
+            link_getcourse=link_getcourse,
             price=price,
             capacity=capacity,
             is_active=is_active,
@@ -101,8 +103,8 @@ class EventService:
         status: str = "registered",
     ) -> UserEvent:
         """
-        Регистрирует пользователя на событие.
-        Если уже есть запись — просто обновит status.
+        Р РµРіРёСЃС‚СЂРёСЂСѓРµС‚ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ РЅР° СЃРѕР±С‹С‚РёРµ.
+        Р•СЃР»Рё СѓР¶Рµ РµСЃС‚СЊ Р·Р°РїРёСЃСЊ вЂ” РїСЂРѕСЃС‚Рѕ РѕР±РЅРѕРІРёС‚ status.
         """
         res = await self.session.execute(
             select(UserEvent).where(
@@ -122,7 +124,7 @@ class EventService:
 
     async def unregister_user(self, user_id: int, event_id: int) -> bool:
         """
-        Мягкая отмена: ставим статус cancelled (а не удаляем строку).
+        РњСЏРіРєР°СЏ РѕС‚РјРµРЅР°: СЃС‚Р°РІРёРј СЃС‚Р°С‚СѓСЃ cancelled (Р° РЅРµ СѓРґР°Р»СЏРµРј СЃС‚СЂРѕРєСѓ).
         """
         res = await self.session.execute(
             select(UserEvent).where(
@@ -146,6 +148,18 @@ class EventService:
         )
         return list(res.scalars().all())
 
+    async def get_user_event(self, user_id: int, event_id: int) -> Optional[UserEvent]:
+        res = await self.session.execute(
+            select(UserEvent).where(
+                and_(UserEvent.user_id == user_id, UserEvent.event_id == event_id)
+            )
+        )
+        return res.scalar_one_or_none()
+
+    async def is_user_registered(self, user_id: int, event_id: int) -> bool:
+        link = await self.get_user_event(user_id, event_id)
+        return bool(link and link.status != "cancelled")
+
     # -------------------------
     # Convenience
     # -------------------------
@@ -154,3 +168,6 @@ class EventService:
 
     async def rollback(self) -> None:
         await self.session.rollback()
+
+
+

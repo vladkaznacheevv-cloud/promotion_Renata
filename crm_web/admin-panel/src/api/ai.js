@@ -1,5 +1,14 @@
-import { apiGet } from "./http";
+﻿import { apiGet, shouldFallback, markDevFallbackUsed } from "./http";
+import * as devStore from "./devStore";
 
-export function getAiStats() {
-  return apiGet("/api/crm/ai/stats");
+export async function getAiStats() {
+  try {
+    return await apiGet("/api/crm/ai/stats");
+  } catch (error) {
+    if (shouldFallback(error)) {
+      markDevFallbackUsed();
+      return devStore.getAiStats();
+    }
+    throw error;
+  }
 }

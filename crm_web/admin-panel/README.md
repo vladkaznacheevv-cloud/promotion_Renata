@@ -13,6 +13,29 @@ Docs: http://127.0.0.1:8000/docs
 
 ---
 
+## Auth (CRM)
+
+Создай администратора (из корня репозитория):
+
+```bash
+set ADMIN_EMAIL=admin@example.com
+set ADMIN_PASSWORD=changeme
+set ADMIN_ROLE=admin
+python scripts/create_admin_user.py
+```
+
+Токен хранится в localStorage, авторизация через Bearer JWT.
+
+# Telegram Bot (Polling)
+
+From repo root:
+
+```bash
+python telegram_bot/main.py
+```
+
+Polling mode: запускай только один экземпляр бота (иначе Telegram вернёт Conflict).
+
 # React + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
@@ -62,3 +85,32 @@ python scripts/seed_crm.py
 
 This creates tables (if missing) and inserts 2 demo clients + 2 events when the DB is empty.
 
+## Manual checklist (Bot → DB → CRM)
+
+1) Запусти backend: `uvicorn core.main:app --reload --host 127.0.0.1 --port 8000`
+2) Запусти бота: `python telegram_bot/main.py`
+3) Напиши боту `/start` и любое сообщение
+4) Проверь, что пользователь появился/обновился:
+   - API: `http://127.0.0.1:8000/api/crm/clients`
+   - CRM UI: `http://127.0.0.1:5173`
+
+
+## E2E smoke checklist (CRM events)
+
+1. Авторизуйтесь под `admin` или `manager`.
+2. Откройте `/events`.
+3. Нажмите `Добавить мероприятие`.
+4. Заполните обязательные поля: `Название`, `Описание`, `Дата`.
+5. Нажмите `Сохранить`.
+6. Убедитесь, что запись появилась в таблице мероприятий.
+7. Нажмите `Изменить` у созданного мероприятия.
+8. Измените `Название` и `Описание`, затем нажмите `Сохранить`.
+9. Убедитесь, что изменения отобразились в таблице и в карточке мероприятия.
+10. Откройте DevTools -> `Network` и проверьте:
+11. `POST /api/crm/events` возвращает `200` и JSON-объект созданного мероприятия.
+12. `PATCH /api/crm/events/{id}` возвращает `200` и JSON-объект обновленного мероприятия.
+
+Дополнительно:
+- Быстрое действие `Добавить клиента` ведет на `/clients?create=1` и открывает модалку клиента.
+- Быстрое действие `Создать мероприятие` ведет на `/events?create=1` и открывает модалку мероприятия.
+- Для роли `viewer` кнопки создания/редактирования скрыты.

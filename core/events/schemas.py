@@ -1,6 +1,7 @@
-from pydantic import BaseModel
 from datetime import datetime
 from typing import Optional
+
+from pydantic import BaseModel
 
 
 class EventCreate(BaseModel):
@@ -9,6 +10,7 @@ class EventCreate(BaseModel):
     starts_at: Optional[datetime] = None
     ends_at: Optional[datetime] = None
     location: Optional[str] = None
+    link_getcourse: Optional[str] = None
     price: Optional[float] = None
     capacity: Optional[int] = None
     is_active: bool = True
@@ -20,6 +22,7 @@ class EventUpdate(BaseModel):
     starts_at: Optional[datetime] = None
     ends_at: Optional[datetime] = None
     location: Optional[str] = None
+    link_getcourse: Optional[str] = None
     price: Optional[float] = None
     capacity: Optional[int] = None
     is_active: Optional[bool] = None
@@ -32,6 +35,7 @@ class EventResponse(BaseModel):
     starts_at: Optional[datetime]
     ends_at: Optional[datetime]
     location: Optional[str]
+    link_getcourse: Optional[str]
     price: Optional[float]
     capacity: Optional[int]
     is_active: bool

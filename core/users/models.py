@@ -31,6 +31,24 @@ class User(Base):
     phone = Column(Text, nullable=True)
     email = Column(String(100), nullable=True)
 
+    # CRM funnel stage
+    CRM_STAGE_NEW = "NEW"
+    CRM_STAGE_ENGAGED = "ENGAGED"
+    CRM_STAGE_READY_TO_PAY = "READY_TO_PAY"
+    CRM_STAGE_MANAGER_FOLLOWUP = "MANAGER_FOLLOWUP"
+    CRM_STAGE_PAID = "PAID"
+    CRM_STAGE_INACTIVE = "INACTIVE"
+    CRM_STAGE_CHOICES = [
+        CRM_STAGE_NEW,
+        CRM_STAGE_ENGAGED,
+        CRM_STAGE_READY_TO_PAY,
+        CRM_STAGE_MANAGER_FOLLOWUP,
+        CRM_STAGE_PAID,
+        CRM_STAGE_INACTIVE,
+    ]
+    crm_stage = Column(String(32), nullable=False, server_default=CRM_STAGE_NEW, index=True)
+    last_activity_at = Column(DateTime(timezone=True), nullable=True)
+
     # VIP
     is_vip = Column(Boolean, nullable=False, server_default="false")
     vip_until = Column(DateTime(timezone=True), nullable=True)

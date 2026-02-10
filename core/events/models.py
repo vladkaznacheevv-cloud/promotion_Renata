@@ -1,4 +1,4 @@
-from sqlalchemy import (
+﻿from sqlalchemy import (
     Column,
     BigInteger,
     Integer,
@@ -27,7 +27,12 @@ class Event(Base):
 
     location = Column(Text, nullable=True)
 
-    # В БД numeric (фактически numeric(12,2) — если так создавал)
+    link_getcourse = Column(Text, nullable=True)
+    external_source = Column(Text, nullable=True, index=True)
+    external_id = Column(Text, nullable=True, index=True)
+    external_updated_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Р’ Р‘Р” numeric (С„Р°РєС‚РёС‡РµСЃРєРё numeric(12,2) вЂ” РµСЃР»Рё С‚Р°Рє СЃРѕР·РґР°РІР°Р»)
     price = Column(Numeric(12, 2), nullable=True)
 
     capacity = Column(Integer, nullable=True)
@@ -65,7 +70,7 @@ class UserEvent(Base):
         index=True,
     )
 
-    # В БД: text + DEFAULT 'registered'
+    # Р’ Р‘Р”: text + DEFAULT 'registered'
     status = Column(Text, nullable=False, server_default="registered")
 
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
@@ -73,3 +78,4 @@ class UserEvent(Base):
 
     user = relationship("User", back_populates="events")
     event = relationship("Event", back_populates="user_links")
+
