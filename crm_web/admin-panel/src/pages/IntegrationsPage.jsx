@@ -1,12 +1,10 @@
-﻿import { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 
-import { getGetCourseSummary, syncGetCourse } from "../api/integrations";
-import { useAuth } from "../auth/AuthContext";
+import { getGetCourseEvents, getGetCourseSummary } from "../api/integrations";
 import { RU, formatDateRu } from "../i18n/ru";
 import ErrorBanner from "../components/ErrorBanner";
-import Button from "../components/ui/Button";
 import Badge from "../components/ui/Badge";
-import { Card, CardHeader, CardContent } from "../components/ui/Card";
+import { Card, CardContent, CardHeader } from "../components/ui/Card";
 
 function statusToLabel(status) {
   if (status === "OK") return RU.statuses.ok;
@@ -15,20 +13,17 @@ function statusToLabel(status) {
 }
 
 export default function IntegrationsPage() {
-  const { currentUser } = useAuth();
-  const role = currentUser?.role || "viewer";
-  const isAdmin = role === "admin";
-
   const [summary, setSummary] = useState(null);
+  const [eventsData, setEventsData] = useState({ items: [], total: 0 });
   const [loading, setLoading] = useState(true);
-  const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState("");
 
   const load = async () => {
     try {
       setError("");
-      const data = await getGetCourseSummary();
-      setSummary(data);
+      const [summaryData, events] = await Promise.all([getGetCourseSummary(), getGetCourseEvents(50)]);
+      setSummary(summaryData);
+      setEventsData(events || { items: [], total: 0 });
     } catch (err) {
       setError(err?.message || RU.messages.integrationsLoadError);
     } finally {
@@ -40,19 +35,6 @@ export default function IntegrationsPage() {
     void load();
   }, []);
 
-  const handleSync = async () => {
-    try {
-      setSyncing(true);
-      setError("");
-      await syncGetCourse();
-      await load();
-    } catch (err) {
-      setError(err?.message || RU.messages.integrationsSyncError);
-    } finally {
-      setSyncing(false);
-    }
-  };
-
   return (
     <div className="space-y-6">
       {error && <ErrorBanner message={error} variant="error" />}
@@ -62,53 +44,72 @@ export default function IntegrationsPage() {
             <h2 className="text-lg font-semibold text-slate-900">{RU.labels.integrationsTitle}</h2>
             <p className="text-sm text-slate-500">{RU.labels.integrationsSubtitle}</p>
           </div>
-          {isAdmin && (
-            <Button onClick={handleSync} disabled={syncing || loading}>
-              {syncing ? `${RU.buttons.sync}...` : RU.buttons.sync}
-            </Button>
-          )}
         </CardHeader>
         <CardContent>
           {loading || !summary ? (
             <p className="text-sm text-slate-500">{RU.messages.loading}</p>
           ) : (
-            <div className="space-y-3">
+            <div className="space-y-4">
               <div className="flex items-center justify-between">
                 <div className="font-medium text-slate-900">{RU.labels.getcourseWidget}</div>
                 <Badge variant={summary.status === "OK" ? "active" : "default"}>
                   {statusToLabel(summary.status)}
                 </Badge>
               </div>
+
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm text-slate-700">
-                <div>{RU.labels.getcourseCourses}: {summary.counts?.courses ?? 0}</div>
-                <div>{RU.labels.getcourseProducts}: {summary.counts?.products ?? 0}</div>
+                <div>{RU.labels.getcourseEvents24h}: {summary.events_last_24h ?? 0}</div>
+                <div>{RU.labels.getcourseEvents7d}: {summary.events_last_7d ?? 0}</div>
                 <div>{RU.labels.getcourseEvents}: {summary.counts?.events ?? 0}</div>
               </div>
+
               <div className="text-sm text-slate-700">
-                {RU.labels.getcourseCatalogItems}: {summary.counts?.catalog_items ?? 0}
+                {RU.labels.getcourseLastEventAt}:{" "}
+                {summary.last_event_at
+                  ? formatDateRu(summary.last_event_at, { dateStyle: "medium", timeStyle: "short" })
+                  : RU.messages.notSet}
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-sm text-slate-700">
-                <div>{RU.labels.getcourseFetched}: {summary.fetched ?? summary.counts?.fetched ?? 0}</div>
-                <div>{RU.labels.getcourseCreated}: {summary.importedEvents?.created ?? summary.imported?.created ?? summary.counts?.created ?? 0}</div>
-                <div>{RU.labels.getcourseUpdated}: {summary.importedEvents?.updated ?? summary.imported?.updated ?? summary.counts?.updated ?? 0}</div>
-                <div>{RU.labels.getcourseSkipped}: {summary.importedEvents?.skipped ?? summary.imported?.skipped ?? summary.counts?.skipped ?? 0}</div>
-              </div>
-              <div className="text-sm text-slate-600">
-                {RU.labels.getcourseNoDate}: {summary.importedEvents?.no_date ?? summary.imported?.no_date ?? summary.counts?.no_date ?? 0}
-              </div>
-              <div className="text-sm font-medium text-slate-700">{RU.labels.getcourseImportedCatalog}</div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm text-slate-700">
-                <div>{RU.labels.getcourseCreated}: {summary.importedCatalog?.created ?? 0}</div>
-                <div>{RU.labels.getcourseUpdated}: {summary.importedCatalog?.updated ?? 0}</div>
-                <div>{RU.labels.getcourseSkipped}: {summary.importedCatalog?.skipped ?? 0}</div>
-              </div>
-              <div className="text-sm text-slate-600">
-                {RU.labels.getcourseLastSync}: {summary.lastSyncAt ? formatDateRu(summary.lastSyncAt, { dateStyle: "medium", timeStyle: "short" }) : RU.messages.notSet}
-              </div>
-              <div className="text-sm text-slate-600">
-                {RU.labels.getcourseSource}: {summary.sourceUrl || RU.messages.notSet}
-              </div>
+
               {summary.lastError && <div className="text-sm text-rose-600">{summary.lastError}</div>}
+
+              <div>
+                <div className="text-sm font-medium text-slate-800 mb-2">{RU.labels.getcourseLatestEvents}</div>
+                <div className="overflow-x-auto border border-slate-200 rounded-lg">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-50 text-slate-600">
+                      <tr>
+                        <th className="text-left px-3 py-2">Дата</th>
+                        <th className="text-left px-3 py-2">Тип</th>
+                        <th className="text-left px-3 py-2">Email</th>
+                        <th className="text-left px-3 py-2">Сделка</th>
+                        <th className="text-left px-3 py-2">Сумма</th>
+                        <th className="text-left px-3 py-2">Статус</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(eventsData.items || []).map((item) => (
+                        <tr key={item.id} className="border-t border-slate-100">
+                          <td className="px-3 py-2">
+                            {item.received_at
+                              ? formatDateRu(item.received_at, { dateStyle: "short", timeStyle: "short" })
+                              : "—"}
+                          </td>
+                          <td className="px-3 py-2">{item.event_type || "unknown"}</td>
+                          <td className="px-3 py-2">{item.user_email || "—"}</td>
+                          <td className="px-3 py-2">{item.deal_number || "—"}</td>
+                          <td className="px-3 py-2">{item.amount != null ? `${item.amount} ${item.currency || ""}` : "—"}</td>
+                          <td className="px-3 py-2">{item.status || "—"}</td>
+                        </tr>
+                      ))}
+                      {(!eventsData.items || eventsData.items.length === 0) && (
+                        <tr>
+                          <td className="px-3 py-3 text-slate-500" colSpan={6}>Нет событий</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             </div>
           )}
         </CardContent>

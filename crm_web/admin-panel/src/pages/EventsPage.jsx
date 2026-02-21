@@ -4,6 +4,7 @@ import { useSearchParams } from "react-router-dom";
 import { createEvent, deleteEvent, getEvents, updateEvent } from "../api/events";
 import { useAuth } from "../auth/AuthContext";
 import { RU, formatCurrencyRub, formatDateRu, withTitle } from "../i18n/ru";
+import { renderText } from "../utils/renderText";
 import EmptyState from "../components/EmptyState";
 import EventFormModal from "../components/EventFormModal";
 import EventModal from "../components/EventModal";
@@ -14,7 +15,12 @@ import { Card, CardContent, CardHeader } from "../components/ui/Card";
 import Input from "../components/ui/Input";
 import { Table, TBody, TD, TH, THead, TR } from "../components/ui/Table";
 
-const statusLabel = (value) => (value === "finished" ? RU.statuses.finished : RU.statuses.active);
+const isOnlineConsultation = (event) => !event?.date;
+
+const statusLabel = (event) =>
+  (isOnlineConsultation(event) || event?.status !== "finished") ? RU.statuses.active : RU.statuses.finished;
+
+const eventTypeLabel = (event) => (isOnlineConsultation(event) ? RU.labels.eventTypeOnlineConsultation : RU.labels.eventTypeEvent);
 
 export default function EventsPage() {
   const { currentUser } = useAuth();
@@ -70,7 +76,8 @@ export default function EventsPage() {
   const filteredEvents = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     return events.filter((event) => {
-      if (statusFilter !== "all" && event.status !== statusFilter) return false;
+      const normalizedStatus = isOnlineConsultation(event) ? "active" : event.status;
+      if (statusFilter !== "all" && normalizedStatus !== statusFilter) return false;
       if (!normalizedQuery) return true;
 
       const haystack = [event.title, event.description, event.location]
@@ -189,6 +196,7 @@ export default function EventsPage() {
             <THead>
               <TR>
                 <TH>{RU.labels.name}</TH>
+                <TH>{RU.labels.eventType}</TH>
                 <TH>{RU.labels.status}</TH>
                 <TH>{RU.labels.date}</TH>
                 <TH>{RU.labels.price}</TH>
@@ -202,13 +210,24 @@ export default function EventsPage() {
                   <TD>
                     <button type="button" className="text-left" onClick={() => setSelectedEvent(event)}>
                       <div className="font-medium text-slate-900">{event.title}</div>
-                      <div className="text-xs text-slate-500 line-clamp-2">{event.description || RU.messages.notSet}</div>
+                      <div className="text-xs text-slate-500 line-clamp-2">
+                        {renderText(event.description) || RU.messages.notSet}
+                      </div>
                     </button>
                   </TD>
                   <TD>
-                    <Badge variant={event.status === "active" ? "active" : "finished"}>{statusLabel(event.status)}</Badge>
+                    {eventTypeLabel(event)}
                   </TD>
-                  <TD>{formatDateRu(event.date, { day: "2-digit", month: "2-digit", year: "numeric" })}</TD>
+                  <TD>
+                    <Badge variant={statusLabel(event) === RU.statuses.active ? "active" : "finished"}>
+                      {statusLabel(event)}
+                    </Badge>
+                  </TD>
+                  <TD>
+                    {isOnlineConsultation(event)
+                      ? RU.labels.rollingEventDate
+                      : formatDateRu(event.date, { day: "2-digit", month: "2-digit", year: "numeric" })}
+                  </TD>
                   <TD>{formatCurrencyRub(event.price)}</TD>
                   <TD>{event.location || RU.messages.notSet}</TD>
                   <TD className="text-right">

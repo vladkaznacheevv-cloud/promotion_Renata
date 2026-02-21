@@ -3,13 +3,11 @@ import DashboardPage from "./pages/DashboardPage";
 import LoginPage from "./pages/LoginPage";
 import ClientsPage from "./pages/ClientsPage";
 import EventsPage from "./pages/EventsPage";
-import CatalogPage from "./pages/CatalogPage";
 import RegistrationsPage from "./pages/RegistrationsPage";
 import PaymentsPage from "./pages/PaymentsPage";
 import AnalyticsPage from "./pages/AnalyticsPage";
 import BotPage from "./pages/BotPage";
 import IntegrationsPage from "./pages/IntegrationsPage";
-import SettingsPage from "./pages/SettingsPage";
 import AppLayout from "./layout/AppLayout";
 import { AuthProvider, useAuth } from "./auth/AuthContext";
 
@@ -42,7 +40,6 @@ function AppContent() {
           <Route path="/" element={<DashboardPage />} />
           <Route path="/clients" element={<ClientsPage />} />
           <Route path="/events" element={<EventsPage />} />
-          <Route path="/catalog" element={<CatalogPage />} />
           <Route path="/registrations" element={<RegistrationsPage />} />
           <Route
             path="/payments"
@@ -57,14 +54,6 @@ function AppContent() {
           <Route
             path="/integrations"
             element={<IntegrationsPage />}
-          />
-          <Route
-            path="/settings"
-            element={
-              <RequireRole role="admin">
-                <SettingsPage />
-              </RequireRole>
-            }
           />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import date, datetime
 from typing import List, Optional, Literal
@@ -209,11 +209,14 @@ class GetCourseCountsOut(BaseModel):
     products: int = 0
     events: int = 0
     catalog_items: int = 0
+    users: int = 0
+    payments: int = 0
     fetched: int = 0
     created: int = 0
     updated: int = 0
     skipped: int = 0
     no_date: int = 0
+    bad_url: int = 0
 
 
 class GetCourseImportedOut(BaseModel):
@@ -221,25 +224,79 @@ class GetCourseImportedOut(BaseModel):
     updated: int = 0
     skipped: int = 0
     no_date: int = 0
+    bad_url: int = 0
 
 
 class GetCourseImportedCatalogOut(BaseModel):
     created: int = 0
     updated: int = 0
     skipped: int = 0
+    bad_url: int = 0
 
 
 class GetCourseSummaryOut(BaseModel):
     enabled: bool
+    has_key: Optional[bool] = None
+    base_url: Optional[str] = None
     status: Literal["OK", "ERROR", "DISABLED"]
-    lastSyncAt: Optional[str]
+    lastSyncAt: Optional[str] = None
     last_sync_at: Optional[str] = None
+    last_event_at: Optional[str] = None
+    events_last_24h: Optional[int] = 0
+    events_last_7d: Optional[int] = 0
     counts: GetCourseCountsOut
     sourceUrl: Optional[str] = None
     lastError: Optional[str] = None
+    last_error: Optional[str] = None
     ok: Optional[bool] = None
     fetched: Optional[int] = None
     imported: Optional[GetCourseImportedOut] = None
     importedEvents: Optional[GetCourseImportedOut] = None
     importedCatalog: Optional[GetCourseImportedCatalogOut] = None
+    importedUsers: Optional[GetCourseImportedCatalogOut] = None
+    importedPayments: Optional[GetCourseImportedCatalogOut] = None
+    syncAtByResource: Optional[dict] = None
+    unsupportedResources: Optional[list[str]] = None
 
+
+class GetCourseResourceStatusOut(BaseModel):
+    ok: bool
+    status_code: Optional[int] = None
+    error_kind: Optional[str] = None
+
+
+class GetCourseDiagnoseOut(BaseModel):
+    enabled: bool
+    has_key: bool
+    base_url: Optional[str] = None
+    resourceStatuses: dict[str, GetCourseResourceStatusOut]
+    unsupportedResources: list[str]
+    fatalAuthError: bool
+    successfulResources: list[str]
+
+
+class GetCourseWebhookEventOut(BaseModel):
+    id: int
+    received_at: datetime
+    event_type: str
+    user_email: Optional[str] = None
+    deal_number: Optional[str] = None
+    amount: Optional[float] = None
+    currency: Optional[str] = None
+    status: Optional[str] = None
+
+
+class GetCourseWebhookEventsOut(BaseModel):
+    items: list[GetCourseWebhookEventOut]
+    total: int
+
+
+class PrivateChannelInviteOut(BaseModel):
+    ok: bool = True
+    user_id: int
+    product: str = "private_channel"
+    status: Literal["pending", "paid", "revoked"]
+    token: Optional[str] = None
+    invite_url: Optional[str] = None
+    payment_url: Optional[str] = None
+    paid_at: Optional[datetime] = None

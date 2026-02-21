@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { getCatalog } from "../api/catalog";
 import { RU, formatCurrencyRub, formatDateRu } from "../i18n/ru";
+import { renderText } from "../utils/renderText";
 import EmptyState from "../components/EmptyState";
 import SkeletonCard from "../components/SkeletonCard";
 import Badge from "../components/ui/Badge";
@@ -29,7 +30,7 @@ export default function CatalogPage() {
       try {
         setLoading(true);
         setError("");
-        const data = await getCatalog({ limit: 200 });
+        const data = await getCatalog({ limit: 50, offset: 0 });
         if (!active) return;
         setItems(data.items ?? []);
       } catch (err) {
@@ -110,7 +111,9 @@ export default function CatalogPage() {
                 <TR key={item.id}>
                   <TD>
                     <div className="font-medium text-slate-900">{item.title}</div>
-                    <div className="line-clamp-2 text-xs text-slate-500">{item.description || RU.messages.notSet}</div>
+                    <div className="line-clamp-2 text-xs text-slate-500">
+                      {renderText(item.description) || RU.messages.notSet}
+                    </div>
                   </TD>
                   <TD>{typeLabel(item.item_type)}</TD>
                   <TD>{item.price ? formatCurrencyRub(item.price) : RU.messages.notSet}</TD>

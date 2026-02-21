@@ -10,7 +10,9 @@
     "preview": "vite preview",
     "smoke:tailwind": "node scripts/smoke-tailwind.mjs",
     "smoke:integrations": "node scripts/smoke-integrations.mjs",
-    "smoke:catalog": "node scripts/smoke-catalog.mjs"
+    "smoke:catalog": "node scripts/smoke-catalog.mjs",
+    "smoke:dropdown": "node scripts/smoke-dropdown.mjs",
+    "smoke:mvp": "node scripts/smoke-mvp.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.562.0",

@@ -50,7 +50,7 @@ export function AuthProvider({ children }) {
 
     (async () => {
       if (DEV_MOCKS) {
-        if (!token || !currentUser) {
+        if (!token || !localStorage.getItem(AUTH_USER_KEY)) {
           saveAuth("dev", { id: 0, email: "dev@local", role: "admin" });
         }
         setLoading(false);
@@ -76,7 +76,7 @@ export function AuthProvider({ children }) {
     return () => {
       active = false;
     };
-  }, [token, currentUser, saveAuth, clearAuth]);
+  }, [token, saveAuth, clearAuth]);
 
   const value = useMemo(
     () => ({

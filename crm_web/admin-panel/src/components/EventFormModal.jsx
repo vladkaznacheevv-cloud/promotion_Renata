@@ -15,7 +15,7 @@ function validate(values) {
   if (!values.description.trim()) {
     errors.description = "Добавьте описание мероприятия.";
   }
-  if (!values.date) {
+  if (values.eventType !== "online_consultation" && !values.date) {
     errors.date = "Укажите дату мероприятия.";
   }
 
@@ -33,6 +33,7 @@ export default function EventFormModal({
   const [values, setValues] = useState({
     title: "",
     description: "",
+    eventType: "event",
     date: "",
     location: "",
     price: "",
@@ -46,6 +47,7 @@ export default function EventFormModal({
       setValues({
         title: initialData.title || "",
         description: initialData.description || "",
+        eventType: initialData.date ? "event" : "online_consultation",
         date: initialData.date || "",
         location: initialData.location || "",
         price: initialData.price ?? "",
@@ -56,6 +58,7 @@ export default function EventFormModal({
       setValues({
         title: "",
         description: "",
+        eventType: "event",
         date: "",
         location: "",
         price: "",
@@ -70,7 +73,14 @@ export default function EventFormModal({
   const hasErrors = Object.keys(errors).length > 0;
 
   const onFieldChange = (field, value) => {
-    setValues((prev) => ({ ...prev, [field]: value }));
+    setValues((prev) => {
+      const next = { ...prev, [field]: value };
+      if (field === "eventType" && value === "online_consultation") {
+        next.date = "";
+        next.status = "active";
+      }
+      return next;
+    });
   };
 
   const onFieldBlur = (field) => {
@@ -79,7 +89,11 @@ export default function EventFormModal({
 
   const handleSubmit = async (event) => {
     event.preventDefault();
-    setTouched({ title: true, description: true, date: true });
+    setTouched({
+      title: true,
+      description: true,
+      date: values.eventType !== "online_consultation",
+    });
 
     if (hasErrors || submitting) {
       return;
@@ -88,10 +102,10 @@ export default function EventFormModal({
     const payload = {
       title: values.title.trim(),
       description: values.description.trim(),
-      date: values.date,
+      date: values.eventType === "online_consultation" ? null : values.date,
       location: values.location.trim() || null,
       price: values.price === "" ? null : Number(values.price),
-      status: values.status,
+      status: values.eventType === "online_consultation" ? "active" : values.status,
       link_getcourse: values.link_getcourse.trim() || null,
     };
 
@@ -116,6 +130,18 @@ export default function EventFormModal({
     >
       <form id="event-form" className="space-y-4" onSubmit={handleSubmit}>
         {error && <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
+
+        <label className="block text-sm font-medium text-slate-700">
+          {RU.labels.eventType}
+          <select
+            className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500"
+            value={values.eventType}
+            onChange={(e) => onFieldChange("eventType", e.target.value)}
+          >
+            <option value="event">{RU.labels.eventTypeEvent}</option>
+            <option value="online_consultation">{RU.labels.eventTypeOnlineConsultation}</option>
+          </select>
+        </label>
 
         <label className="block text-sm font-medium text-slate-700">
           {RU.labels.name} *
@@ -144,15 +170,19 @@ export default function EventFormModal({
         </label>
 
         <label className="block text-sm font-medium text-slate-700">
-          {RU.labels.date} *
+          {RU.labels.date}{values.eventType !== "online_consultation" ? " *" : ""}
           <Input
             type="date"
             value={values.date}
             onChange={(e) => onFieldChange("date", e.target.value)}
             onBlur={() => onFieldBlur("date")}
-            required
+            required={values.eventType !== "online_consultation"}
+            disabled={values.eventType === "online_consultation"}
           />
           {touched.date && errors.date && <p className="mt-1 text-xs text-red-600">{errors.date}</p>}
+          {values.eventType === "online_consultation" && (
+            <p className="mt-1 text-xs text-slate-500">{RU.labels.eventDateOptionalHint}</p>
+          )}
         </label>
 
         <label className="block text-sm font-medium text-slate-700">

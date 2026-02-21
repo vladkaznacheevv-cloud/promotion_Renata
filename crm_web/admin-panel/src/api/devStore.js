@@ -201,36 +201,48 @@ const aiStats = {
   ],
 };
 
+let getcourseEvents = [
+  {
+    id: 1,
+    received_at: new Date(Date.now() - 1000 * 60 * 20).toISOString(),
+    event_type: "payment",
+    user_email: "test@example.com",
+    deal_number: "D-1",
+    amount: 100,
+    currency: "RUB",
+    status: "paid",
+  },
+];
+
 let getcourseState = {
   enabled: true,
+  has_key: false,
+  base_url: "https://renataminakova.getcourse.ru",
   status: "OK",
-  lastSyncAt: new Date().toISOString(),
-  last_sync_at: new Date().toISOString(),
+  sourceUrl: "https://renataminakova.getcourse.ru",
+  last_event_at: getcourseEvents[0].received_at,
+  events_last_24h: getcourseEvents.length,
+  events_last_7d: getcourseEvents.length,
   counts: {
-    courses: 3,
-    products: 3,
-    events: 3,
-    catalog_items: catalogItems.length,
-    fetched: 3,
-    created: 3,
+    courses: 0,
+    products: 0,
+    events: getcourseEvents.length,
+    catalog_items: 0,
+    users: 0,
+    payments: 0,
+    fetched: getcourseEvents.length,
+    created: 0,
     updated: 0,
     skipped: 0,
-    no_date: 1,
+    no_date: 0,
+    bad_url: 0,
   },
   ok: true,
-  fetched: 3,
-  imported: {
-    created: 3,
-    updated: 0,
-    skipped: 0,
-    no_date: 1,
-  },
-  importedCatalog: {
-    created: 2,
-    updated: 1,
-    skipped: 0,
-  },
-  sourceUrl: "https://getcourse.ru",
+  fetched: getcourseEvents.length,
+  imported: { created: 0, updated: 0, skipped: 0, no_date: 0, bad_url: 0 },
+  importedCatalog: { created: 0, updated: 0, skipped: 0, bad_url: 0 },
+  importedUsers: { created: 0, updated: 0, skipped: 0 },
+  importedPayments: { created: 0, updated: 0, skipped: 0 },
   lastError: null,
 };
 
@@ -463,11 +475,33 @@ export function getRevenueSummary() {
 }
 
 export function getGetCourseSummary() {
+  getcourseState = {
+    ...getcourseState,
+    last_event_at: getcourseEvents.length ? getcourseEvents[0].received_at : null,
+    events_last_24h: getcourseEvents.length,
+    events_last_7d: getcourseEvents.length,
+    counts: {
+      ...getcourseState.counts,
+      events: getcourseEvents.length,
+      fetched: getcourseEvents.length,
+    },
+  };
   return clone(getcourseState);
 }
 
+export function getGetCourseEvents(limit = 50) {
+  const rawLimit = typeof limit === "number" ? limit : 50;
+  const safeLimit = Math.max(1, Math.min(Math.trunc(rawLimit), 100));
+  const items = getcourseEvents.slice(0, safeLimit);
+  return { items: clone(items), total: getcourseEvents.length };
+}
+
 export function getCatalog(params = {}) {
-  const { type, search, limit = 20, offset = 0 } = params;
+  const rawLimit = typeof params.limit === "number" ? params.limit : 50;
+  const limit = Math.max(1, Math.min(Math.trunc(rawLimit), 100));
+  const rawOffset = typeof params.offset === "number" ? params.offset : 0;
+  const offset = Math.max(0, Math.trunc(rawOffset));
+  const { type, search } = params;
   let items = [...catalogItems];
 
   if (type && type !== "all") {
@@ -493,18 +527,7 @@ export function getCatalogItem(id) {
 }
 
 export function syncGetCourse() {
-  getcourseState = {
-    ...getcourseState,
-    status: "OK",
-    lastSyncAt: new Date().toISOString(),
-    last_sync_at: new Date().toISOString(),
-    lastError: null,
-    ok: true,
-    counts: {
-      ...getcourseState.counts,
-      catalog_items: catalogItems.length,
-    },
-  };
+  getcourseState = { ...getcourseState, status: "OK", lastError: null, ok: true };
   return clone(getcourseState);
 }
 

@@ -114,3 +114,14 @@ This creates tables (if missing) and inserts 2 demo clients + 2 events when the 
 - Быстрое действие `Добавить клиента` ведет на `/clients?create=1` и открывает модалку клиента.
 - Быстрое действие `Создать мероприятие` ведет на `/events?create=1` и открывает модалку мероприятия.
 - Для роли `viewer` кнопки создания/редактирования скрыты.
+
+## Frontend smoke scripts
+
+Из каталога `crm_web/admin-panel`:
+
+```bash
+npm run smoke:mvp
+npm run smoke:integrations
+npm run smoke:catalog
+npm run smoke:dropdown
+```

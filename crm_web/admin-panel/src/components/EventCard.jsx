@@ -1,6 +1,7 @@
 ﻿import { Users, Edit, Trash2 } from "lucide-react";
 
 import { RU, formatCurrencyRub, formatDateRu } from "../i18n/ru";
+import { renderText } from "../utils/renderText";
 import Badge from "./ui/Badge";
 
 export default function EventCard({
@@ -32,7 +33,7 @@ export default function EventCard({
           {event.status === "active" ? RU.statuses.active : RU.statuses.finished}
         </Badge>
       </div>
-      <p className="text-sm text-slate-500 mb-2">{event.description || RU.messages.emDash}</p>
+      <p className="text-sm text-slate-500 mb-2">{renderText(event.description) || RU.messages.emDash}</p>
       <div className="flex justify-between text-sm">
         <span className="text-slate-600">{Number.isFinite(attendees) ? attendees : 0} {RU.labels.eventParticipants.toLowerCase()}</span>
         <span className="text-sm font-semibold text-slate-900">{formatCurrencyRub(event.revenue)}</span>

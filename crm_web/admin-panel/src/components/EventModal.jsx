@@ -1,6 +1,7 @@
 ﻿import { Edit, Trash2 } from "lucide-react";
 
 import { RU, formatCurrencyRub, formatDateRu } from "../i18n/ru";
+import { renderText } from "../utils/renderText";
 import Badge from "./ui/Badge";
 import Button from "./ui/Button";
 import Modal from "./ui/Modal";
@@ -14,6 +15,8 @@ const isValidUrl = (value) => {
     return false;
   }
 };
+
+const isOnlineConsultation = (event) => !event?.date;
 
 export default function EventModal({
   event,
@@ -50,8 +53,8 @@ export default function EventModal({
       title={
         <div className="flex items-center gap-3">
           <span>{event.title}</span>
-          <Badge variant={event.status === "active" ? "active" : "finished"}>
-            {event.status === "active" ? RU.statuses.active : RU.statuses.finished}
+          <Badge variant={isOnlineConsultation(event) || event.status === "active" ? "active" : "finished"}>
+            {isOnlineConsultation(event) || event.status === "active" ? RU.statuses.active : RU.statuses.finished}
           </Badge>
         </div>
       }
@@ -60,9 +63,17 @@ export default function EventModal({
       <div className="space-y-4">
         <div className="grid grid-cols-2 gap-4">
           <div>
+            <p className="text-sm text-slate-500">{RU.labels.eventType}</p>
+            <p className="text-base font-semibold text-slate-900">
+              {isOnlineConsultation(event) ? RU.labels.eventTypeOnlineConsultation : RU.labels.eventTypeEvent}
+            </p>
+          </div>
+          <div>
             <p className="text-sm text-slate-500">{RU.labels.date}</p>
             <p className="text-base font-semibold text-slate-900">
-              {formatDateRu(event.date, { day: "2-digit", month: "long", year: "numeric" })}
+              {isOnlineConsultation(event)
+                ? RU.labels.rollingEventDate
+                : formatDateRu(event.date, { day: "2-digit", month: "long", year: "numeric" })}
             </p>
           </div>
           <div>
@@ -81,7 +92,9 @@ export default function EventModal({
 
         <div>
           <p className="text-sm text-slate-500">{RU.labels.eventDescription}</p>
-          <p className="text-base font-medium text-slate-900 whitespace-pre-line">{event.description || RU.messages.notSet}</p>
+          <p className="text-base font-medium text-slate-900 whitespace-pre-line">
+            {renderText(event.description) || RU.messages.notSet}
+          </p>
         </div>
 
         <div>

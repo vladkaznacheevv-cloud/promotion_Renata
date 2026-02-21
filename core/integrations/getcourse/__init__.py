@@ -1,4 +1,4 @@
-﻿"""GetCourse integration package."""
+"""GetCourse integration package."""
 
 from .getcourse_service import GetCourseService
 

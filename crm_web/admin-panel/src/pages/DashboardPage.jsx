@@ -1,5 +1,5 @@
-﻿import { useEffect, useMemo, useState } from "react";
-import { DollarSign, TrendingUp, Users, Calendar, Bot } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Bot, Calendar, DollarSign, TrendingUp, Users } from "lucide-react";
 import {
   Area,
   AreaChart,
@@ -14,17 +14,15 @@ import {
 import { getAiStats } from "../api/ai";
 import { getClients } from "../api/clients";
 import { getEvents } from "../api/events";
-import { getCatalog } from "../api/catalog";
+import { DEV_MOCKS, getDevFallbackUsed } from "../api/http";
+import { getGetCourseEvents, getGetCourseSummary } from "../api/integrations";
 import { getPayments } from "../api/payments";
 import { getRevenueSummary } from "../api/revenue";
-import { getGetCourseSummary } from "../api/integrations";
-import { DEV_MOCKS, getDevFallbackUsed } from "../api/http";
-import { RU, formatCurrencyRub } from "../i18n/ru";
+import { RU, formatCurrencyRub, formatDateRu } from "../i18n/ru";
 import DashboardStatCard from "../components/DashboardStatCard";
 import ErrorBanner from "../components/ErrorBanner";
 import SkeletonCard from "../components/SkeletonCard";
-import Button from "../components/ui/Button";
-import { Card, CardHeader, CardContent } from "../components/ui/Card";
+import { Card, CardContent, CardHeader } from "../components/ui/Card";
 import { Tabs } from "../components/ui/Tabs";
 
 export default function DashboardPage() {
@@ -34,7 +32,7 @@ export default function DashboardPage() {
   const [revenueSummary, setRevenueSummary] = useState(null);
   const [payments, setPayments] = useState([]);
   const [getcourseSummary, setGetcourseSummary] = useState(null);
-  const [catalogItems, setCatalogItems] = useState([]);
+  const [getcourseEvents, setGetcourseEvents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [devNotice, setDevNotice] = useState("");
@@ -44,23 +42,24 @@ export default function DashboardPage() {
     try {
       if (withLoading) setLoading(true);
       setError("");
-      const [clientsRes, eventsRes, aiRes, revenueRes, paymentsRes, gcRes, catalogRes] = await Promise.all([
-        getClients(),
-        getEvents(),
-        getAiStats(),
-        getRevenueSummary(),
-        getPayments(),
-        getGetCourseSummary(),
-        getCatalog({ limit: 100 }),
-      ]);
+      const [clientsRes, eventsRes, aiRes, revenueRes, paymentsRes, gcSummaryRes, gcEventsRes] =
+        await Promise.all([
+          getClients(),
+          getEvents(),
+          getAiStats(),
+          getRevenueSummary(),
+          getPayments(),
+          getGetCourseSummary(),
+          getGetCourseEvents(5),
+        ]);
 
       setClients(clientsRes.items ?? clientsRes);
       setEvents(eventsRes.items ?? eventsRes);
       setAiStats(aiRes);
       setRevenueSummary(revenueRes);
       setPayments(paymentsRes.items ?? paymentsRes);
-      setGetcourseSummary(gcRes);
-      setCatalogItems(catalogRes.items ?? []);
+      setGetcourseSummary(gcSummaryRes);
+      setGetcourseEvents(gcEventsRes?.items ?? []);
 
       if (DEV_MOCKS && getDevFallbackUsed()) {
         setDevNotice(RU.messages.backendUnavailableDemo);
@@ -115,37 +114,30 @@ export default function DashboardPage() {
       {
         title: RU.labels.totalRevenue,
         value: revenueSummary ? formatCurrencyRub(revenueSummary.total || 0) : RU.messages.emDash,
-        change: "+15.3%",
-        changeType: "positive",
+        change: "—",
+        changeType: "neutral",
         icon: <DollarSign className="h-6 w-6" />,
       },
       {
         title: RU.labels.activeClients,
         value: clients.length ? clients.length.toLocaleString("ru-RU") : RU.messages.emDash,
-        change: "+12.5%",
-        changeType: "positive",
+        change: "—",
+        changeType: "neutral",
         icon: <Users className="h-6 w-6" />,
       },
       {
         title: RU.labels.eventsCount,
         value: events.length ? events.length.toLocaleString("ru-RU") : RU.messages.emDash,
-        change: "0%",
+        change: "—",
         changeType: "neutral",
         icon: <Calendar className="h-6 w-6" />,
       },
       {
         title: RU.labels.aiResponses,
         value: aiStats?.totalResponses ? aiStats.totalResponses.toLocaleString("ru-RU") : RU.messages.emDash,
-        change: "+42.3%",
-        changeType: "positive",
-        icon: <Bot className="h-6 w-6" />,
-      },
-      {
-        title: RU.labels.onlineCourses,
-        value: catalogItems.length.toLocaleString("ru-RU"),
         change: "—",
         changeType: "neutral",
-        icon: <Calendar className="h-6 w-6" />,
+        icon: <Bot className="h-6 w-6" />,
       },
       {
         title: RU.labels.stageNew,
@@ -176,7 +168,7 @@ export default function DashboardPage() {
         icon: <TrendingUp className="h-6 w-6" />,
       },
     ],
-    [aiStats, clients.length, events.length, revenueSummary, stageCounters, catalogItems.length]
+    [aiStats, clients.length, events.length, revenueSummary, stageCounters]
   );
 
   const paidPayments = useMemo(() => payments.filter((p) => p.status === "paid"), [payments]);
@@ -200,12 +192,73 @@ export default function DashboardPage() {
     return Array.from(map.entries()).map(([date, value]) => ({ date, value }));
   }, [paidPayments, range]);
 
+  const topEvents = useMemo(() => {
+    const map = new Map();
+
+    events.forEach((event) => {
+      map.set(event.id, {
+        event_id: event.id,
+        title: event.title || RU.labels.noEvent,
+        revenue: Number(event.revenue ?? 0),
+        registrations: Number(event.attendees ?? 0),
+        paidCount: 0,
+        paymentCount: 0,
+      });
+    });
+
+    (revenueSummary?.byEvents ?? []).forEach((item) => {
+      const current = map.get(item.event_id) || {
+        event_id: item.event_id,
+        title: item.title || RU.labels.noEvent,
+        revenue: 0,
+        registrations: 0,
+        paidCount: 0,
+        paymentCount: 0,
+      };
+      current.revenue = Number(item.revenue ?? current.revenue ?? 0);
+      map.set(item.event_id, current);
+    });
+
+    payments.forEach((payment) => {
+      if (!payment.event_id) return;
+      const current = map.get(payment.event_id) || {
+        event_id: payment.event_id,
+        title: payment.event_title || RU.labels.noEvent,
+        revenue: 0,
+        registrations: 0,
+        paidCount: 0,
+        paymentCount: 0,
+      };
+      current.paymentCount += 1;
+      if (payment.status === "paid") {
+        current.paidCount += 1;
+        current.revenue += Number(payment.amount ?? 0);
+      }
+      map.set(payment.event_id, current);
+    });
+
+    const metrics = Array.from(map.values());
+    const bySales = [...metrics]
+      .filter((event) => event.revenue > 0 || event.paidCount > 0)
+      .sort((a, b) => b.revenue - a.revenue || b.paidCount - a.paidCount)
+      .slice(0, 5);
+
+    const byLeads = [...metrics]
+      .sort(
+        (a, b) =>
+          b.registrations - a.registrations || b.paymentCount - a.paymentCount || b.revenue - a.revenue
+      )
+      .slice(0, 5);
+
+    return { bySales, byLeads };
+  }, [events, payments, revenueSummary]);
+
   const signupsSeries = useMemo(() => {
-    return events.slice(0, 6).map((event) => ({
+    return topEvents.byLeads.slice(0, 6).map((event) => ({
       name: event.title,
-      value: Number(event.attendees ?? 0),
+      value: event.registrations > 0 ? event.registrations : event.paymentCount,
     }));
-  }, [events]);
+  }, [topEvents.byLeads]);
 
   const recentPayments = useMemo(() => payments.slice(0, 5), [payments]);
   const recentClients = useMemo(
@@ -216,7 +269,6 @@ export default function DashboardPage() {
         .slice(0, 5),
     [clients]
   );
-  const topCatalogItems = useMemo(() => catalogItems.slice(0, 3), [catalogItems]);
 
   return (
     <div className="space-y-6">
@@ -228,18 +280,15 @@ export default function DashboardPage() {
           <h1 className="text-2xl font-semibold text-slate-900">{RU.labels.dashboardTitle}</h1>
           <p className="text-sm text-slate-500">{RU.labels.dashboardSubtitle}</p>
         </div>
-        <div className="flex items-center gap-3">
-          <Tabs
-            tabs={[
-              { label: "7д", value: "7d" },
-              { label: "30д", value: "30d" },
-              { label: "90д", value: "90d" },
-            ]}
-            active={range}
-            onChange={setRange}
-          />
-          <Button variant="secondary">{RU.buttons.export}</Button>
-        </div>
+        <Tabs
+          tabs={[
+            { label: "7д", value: "7d" },
+            { label: "30д", value: "30d" },
+            { label: "90д", value: "90d" },
+          ]}
+          active={range}
+          onChange={setRange}
+        />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -252,7 +301,7 @@ export default function DashboardPage() {
         <Card className="lg:col-span-2">
           <CardHeader className="flex items-center justify-between">
             <h2 className="text-lg font-semibold">{RU.labels.revenueOverTime}</h2>
-            <span className="text-sm text-slate-500">{RU.labels.paid}</span>
+            <span className="text-sm text-slate-500">RUB</span>
           </CardHeader>
           <CardContent className="h-72">
             <ResponsiveContainer width="100%" height="100%">
@@ -264,8 +313,8 @@ export default function DashboardPage() {
                   </linearGradient>
                 </defs>
                 <XAxis dataKey="date" tick={{ fontSize: 12 }} />
-                <YAxis tick={{ fontSize: 12 }} />
-                <Tooltip />
+                <YAxis tick={{ fontSize: 12 }} tickFormatter={(value) => formatCurrencyRub(value)} />
+                <Tooltip formatter={(value) => formatCurrencyRub(value)} />
                 <Area type="monotone" dataKey="value" stroke="#6366f1" fill="url(#colorRevenue)" />
               </AreaChart>
             </ResponsiveContainer>
@@ -285,6 +334,46 @@ export default function DashboardPage() {
                 <Bar dataKey="value" fill="#0ea5e9" radius={[6, 6, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <Card>
+          <CardHeader>
+            <h2 className="text-lg font-semibold">{RU.labels.topSales}</h2>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {topEvents.bySales.length === 0 ? (
+              <div className="text-sm text-slate-500">{RU.messages.notSet}</div>
+            ) : (
+              topEvents.bySales.map((event) => (
+                <div key={event.event_id} className="flex items-center justify-between text-sm">
+                  <span className="line-clamp-1 text-slate-700">{event.title}</span>
+                  <span className="font-medium text-slate-900">{formatCurrencyRub(event.revenue)}</span>
+                </div>
+              ))
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <h2 className="text-lg font-semibold">{RU.labels.topEvents}</h2>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {topEvents.byLeads.length === 0 ? (
+              <div className="text-sm text-slate-500">{RU.messages.notSet}</div>
+            ) : (
+              topEvents.byLeads.map((event) => (
+                <div key={event.event_id} className="flex items-center justify-between text-sm">
+                  <span className="line-clamp-1 text-slate-700">{event.title}</span>
+                  <span className="font-medium text-slate-900">
+                    {(event.registrations > 0 ? event.registrations : event.paymentCount).toLocaleString("ru-RU")}
+                  </span>
+                </div>
+              ))
+            )}
           </CardContent>
         </Card>
       </div>
@@ -325,57 +414,44 @@ export default function DashboardPage() {
           <h2 className="text-lg font-semibold">{RU.labels.getcourseWidget}</h2>
           <span className="text-sm text-slate-500">{getcourseSummary?.status || RU.statuses.disabled}</span>
         </CardHeader>
-        <CardContent className="grid grid-cols-1 md:grid-cols-4 gap-3 text-sm text-slate-700">
-          <div>{RU.labels.getcourseCourses}: {getcourseSummary?.counts?.courses ?? 0}</div>
-          <div>{RU.labels.getcourseProducts}: {getcourseSummary?.counts?.products ?? 0}</div>
-          <div>{RU.labels.getcourseEvents}: {getcourseSummary?.counts?.events ?? 0}</div>
-          <div>{RU.labels.getcourseCatalogItems}: {getcourseSummary?.counts?.catalog_items ?? 0}</div>
-          <div>
-            {RU.labels.getcourseLastSync}:{" "}
-            {getcourseSummary?.lastSyncAt
-              ? new Intl.DateTimeFormat("ru-RU", { dateStyle: "short", timeStyle: "short" }).format(new Date(getcourseSummary.lastSyncAt))
-              : RU.messages.notSet}
+        <CardContent className="space-y-4 text-sm text-slate-700">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div>{RU.labels.getcourseEvents24h}: {getcourseSummary?.events_last_24h ?? 0}</div>
+            <div>{RU.labels.getcourseEvents7d}: {getcourseSummary?.events_last_7d ?? 0}</div>
+            <div>{RU.labels.getcourseEvents}: {getcourseSummary?.counts?.events ?? 0}</div>
+            <div>
+              {RU.labels.getcourseLastEventAt}: {" "}
+              {getcourseSummary?.last_event_at
+                ? formatDateRu(getcourseSummary.last_event_at, { dateStyle: "short", timeStyle: "short" })
+                : RU.messages.notSet}
+            </div>
           </div>
-          <div>{RU.labels.getcourseCreated}: {getcourseSummary?.importedEvents?.created ?? getcourseSummary?.imported?.created ?? getcourseSummary?.counts?.created ?? 0}</div>
-          <div>{RU.labels.getcourseUpdated}: {getcourseSummary?.importedEvents?.updated ?? getcourseSummary?.imported?.updated ?? getcourseSummary?.counts?.updated ?? 0}</div>
-          <div>{RU.labels.getcourseSkipped}: {getcourseSummary?.importedEvents?.skipped ?? getcourseSummary?.imported?.skipped ?? getcourseSummary?.counts?.skipped ?? 0}</div>
-          <div>{RU.labels.getcourseNoDate}: {getcourseSummary?.importedEvents?.no_date ?? getcourseSummary?.imported?.no_date ?? getcourseSummary?.counts?.no_date ?? 0}</div>
-          <div>{RU.labels.getcourseCreated} ({RU.labels.getcourseImportedCatalog}): {getcourseSummary?.importedCatalog?.created ?? 0}</div>
-          <div>{RU.labels.getcourseUpdated} ({RU.labels.getcourseImportedCatalog}): {getcourseSummary?.importedCatalog?.updated ?? 0}</div>
-          <div>{RU.labels.getcourseSkipped} ({RU.labels.getcourseImportedCatalog}): {getcourseSummary?.importedCatalog?.skipped ?? 0}</div>
-        </CardContent>
-      </Card>
 
-      <Card>
-        <CardHeader>
-          <h2 className="text-lg font-semibold">{RU.labels.dashboardCatalogTitle}</h2>
-          <p className="text-sm text-slate-500">{RU.labels.dashboardCatalogHint}</p>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {topCatalogItems.length === 0 ? (
-            <div className="text-sm text-slate-500">{RU.labels.catalogEmpty}</div>
-          ) : (
-            topCatalogItems.map((item) => (
-              <div key={item.id} className="flex items-center justify-between gap-3 text-sm">
-                <div>
-                  <div className="font-medium text-slate-900">{item.title}</div>
-                  <div className="text-slate-500">{item.price ? formatCurrencyRub(item.price) : RU.messages.notSet}</div>
-                </div>
-                {item.link_getcourse ? (
-                  <a
-                    href={item.link_getcourse}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-indigo-600 hover:text-indigo-700"
-                  >
-                    {RU.buttons.open}
-                  </a>
-                ) : (
-                  <span className="text-slate-400">{RU.messages.notSet}</span>
-                )}
+          <div>
+            <h3 className="mb-2 font-medium text-slate-900">{RU.labels.getcourseLatestEvents}</h3>
+            {getcourseEvents.length === 0 ? (
+              <p className="text-slate-500">{RU.messages.notSet}</p>
+            ) : (
+              <div className="space-y-2">
+                {getcourseEvents.map((item) => (
+                  <div key={item.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2">
+                    <div className="min-w-0">
+                      <div className="truncate font-medium text-slate-900">{item.event_type || "unknown"}</div>
+                      <div className="truncate text-xs text-slate-500">{item.user_email || RU.messages.notSet}</div>
+                    </div>
+                    <div className="text-right text-xs text-slate-500">
+                      <div>{item.amount != null ? formatCurrencyRub(item.amount) : RU.messages.notSet}</div>
+                      <div>
+                        {item.received_at
+                          ? formatDateRu(item.received_at, { dateStyle: "short", timeStyle: "short" })
+                          : RU.messages.notSet}
+                      </div>
+                    </div>
+                  </div>
+                ))}
               </div>
-            ))
-          )}
+            )}
+          </div>
         </CardContent>
       </Card>
     </div>

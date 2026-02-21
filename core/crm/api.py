@@ -19,7 +19,10 @@ from core.crm.schemas import (
     EventOut,
     EventUpdate,
     EventsOut,
+    GetCourseWebhookEventsOut,
+    GetCourseDiagnoseOut,
     GetCourseSummaryOut,
+    PrivateChannelInviteOut,
     PaymentCreateIn,
     PaymentOut,
     PaymentUpdateIn,
@@ -28,6 +31,10 @@ from core.crm.schemas import (
     TgIdRequest,
 )
 from core.crm.service import CRMService
+from core.crm.service import (
+    GetCourseSyncAlreadyRunningError,
+    GetCourseSyncCooldownError,
+)
 
 router = APIRouter()
 
@@ -90,7 +97,7 @@ async def delete_client(
 async def get_catalog(
     type: str | None = Query(None),
     search: str | None = Query(None),
-    limit: int = Query(20, ge=1, le=100),
+    limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
     _: object = Depends(require_roles("admin", "manager", "viewer")),
@@ -355,10 +362,91 @@ async def get_getcourse_summary(
     return await service.get_getcourse_summary()
 
 
-@router.post("/integrations/getcourse/sync", response_model=GetCourseSummaryOut)
-async def sync_getcourse(
+@router.get("/integrations/getcourse/events", response_model=GetCourseWebhookEventsOut)
+async def get_getcourse_events(
+    limit: int = Query(50, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    _: object = Depends(require_roles("admin", "manager", "viewer")),
+):
+    service = CRMService(db)
+    return await service.list_getcourse_events(limit=limit)
+
+
+@router.post("/subscriptions/private-channel/mark-paid", response_model=PrivateChannelInviteOut)
+async def mark_private_channel_paid(
+    user_id: int = Query(..., ge=1),
     db: AsyncSession = Depends(get_db),
     _: object = Depends(require_roles("admin")),
 ):
     service = CRMService(db)
-    return await service.sync_getcourse()
+    result = await service.mark_private_channel_paid(user_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return result
+
+
+@router.get("/subscriptions/private-channel/invite", response_model=PrivateChannelInviteOut)
+async def get_private_channel_invite(
+    user_id: int = Query(..., ge=1),
+    db: AsyncSession = Depends(get_db),
+    _: object = Depends(require_roles("admin")),
+):
+    service = CRMService(db)
+    result = await service.get_private_channel_invite(user_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return result
+
+
+@router.post("/integrations/getcourse/sync", response_model=GetCourseSummaryOut)
+async def sync_getcourse(
+    sync_users: bool = Query(True),
+    sync_payments: bool = Query(True),
+    sync_catalog: bool = Query(True),
+    force: bool = Query(False),
+    db: AsyncSession = Depends(get_db),
+    current_user: object = Depends(require_roles("admin")),
+):
+    service = CRMService(db)
+    try:
+        return await service.sync_getcourse(
+            sync_users=sync_users,
+            sync_payments=sync_payments,
+            sync_catalog=sync_catalog,
+            force=force,
+            actor_role=getattr(current_user, "role", None),
+        )
+    except GetCourseSyncCooldownError as exc:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "ok": False,
+                "detail": "Sync cooldown active",
+                "nextAllowedAt": exc.next_allowed_at.isoformat(),
+                "cooldownMinutes": exc.cooldown_minutes,
+            },
+        )
+    except GetCourseSyncAlreadyRunningError:
+        raise HTTPException(status_code=409, detail={"ok": False, "detail": "Sync already running"})
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail={"ok": False, "detail": str(exc)})
+
+
+@router.get("/integrations/getcourse/ping")
+async def ping_getcourse(
+    db: AsyncSession = Depends(get_db),
+    _: object = Depends(require_roles("admin")),
+):
+    service = CRMService(db)
+    integration = service.get_getcourse_integration()
+    return await integration.ping_export()
+
+
+@router.get("/integrations/getcourse/diagnose", response_model=GetCourseDiagnoseOut)
+async def diagnose_getcourse(
+    db: AsyncSession = Depends(get_db),
+    _: object = Depends(require_roles("admin")),
+):
+    service = CRMService(db)
+    integration = service.get_getcourse_integration()
+    return await integration.diagnose_resources()

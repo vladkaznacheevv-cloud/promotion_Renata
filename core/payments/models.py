@@ -32,7 +32,7 @@ class Payment(Base):
         index=True,
     )
 
-    # amount integer ? ??????? ??? ??? "?????" (?????)
+    # Сумма платежа (целое число, например в копейках)
     amount = Column(Integer, nullable=True)
 
     status = Column(Text, nullable=False, server_default="pending", index=True)

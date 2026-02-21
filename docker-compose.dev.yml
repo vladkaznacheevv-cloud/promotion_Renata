@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: psych_project
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  migrate:
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  bot:
+    depends_on:
+      db:
+        condition: service_healthy
+      web:
+        condition: service_started
+
+  getcourse_cron:
+    build: .
+    env_file: .env
+    depends_on:
+      web:
+        condition: service_started
+    environment:
+      GETCOURSE_CRON_ENABLED: "${GETCOURSE_CRON_ENABLED:-false}"
+      GETCOURSE_CRON_INTERVAL_MINUTES: "${GETCOURSE_CRON_INTERVAL_MINUTES:-360}"
+    command: python legacy/getcourse/getcourse_cron.py
+    restart: "no"
+
+volumes:
+  postgres_data:
