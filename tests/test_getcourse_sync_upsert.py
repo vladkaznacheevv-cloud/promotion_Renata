@@ -66,13 +66,13 @@ def test_sync_getcourse_events_upsert_idempotent_and_no_date():
     first = asyncio.run(
         service.sync_getcourse_events([_entity(external_id="42")], integration)  # type: ignore[arg-type]
     )
-    assert first == {"created": 1, "updated": 0, "skipped": 0, "no_date": 0}
+    assert first == {"created": 1, "updated": 0, "skipped": 0, "no_date": 0, "bad_url": 0}
     assert len(store) == 1
 
     second = asyncio.run(
         service.sync_getcourse_events([_entity(external_id="42")], integration)  # type: ignore[arg-type]
     )
-    assert second == {"created": 0, "updated": 0, "skipped": 1, "no_date": 0}
+    assert second == {"created": 0, "updated": 0, "skipped": 1, "no_date": 0, "bad_url": 0}
     assert len(store) == 1
 
     third = asyncio.run(
@@ -81,7 +81,7 @@ def test_sync_getcourse_events_upsert_idempotent_and_no_date():
             integration,  # type: ignore[arg-type]
         )
     )
-    assert third == {"created": 0, "updated": 1, "skipped": 0, "no_date": 0}
+    assert third == {"created": 0, "updated": 1, "skipped": 0, "no_date": 0, "bad_url": 0}
     saved = store[("getcourse", "42")]
     assert saved.description == "Обновлённое описание"
     assert saved.price == Decimal("1200.0")
@@ -92,5 +92,5 @@ def test_sync_getcourse_events_upsert_idempotent_and_no_date():
     fourth = asyncio.run(
         service.sync_getcourse_events([no_date_entity], integration)  # type: ignore[arg-type]
     )
-    assert fourth == {"created": 0, "updated": 0, "skipped": 0, "no_date": 1}
+    assert fourth == {"created": 0, "updated": 0, "skipped": 0, "no_date": 1, "bad_url": 0}
     assert ("getcourse", "100") not in store

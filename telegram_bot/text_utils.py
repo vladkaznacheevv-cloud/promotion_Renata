@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import logging
 import os
@@ -20,6 +20,8 @@ _MOJIBAKE_PATTERNS: tuple[str, ...] = (
 
 _CYRILLIC_RE = re.compile(r"[А-Яа-яЁё]")
 _MOJIBAKE_LATIN_RE = re.compile(r"[ÐÑÃ]")
+_TRAILING_SPACES_RE = re.compile(r"[ \t]+\n")
+_TOO_MANY_NEWLINES_RE = re.compile(r"\n{3,}")
 
 
 def _is_russian_cyrillic_char(ch: str) -> bool:
@@ -111,11 +113,24 @@ def repair_mojibake(text: str | None) -> str | None:
     return best
 
 
+def render_text(text: str | None) -> str | None:
+    if text is None:
+        return None
+
+    value = text.replace("\\r\\n", "\n").replace("\\n", "\n")
+    value = value.replace("\r\n", "\n").replace("\r", "\n")
+    value = _TRAILING_SPACES_RE.sub("\n", value)
+    value = _TOO_MANY_NEWLINES_RE.sub("\n\n", value)
+    return value
+
+
 def normalize_text_for_telegram(text: str | None, *, label: str | None = None) -> str | None:
     if text is None:
         return None
 
     repaired = repair_mojibake(text)
+    rendered = render_text(repaired)
+
     if os.getenv("BOT_TEXT_DEBUG") == "1":
         marker = label or "text"
         logger.info(
@@ -127,4 +142,6 @@ def normalize_text_for_telegram(text: str | None, *, label: str | None = None) -
         )
         if repaired != text:
             logger.info("text-debug %s repaired -> %r", marker, repaired)
-    return repaired
+        if rendered != repaired:
+            logger.info("text-debug %s rendered -> %r", marker, rendered)
+    return rendered

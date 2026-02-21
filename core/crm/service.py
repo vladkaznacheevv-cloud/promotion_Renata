@@ -1,36 +1,55 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, time
+from datetime import datetime, time, timezone, timedelta
 from decimal import Decimal
+import logging
+import os
+from uuid import uuid4
 from typing import Any
 
+import httpx
 from sqlalchemy import String, and_, cast, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.crm.schemas import ClientCreate, ClientUpdate, EventCreate, EventUpdate
-from core.crm.models import CRMUserActivity
+from core.crm.models import CRMUserActivity, ChannelInvite, UserSubscription
 from core.crm.activity_service import ActivityService
 from core.catalog.models import CatalogItem
 from core.events.models import Event, UserEvent
 from core.integrations.getcourse import GetCourseService
+from core.integrations.getcourse.url_utils import normalize_getcourse_url
 from core.payments.models import Payment
 from core.users.models import User
 
 
 STATUS_TO_DB = {
-    "РќРѕРІС‹Р№": User.STATUS_NEW,
-    "Р’ СЂР°Р±РѕС‚Рµ": User.STATUS_IN_WORK,
-    "РљР»РёРµРЅС‚": User.STATUS_CLIENT,
-    "VIP РљР»РёРµРЅС‚": User.STATUS_VIP,
+    "\u041d\u043e\u0432\u044b\u0439": User.STATUS_NEW,
+    "\u0412 \u0440\u0430\u0431\u043e\u0442\u0435": User.STATUS_IN_WORK,
+    "\u041a\u043b\u0438\u0435\u043d\u0442": User.STATUS_CLIENT,
+    "VIP \u041a\u043b\u0438\u0435\u043d\u0442": User.STATUS_VIP,
 }
 
 DB_TO_STATUS = {
-    User.STATUS_NEW: "РќРѕРІС‹Р№",
-    User.STATUS_IN_WORK: "Р’ СЂР°Р±РѕС‚Рµ",
-    User.STATUS_CLIENT: "РљР»РёРµРЅС‚",
-    User.STATUS_VIP: "VIP РљР»РёРµРЅС‚",
+    User.STATUS_NEW: "\u041d\u043e\u0432\u044b\u0439",
+    User.STATUS_IN_WORK: "\u0412 \u0440\u0430\u0431\u043e\u0442\u0435",
+    User.STATUS_CLIENT: "\u041a\u043b\u0438\u0435\u043d\u0442",
+    User.STATUS_VIP: "VIP \u041a\u043b\u0438\u0435\u043d\u0442",
 }
+
+
+logger = logging.getLogger(__name__)
+
+
+class GetCourseSyncCooldownError(Exception):
+    def __init__(self, *, next_allowed_at: datetime, cooldown_minutes: int) -> None:
+        self.next_allowed_at = next_allowed_at
+        self.cooldown_minutes = cooldown_minutes
+        super().__init__("Sync cooldown active")
+
+
+class GetCourseSyncAlreadyRunningError(Exception):
+    pass
 
 
 @dataclass
@@ -179,7 +198,7 @@ class CRMService:
         *,
         item_type: str | None = None,
         search: str | None = None,
-        limit: int = 20,
+        limit: int = 50,
         offset: int = 0,
     ) -> dict[str, Any]:
         query = select(CatalogItem)
@@ -230,7 +249,7 @@ class CRMService:
         first_name, last_name = self._split_name(name)
 
         username = self._normalize_username(payload.get("telegram"))
-        status_label = payload.get("status") or "РќРѕРІС‹Р№"
+        status_label = payload.get("status") or "\u041d\u043e\u0432\u044b\u0439"
         status_code = STATUS_TO_DB.get(status_label, User.STATUS_NEW)
         stage = payload.get("stage")
         if not stage and (payload.get("phone") or payload.get("email")):
@@ -479,11 +498,13 @@ class CRMService:
         if price is not None:
             price = Decimal(str(price))
 
+        normalized_link, _ = normalize_getcourse_url(payload.get("link_getcourse"))
+
         event = Event(
             title=payload.get("title"),
             description=payload.get("description"),
             location=payload.get("location"),
-            link_getcourse=payload.get("link_getcourse"),
+            link_getcourse=normalized_link,
             starts_at=starts_at,
             price=price,
             is_active=is_active,
@@ -515,7 +536,8 @@ class CRMService:
             price = payload.get("price")
             event.price = Decimal(str(price)) if price is not None else None
         if "link_getcourse" in payload:
-            event.link_getcourse = payload.get("link_getcourse")
+            normalized_link, _ = normalize_getcourse_url(payload.get("link_getcourse"))
+            event.link_getcourse = normalized_link
 
         await self.db.flush()
 
@@ -977,45 +999,461 @@ class CRMService:
         }
 
     async def get_getcourse_summary(self) -> dict[str, Any]:
-        integration = GetCourseService(self.db)
+        integration = self.get_getcourse_integration()
         return await integration.summary()
 
-    async def sync_getcourse(self) -> dict[str, Any]:
-        integration = GetCourseService(self.db)
+    async def list_getcourse_events(self, limit: int = 50) -> dict[str, Any]:
+        integration = self.get_getcourse_integration()
+        events = await integration.list_webhook_events(limit=limit)
+        items: list[dict[str, Any]] = []
+        for event in events:
+            amount_value = None
+            if event.amount is not None:
+                amount_value = float(event.amount)
+            items.append(
+                {
+                    "id": int(event.id),
+                    "received_at": event.received_at,
+                    "event_type": event.event_type,
+                    "user_email": event.user_email,
+                    "deal_number": event.deal_number,
+                    "amount": amount_value,
+                    "currency": event.currency,
+                    "status": event.status,
+                }
+            )
+        return {"items": items, "total": len(items)}
+
+    async def _get_user_by_any_id(self, user_id: int) -> User | None:
+        user = await self._get_user(user_id)
+        if user is not None:
+            return user
+        return await self._get_user_by_tg_id(user_id)
+
+    async def _get_or_create_private_channel_subscription(self, user_id: int) -> UserSubscription | None:
+        user = await self._get_user_by_any_id(user_id)
+        if user is None:
+            return None
+
+        row = await self.db.execute(
+            select(UserSubscription)
+            .where(UserSubscription.user_id == user.id)
+            .where(UserSubscription.product == "private_channel")
+            .limit(1)
+        )
+        subscription = row.scalar_one_or_none()
+        if subscription is not None:
+            return subscription
+
+        subscription = UserSubscription(
+            user_id=user.id,
+            product="private_channel",
+            status="pending",
+        )
+        self.db.add(subscription)
+        await self.db.flush()
+        return subscription
+
+    async def _get_or_create_channel_invite(self, subscription_id: int) -> ChannelInvite:
+        row = await self.db.execute(
+            select(ChannelInvite)
+            .where(ChannelInvite.subscription_id == subscription_id)
+            .order_by(ChannelInvite.id.desc())
+            .limit(1)
+        )
+        invite = row.scalar_one_or_none()
+        if invite is not None:
+            return invite
+
+        invite = ChannelInvite(
+            subscription_id=subscription_id,
+            token=uuid4().hex,
+        )
+        self.db.add(invite)
+        await self.db.flush()
+        return invite
+
+    async def _create_telegram_invite_url(self) -> str | None:
+        channel_id = (os.getenv("TELEGRAM_PRIVATE_CHANNEL_ID") or "").strip()
+        bot_token = (os.getenv("BOT_TOKEN") or "").strip()
+        if not channel_id or not bot_token:
+            return None
+
+        endpoint = f"https://api.telegram.org/bot{bot_token}/createChatInviteLink"
+        payload = {
+            "chat_id": channel_id,
+            "member_limit": 1,
+            "creates_join_request": False,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(endpoint, json=payload)
+            if response.status_code != 200:
+                return None
+            body = response.json()
+            if not body.get("ok"):
+                return None
+            invite_link = (body.get("result") or {}).get("invite_link")
+            return str(invite_link).strip() if invite_link else None
+        except Exception as e:
+            logger.warning("Telegram invite creation failed: %s", e.__class__.__name__)
+            return None
+
+    @staticmethod
+    def _private_channel_placeholder_url(token: str) -> str:
+        template = (os.getenv("PRIVATE_CHANNEL_INVITE_URL_TEMPLATE") or "").strip()
+        if template and "{token}" in template:
+            return template.replace("{token}", token)
+        return f"https://example.com/private-channel/{token}"
+
+    @staticmethod
+    def _private_channel_payment_url() -> str | None:
+        value = (os.getenv("YOOMONEY_PAY_URL_PLACEHOLDER") or "").strip()
+        return value or None
+
+    async def _ensure_invite_url(self, invite: ChannelInvite) -> str:
+        if invite.invite_url:
+            return invite.invite_url
+
+        telegram_invite = await self._create_telegram_invite_url()
+        if telegram_invite:
+            invite.invite_url = telegram_invite
+            await self.db.flush()
+            return telegram_invite
+
+        placeholder = self._private_channel_placeholder_url(invite.token)
+        invite.invite_url = placeholder
+        await self.db.flush()
+        return placeholder
+
+    async def mark_private_channel_paid(self, user_id: int) -> dict[str, Any] | None:
+        subscription = await self._get_or_create_private_channel_subscription(user_id)
+        if subscription is None:
+            return None
+
+        now = datetime.utcnow()
+        subscription.status = "paid"
+        if subscription.paid_at is None:
+            subscription.paid_at = now
+        subscription.updated_at = now
+
+        invite = await self._get_or_create_channel_invite(subscription.id)
+        invite_url = await self._ensure_invite_url(invite)
+        return {
+            "ok": True,
+            "user_id": int(subscription.user_id),
+            "product": "private_channel",
+            "status": subscription.status,
+            "token": invite.token,
+            "invite_url": invite_url,
+            "payment_url": self._private_channel_payment_url(),
+            "paid_at": subscription.paid_at,
+        }
+
+    async def get_private_channel_invite(self, user_id: int) -> dict[str, Any] | None:
+        subscription = await self._get_or_create_private_channel_subscription(user_id)
+        if subscription is None:
+            return None
+
+        payload: dict[str, Any] = {
+            "ok": True,
+            "user_id": int(subscription.user_id),
+            "product": "private_channel",
+            "status": subscription.status,
+            "token": None,
+            "invite_url": None,
+            "payment_url": self._private_channel_payment_url(),
+            "paid_at": subscription.paid_at,
+        }
+
+        if subscription.status != "paid":
+            return payload
+
+        invite = await self._get_or_create_channel_invite(subscription.id)
+        payload["token"] = invite.token
+        payload["invite_url"] = await self._ensure_invite_url(invite)
+        return payload
+
+    def get_getcourse_integration(self) -> GetCourseService:
+        return GetCourseService(self.db)
+
+    @staticmethod
+    def _get_sync_cooldown_minutes() -> int:
+        raw = (os.getenv("GETCOURSE_SYNC_COOLDOWN_MINUTES") or "").strip()
+        try:
+            value = int(raw) if raw else 360
+        except Exception:
+            value = 360
+        return max(value, 0)
+
+    @staticmethod
+    def _get_sync_force_role() -> str:
+        return (os.getenv("GETCOURSE_SYNC_FORCE_ROLE") or "admin").strip().lower()
+
+    async def _try_acquire_getcourse_sync_lock(self) -> bool:
+        row = await self.db.execute(
+            text("SELECT pg_try_advisory_lock(:key)"),
+            {"key": 2302142001},
+        )
+        return bool(row.scalar_one_or_none())
+
+    async def _release_getcourse_sync_lock(self) -> None:
+        await self.db.execute(
+            text("SELECT pg_advisory_unlock(:key)"),
+            {"key": 2302142001},
+        )
+
+    async def sync_getcourse(
+        self,
+        *,
+        sync_users: bool = True,
+        sync_payments: bool = True,
+        sync_catalog: bool = True,
+        force: bool = False,
+        actor_role: str | None = None,
+    ) -> dict[str, Any]:
+        integration = self.get_getcourse_integration()
+        lock_acquired = False
+
+        if force and (actor_role or "").strip().lower() != self._get_sync_force_role():
+            raise PermissionError("Force sync is not allowed for this role")
+
+        state = await integration._state()
+        cooldown_minutes = self._get_sync_cooldown_minutes()
+        if not force and cooldown_minutes > 0 and state.last_sync_at is not None:
+            last_sync_at = state.last_sync_at
+            if last_sync_at.tzinfo is None:
+                last_sync_at = last_sync_at.replace(tzinfo=timezone.utc)
+            now_utc = datetime.now(tz=timezone.utc)
+            next_allowed_at = last_sync_at + timedelta(minutes=cooldown_minutes)
+            if now_utc < next_allowed_at:
+                raise GetCourseSyncCooldownError(
+                    next_allowed_at=next_allowed_at,
+                    cooldown_minutes=cooldown_minutes,
+                )
+
+        lock_acquired = await self._try_acquire_getcourse_sync_lock()
+        if not lock_acquired:
+            raise GetCourseSyncAlreadyRunningError("Sync already running")
+
         if not integration.enabled:
             await integration.save_sync_result(
                 fetched=0,
-                imported_events={"created": 0, "updated": 0, "skipped": 0, "no_date": 0},
-                imported_catalog={"created": 0, "updated": 0, "skipped": 0},
+                imported_events={"created": 0, "updated": 0, "skipped": 0, "no_date": 0, "bad_url": 0},
+                imported_catalog={"created": 0, "updated": 0, "skipped": 0, "bad_url": 0},
                 source_counts={},
-                error="GetCourse integration is disabled or API key is missing",
+                imported_users={"created": 0, "updated": 0, "skipped": 0},
+                imported_payments={"created": 0, "updated": 0, "skipped": 0},
+                resource_sync_at={"users": None, "payments": None, "catalog": None},
+                error=None,
             )
             return await integration.summary()
 
         try:
-            entities, source_counts = await integration.fetch_entities()
-            dated_entities, undated_catalog = integration.split_entities(entities)
-            imported_events = await self.sync_getcourse_events(dated_entities, integration)
-            imported_events["no_date"] = int(imported_events.get("no_date", 0)) + len(undated_catalog)
-            imported_catalog = await self.sync_getcourse_catalog(undated_catalog, integration)
-            await integration.save_sync_result(
-                fetched=len(entities),
-                imported_events=imported_events,
-                imported_catalog=imported_catalog,
-                source_counts=source_counts,
-                error=None,
-            )
+            state.last_sync_at = datetime.utcnow()
+            state.updated_at = datetime.utcnow()
+            await self.db.flush()
             return await integration.summary()
-        except Exception as exc:
-            await integration.save_sync_result(
-                fetched=0,
-                imported_events={"created": 0, "updated": 0, "skipped": 0, "no_date": 0},
-                imported_catalog={"created": 0, "updated": 0, "skipped": 0},
-                source_counts={},
-                error=str(exc),
-            )
-            return await integration.summary()
+        finally:
+            if lock_acquired:
+                await self._release_getcourse_sync_lock()
+    def _normalize_gc_stage(self, value: Any) -> str:
+        raw = str(value or "").strip().upper()
+        if raw in User.CRM_STAGE_CHOICES:
+            return raw
+        return User.CRM_STAGE_ENGAGED
 
+    def _normalize_gc_email(self, value: Any) -> str | None:
+        text = str(value or "").strip().lower()
+        if "@" not in text or "." not in text.split("@")[-1]:
+            return None
+        return text[:100]
+
+    def _normalize_gc_phone(self, value: Any) -> str | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        return text[:64]
+
+    async def upsert_client_from_getcourse(self, payload_user: dict[str, Any]) -> str:
+        external_id = str(payload_user.get("id") or payload_user.get("user_id") or "").strip()
+        if not external_id:
+            return "skipped"
+        email = self._normalize_gc_email(payload_user.get("email"))
+        phone = self._normalize_gc_phone(payload_user.get("phone") or payload_user.get("phone_number"))
+        first_name = str(payload_user.get("first_name") or payload_user.get("name") or "").strip() or None
+        last_name = str(payload_user.get("last_name") or "").strip() or None
+        username = str(payload_user.get("username") or payload_user.get("login") or "").strip().lstrip("@") or None
+        stage = self._normalize_gc_stage(payload_user.get("crm_stage"))
+        updated_at = self._to_datetime(payload_user.get("updated_at") or payload_user.get("created_at"))
+
+        user: User | None = None
+        if email:
+            row = await self.db.execute(select(User).where(User.email == email))
+            user = row.scalar_one_or_none()
+        if user is None and phone:
+            row = await self.db.execute(select(User).where(User.phone == phone))
+            user = row.scalar_one_or_none()
+
+        if user is None:
+            user = User(
+                tg_id=await self._generate_tg_id(),
+                first_name=first_name,
+                last_name=last_name,
+                username=username,
+                email=email,
+                phone=phone,
+                source=User.SOURCE_COURSE,
+                crm_stage=stage,
+                last_activity_at=updated_at,
+            )
+            self.db.add(user)
+            return "created"
+
+        has_changes = False
+        for field_name, new_value in (
+            ("first_name", first_name),
+            ("last_name", last_name),
+            ("username", username),
+            ("email", email),
+            ("phone", phone),
+        ):
+            if new_value and getattr(user, field_name) != new_value:
+                setattr(user, field_name, new_value)
+                has_changes = True
+        if user.crm_stage != stage:
+            user.crm_stage = stage
+            has_changes = True
+        if updated_at and user.last_activity_at != updated_at:
+            user.last_activity_at = updated_at
+            has_changes = True
+        return "updated" if has_changes else "skipped"
+
+    async def upsert_payment_from_getcourse(self, payload_payment: dict[str, Any]) -> str:
+        external_id = str(
+            payload_payment.get("id")
+            or payload_payment.get("payment_id")
+            or payload_payment.get("transaction_id")
+            or ""
+        ).strip()
+        if not external_id:
+            return "skipped"
+
+        user_email = self._normalize_gc_email(payload_payment.get("user_email") or payload_payment.get("email"))
+        user_phone = self._normalize_gc_phone(payload_payment.get("user_phone") or payload_payment.get("phone"))
+        user: User | None = None
+        if user_email:
+            row = await self.db.execute(select(User).where(User.email == user_email))
+            user = row.scalar_one_or_none()
+        if user is None and user_phone:
+            row = await self.db.execute(select(User).where(User.phone == user_phone))
+            user = row.scalar_one_or_none()
+        if user is None:
+            return "skipped"
+
+        amount_raw = payload_payment.get("amount") or payload_payment.get("sum") or payload_payment.get("price")
+        try:
+            amount_value = int(Decimal(str(amount_raw))) if amount_raw not in (None, "") else 0
+        except Exception:
+            amount_value = 0
+        if amount_value <= 0:
+            return "skipped"
+
+        status_raw = str(payload_payment.get("status") or "").strip().lower()
+        status = "pending"
+        if status_raw in {"paid", "success", "succeeded", "done", "completed"}:
+            status = "paid"
+        elif status_raw in {"failed", "error"}:
+            status = "failed"
+        elif status_raw in {"cancelled", "canceled"}:
+            status = "cancelled"
+
+        row = await self.db.execute(
+            select(Payment).where(Payment.source == "getcourse").where(Payment.external_id == external_id)
+        )
+        payment = row.scalar_one_or_none()
+        if payment is None:
+            payment = Payment(
+                user_id=user.id,
+                amount=amount_value,
+                status=status,
+                source="getcourse",
+                external_id=external_id,
+                currency=str(payload_payment.get("currency") or "RUB"),
+            )
+            self.db.add(payment)
+            if status == "paid":
+                user.crm_stage = User.CRM_STAGE_PAID
+            return "created"
+
+        has_changes = False
+        for field_name, new_value in (
+            ("amount", amount_value),
+            ("status", status),
+            ("currency", str(payload_payment.get("currency") or payment.currency or "RUB")),
+        ):
+            if getattr(payment, field_name) != new_value:
+                setattr(payment, field_name, new_value)
+                has_changes = True
+        if status == "paid" and user.crm_stage != User.CRM_STAGE_PAID:
+            user.crm_stage = User.CRM_STAGE_PAID
+        return "updated" if has_changes else "skipped"
+
+    async def upsert_catalog_item_from_getcourse(self, payload_program: dict[str, Any], integration: GetCourseService) -> str:
+        dto = integration._build_entity(str(payload_program.get("_gc_source") or "catalog"), payload_program)
+        if dto is None:
+            return "skipped"
+        mapped = integration.normalize_entity_to_catalog_fields(dto)
+        if mapped.get("url_error"):
+            return "bad_url"
+        external_id = str(mapped["external_id"])
+        item = await self._get_catalog_by_external("getcourse", external_id)
+        if item is None:
+            item = CatalogItem(
+                title=mapped["title"],
+                description=mapped["description"],
+                price=Decimal(str(mapped["price"])) if mapped.get("price") is not None else None,
+                currency=mapped.get("currency") or "RUB",
+                link_getcourse=mapped.get("link_getcourse"),
+                item_type=mapped.get("item_type") or "product",
+                status=mapped.get("status") or "active",
+                external_source="getcourse",
+                external_id=external_id,
+                external_updated_at=mapped.get("external_updated_at"),
+            )
+            self.db.add(item)
+            return "created"
+
+        has_changes = False
+        for field_name in ("title", "description", "currency", "link_getcourse", "item_type", "status"):
+            new_value = mapped.get(field_name)
+            if getattr(item, field_name) != new_value:
+                setattr(item, field_name, new_value)
+                has_changes = True
+
+        new_price = Decimal(str(mapped["price"])) if mapped.get("price") is not None else None
+        if item.price != new_price:
+            item.price = new_price
+            has_changes = True
+        if item.external_updated_at != mapped.get("external_updated_at"):
+            item.external_updated_at = mapped.get("external_updated_at")
+            has_changes = True
+        return "updated" if has_changes else "skipped"
+
+    @staticmethod
+    def _to_datetime(value: Any) -> datetime | None:
+        if value in (None, ""):
+            return None
+        if isinstance(value, datetime):
+            return value
+        text = str(value).strip().replace("Z", "+00:00")
+        if not text:
+            return None
+        try:
+            return datetime.fromisoformat(text)
+        except Exception:
+            return None
     async def sync_getcourse_events(
         self,
         entities: list[Any],
@@ -1025,9 +1463,18 @@ class CRMService:
         updated = 0
         skipped = 0
         no_date = 0
+        bad_url = 0
 
         for entity in entities:
             mapped = integration.normalize_entity_to_event_fields(entity)
+            if mapped.get("url_error"):
+                bad_url += 1
+                logger.warning(
+                    "Skip invalid event link_getcourse: external_id=%s source_field=%s reason=%s",
+                    mapped.get("external_id"),
+                    mapped.get("link_getcourse_source"),
+                    mapped.get("url_error"),
+                )
             if mapped.get("date") is None or mapped.get("starts_at") is None:
                 no_date += 1
                 continue
@@ -1091,6 +1538,7 @@ class CRMService:
             "updated": updated,
             "skipped": skipped,
             "no_date": no_date,
+            "bad_url": bad_url,
         }
 
     async def sync_getcourse_catalog(
@@ -1101,9 +1549,18 @@ class CRMService:
         created = 0
         updated = 0
         skipped = 0
+        bad_url = 0
 
         for entity in entities:
             mapped = integration.normalize_entity_to_catalog_fields(entity)
+            if mapped.get("url_error"):
+                bad_url += 1
+                logger.warning(
+                    "Skip invalid catalog link_getcourse: external_id=%s source_field=%s reason=%s",
+                    mapped.get("external_id"),
+                    mapped.get("link_getcourse_source"),
+                    mapped.get("url_error"),
+                )
             external_id = str(mapped["external_id"])
             item = await self._get_catalog_by_external("getcourse", external_id)
 
@@ -1152,6 +1609,7 @@ class CRMService:
             "created": created,
             "updated": updated,
             "skipped": skipped,
+            "bad_url": bad_url,
         }
 
     async def _get_user(self, user_id: int) -> User | None:
@@ -1315,9 +1773,9 @@ class CRMService:
         if not name:
             name = user.username or f"User {user.id}"
 
-        status_label = DB_TO_STATUS.get(user.status, "РќРѕРІС‹Р№")
+        status_label = DB_TO_STATUS.get(user.status, "\u041d\u043e\u0432\u044b\u0439")
         if user.is_vip:
-            status_label = "VIP РљР»РёРµРЅС‚"
+            status_label = "VIP \u041a\u043b\u0438\u0435\u043d\u0442"
         stage_value = self.normalize_stage(user.crm_stage)
 
         registered = user.created_at.date().isoformat() if user.created_at else None
@@ -1364,14 +1822,14 @@ class CRMService:
         return {
             "id": event.id,
             "title": event.title,
-            "type": "РЎРѕР±С‹С‚РёРµ",
+            "type": "\u0421\u043e\u0431\u044b\u0442\u0438\u0435",
             "price": price_value,
             "attendees": attendees,
             "date": date_value,
             "status": "active" if event.is_active else "finished",
             "description": event.description,
             "location": event.location,
-            "link_getcourse": event.link_getcourse,
+            "link_getcourse": normalize_getcourse_url(event.link_getcourse)[0],
             "revenue": revenue,
         }
 
@@ -1390,7 +1848,7 @@ class CRMService:
             "date": date_value,
             "description": event.description,
             "location": event.location,
-            "link_getcourse": event.link_getcourse,
+            "link_getcourse": normalize_getcourse_url(event.link_getcourse)[0],
             "price": price_value,
         }
 
@@ -1408,7 +1866,7 @@ class CRMService:
             "description": item.description,
             "price": price_value,
             "currency": item.currency or "RUB",
-            "link_getcourse": item.link_getcourse,
+            "link_getcourse": normalize_getcourse_url(item.link_getcourse)[0],
             "item_type": item.item_type or "product",
             "status": item.status or "active",
             "external_source": item.external_source or "getcourse",
@@ -1416,6 +1874,8 @@ class CRMService:
             "external_updated_at": item.external_updated_at.isoformat() if item.external_updated_at else None,
             "updated_at": item.updated_at.isoformat() if item.updated_at else None,
         }
+
+
 
 
 

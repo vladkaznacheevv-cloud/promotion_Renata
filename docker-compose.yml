@@ -1,32 +1,53 @@
 version: '3.8'
 
 services:
-  db:
-    image: postgres:15
-    environment:
-      POSTGRES_DB: psych_project
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
+  migrate:
+    build: .
+    env_file: .env
+    command: python scripts/run_migrations.py
+    restart: "no"
 
   bot:
     build: .
     env_file: .env
+    depends_on:
+      web:
+        condition: service_started
     environment:
+      GETCOURSE_ENABLED: "${GETCOURSE_ENABLED:-false}"
+      GETCOURSE_EXPORT_ENABLED: "${GETCOURSE_EXPORT_ENABLED:-false}"
+      GETCOURSE_API_KEY: "${GETCOURSE_API_KEY:-}"
+      GETCOURSE_BASE_URL: "${GETCOURSE_BASE_URL:-https://getcourse.ru}"
       BOT_LOCK_PATH: "${BOT_LOCK_PATH:-/tmp/renata_bot.lock}"
       PYTHONIOENCODING: "utf-8"
       LANG: "C.UTF-8"
       LC_ALL: "C.UTF-8"
+    healthcheck:
+      test: ["CMD-SHELL", "python -m telegram_bot.health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
 
   web:
     build: .
     command: uvicorn core.main:app --host 0.0.0.0 --port 8000
     env_file: .env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      GETCOURSE_ENABLED: "${GETCOURSE_ENABLED:-false}"
+      GETCOURSE_EXPORT_ENABLED: "${GETCOURSE_EXPORT_ENABLED:-false}"
+      GETCOURSE_API_KEY: "${GETCOURSE_API_KEY:-}"
+      GETCOURSE_BASE_URL: "${GETCOURSE_BASE_URL:-https://getcourse.ru}"
     ports:
       - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=5)\""]
+      interval: 15s
+      timeout: 7s
+      retries: 5
 
   frontend:
     build:
@@ -39,6 +60,8 @@ services:
       - web
     ports:
       - "80:80"
-
-volumes:
-  postgres_data:
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost >/dev/null 2>&1 || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5

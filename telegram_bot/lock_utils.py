@@ -1,7 +1,8 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 try:
     import fcntl  # type: ignore
@@ -11,6 +12,14 @@ except Exception:  # pragma: no cover
 
 def get_lock_path() -> str:
     return os.getenv("BOT_LOCK_PATH") or os.getenv("BOT_LOCK_FILE") or "/tmp/renata_bot.lock"
+
+
+def touch_lock_heartbeat(path: str) -> bool:
+    try:
+        Path(path).touch()
+        return True
+    except Exception:
+        return False
 
 
 @dataclass

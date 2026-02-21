@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
+*.pyc.*
 .env
 venv/
 .tmp/
@@ -11,3 +12,8 @@ setings.py
 *.egg-info/
 dist/
 build/
+*.bak_encoding
+rag_data/*
+!rag_data/*.md
+!rag_data/*.txt
+Send

@@ -7,8 +7,15 @@ let devFallbackUsed = false;
 async function handleResponse(res, method, path) {
   if (!res.ok) {
     const text = await res.text();
+    let payload = null;
+    try {
+      payload = text ? JSON.parse(text) : null;
+    } catch (_) {
+      payload = null;
+    }
     const error = new Error(`${method} ${path} failed: ${res.status} ${text}`);
     error.status = res.status;
+    error.payload = payload;
     throw error;
   }
   if (res.status === 204) return null;

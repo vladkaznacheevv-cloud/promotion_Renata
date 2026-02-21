@@ -1,0 +1,56 @@
+version: "3.8"
+
+services:
+  migrate:
+    build: .
+    env_file: .env
+    command: python scripts/run_migrations.py
+    restart: "no"
+
+  web:
+    build: .
+    command: uvicorn core.main:app --host 0.0.0.0 --port 8000
+    env_file: .env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=5)\""]
+      interval: 15s
+      timeout: 7s
+      retries: 5
+
+  bot:
+    build: .
+    env_file: .env
+    depends_on:
+      web:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -m telegram_bot.health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+
+  frontend:
+    build:
+      context: ./crm_web/admin-panel
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: /api
+        VITE_DEV_MOCKS: "false"
+    depends_on:
+      - web
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost >/dev/null 2>&1 || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5

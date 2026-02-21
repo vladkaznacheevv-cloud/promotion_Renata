@@ -5,16 +5,15 @@ const ru = readFileSync(new URL("../src/i18n/ru.js", import.meta.url), "utf8");
 
 const checks = [
   [page.includes("RU.labels.integrationsTitle"), "IntegrationsPage should use RU labels"],
-  [page.includes("const isAdmin = role === \"admin\""), "IntegrationsPage should check admin role"],
-  [page.includes("{isAdmin &&"), "Sync button should be visible only for admin"],
+  [!page.includes("syncGetCourse"), "IntegrationsPage must not call sync endpoint in webhook-only mode"],
+  [page.includes("getGetCourseEvents(50)"), "IntegrationsPage should load latest webhook events"],
+  [page.includes("summary.events_last_24h"), "IntegrationsPage should render 24h counter"],
+  [page.includes("summary.events_last_7d"), "IntegrationsPage should render 7d counter"],
+  [page.includes("summary.last_event_at"), "IntegrationsPage should render last event timestamp"],
   [ru.includes("integrationsTitle"), "RU dictionary should include integrationsTitle"],
   [ru.includes("getcourseWidget"), "RU dictionary should include getcourseWidget"],
-  [ru.includes("getcourseCreated"), "RU dictionary should include getcourseCreated"],
-  [ru.includes("getcourseNoDate"), "RU dictionary should include getcourseNoDate"],
-  [ru.includes("getcourseImportedCatalog"), "RU dictionary should include getcourseImportedCatalog"],
-  [page.includes("summary.imported?.created"), "IntegrationsPage should render imported created count"],
-  [page.includes("summary.imported?.no_date"), "IntegrationsPage should render no_date count"],
-  [page.includes("summary.importedCatalog?.created"), "IntegrationsPage should render importedCatalog created count"],
+  [page.includes("getcourseLatestEvents"), "IntegrationsPage should render webhook events table"],
+  [page.includes("eventsData.items"), "IntegrationsPage should render events rows"],
 ];
 
 const failed = checks.filter(([ok]) => !ok);

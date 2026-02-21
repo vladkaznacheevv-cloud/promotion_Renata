@@ -3,12 +3,11 @@ import { NavLink } from "react-router-dom";
 import {
   BarChart3,
   Bot,
-  BookOpen,
   Calendar,
   ChevronDown,
   CreditCard,
   LayoutDashboard,
-  Settings,
+  UserCircle2,
   Users,
   Workflow,
 } from "lucide-react";
@@ -18,7 +17,6 @@ import { useAuth } from "../auth/AuthContext";
 import Input from "../components/ui/Input";
 import Button from "../components/ui/Button";
 import Badge from "../components/ui/Badge";
-import Dropdown from "../components/ui/Dropdown";
 
 const navGroups = [
   {
@@ -30,7 +28,6 @@ const navGroups = [
     items: [
       { label: RU.nav.clients, to: "/clients", icon: <Users className="h-4 w-4" /> },
       { label: RU.nav.events, to: "/events", icon: <Calendar className="h-4 w-4" /> },
-      { label: RU.nav.catalog, to: "/catalog", icon: <BookOpen className="h-4 w-4" /> },
       { label: RU.nav.registrations, to: "/registrations", icon: <Workflow className="h-4 w-4" /> },
       { label: RU.nav.payments, to: "/payments", icon: <CreditCard className="h-4 w-4" /> },
     ],
@@ -46,7 +43,6 @@ const navGroups = [
     title: RU.nav.system,
     items: [
       { label: RU.nav.integrations, to: "/integrations", icon: <ChevronDown className="h-4 w-4" /> },
-      { label: RU.nav.settings, to: "/settings", icon: <Settings className="h-4 w-4" /> },
     ],
   },
 ];
@@ -56,6 +52,12 @@ export default function AppLayout({ children }) {
   const { currentUser, logout } = useAuth();
   const role = currentUser?.role || "viewer";
   const canManage = role === "admin" || role === "manager";
+  const userDisplay =
+    currentUser?.name ||
+    currentUser?.username ||
+    currentUser?.login ||
+    currentUser?.email ||
+    RU.messages.notSet;
 
   const filteredGroups = useMemo(() => {
     return navGroups.map((group) => ({
@@ -134,21 +136,22 @@ export default function AppLayout({ children }) {
           <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
             <div className="flex items-center gap-4 w-full max-w-xl">
               <Input placeholder={RU.labels.search} />
-              <Badge variant="default">{RU.labels.role}: {role}</Badge>
+              <Badge variant="default">
+                <UserCircle2 className="h-4 w-4" />
+                {RU.labels.user}: {userDisplay}
+              </Badge>
             </div>
-            <div className="flex items-center gap-3">
-              <Badge variant="active">{RU.labels.db}</Badge>
-              <Badge variant="active">{RU.labels.bot}</Badge>
+            <div className="flex items-stretch gap-3">
               {quickActions.length > 0 && (
-                <Dropdown
-                  trigger={
-                    <Button variant="secondary">
-                      {RU.buttons.quickActions}
-                      <ChevronDown className="h-4 w-4" />
-                    </Button>
-                  }
-                  items={quickActions}
-                />
+                <div className="grid grid-cols-1 gap-2 min-w-[240px] sm:grid-cols-2">
+                  {quickActions.map((item) => (
+                    <NavLink key={item.to} to={item.to}>
+                      <Button variant="secondary" className="h-10 w-full justify-center">
+                        {item.label}
+                      </Button>
+                    </NavLink>
+                  ))}
+                </div>
               )}
               <Button variant="ghost" onClick={logout}>
                 {RU.buttons.logout}
