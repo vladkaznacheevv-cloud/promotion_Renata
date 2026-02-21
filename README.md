@@ -2,26 +2,34 @@
 
 ## Запуск Docker-стека
 
+### Production (основной контур)
+
 ```bash
-docker-compose up -d --build
-docker-compose ps
+docker compose -f compose.prod.yml up -d --build
+docker compose -f compose.prod.yml ps
+```
+
+Runtime entrypoints:
+- `migrate`: `python scripts/run_migrations.py`
+- `web`: `uvicorn core.main:app --host 0.0.0.0 --port 8000`
+- `bot`: `python -m telegram_bot.main`
+- `frontend`: `nginx` (из `crm_web/admin-panel/Dockerfile`)
+
+### Development (локально)
+
+Базовый `docker-compose.yml` рассчитан на внешнюю БД (`DATABASE_URL` / `DB_*`), без `db` и без `getcourse_cron`.
+
+Локальная разработка со встроенным Postgres и cron:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+docker compose -f docker-compose.yml -f docker-compose.dev.yml ps
 ```
 
 Сервисы:
 - `frontend`: `http://localhost`
 - `backend`: `http://localhost:8000/docs`
 - `crm ping`: `http://localhost/api/crm/ping`
-
-### External DB по умолчанию
-
-`docker-compose.yml` рассчитан на внешнюю БД (remote `DATABASE_URL` / `DB_*`).
-В нём нет `db` и `getcourse_cron`.
-
-Локальная разработка с встроенным Postgres и cron:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
-```
 
 ## Bot Polling: только один экземпляр
 
@@ -204,19 +212,19 @@ curl -i "http://localhost/api/crm/catalog?limit=20&offset=0" -H "Authorization: 
 Dry-run (по умолчанию):
 
 ```bash
-docker-compose exec web python scripts/fix_mojibake.py
+docker-compose exec web python scripts/legacy/fix_mojibake.py
 ```
 
 Применить изменения:
 
 ```bash
-docker-compose exec web python scripts/fix_mojibake.py --apply
+docker-compose exec web python scripts/legacy/fix_mojibake.py --apply
 ```
 
 Ограничить проверку (диагностика):
 
 ```bash
-docker-compose exec web python scripts/fix_mojibake.py --limit 50
+docker-compose exec web python scripts/legacy/fix_mojibake.py --limit 50
 ```
 
 Fixer меняет только `events.title`, `events.description`, `events.location` и только если:
@@ -251,8 +259,8 @@ npm run smoke:dropdown
 ## Дополнительно по миграциям
 
 ```bash
-docker-compose exec web python scripts/migrate_payments_mvp.py
-docker-compose exec web python scripts/migrate_funnel_contacts.py
+docker-compose exec web python scripts/legacy/migrate_payments_mvp.py
+docker-compose exec web python scripts/legacy/migrate_funnel_contacts.py
 ```
 
 ## Pre-Prod hardening
@@ -316,12 +324,12 @@ docker-compose logs migrate
 python scripts/run_migrations.py
 ```
 
-Доступны отдельные idempotent-скрипты:
-- `scripts/migrate_events_external.py`
-- `scripts/migrate_payments_mvp.py`
-- `scripts/migrate_funnel_contacts.py`
-- `scripts/migrate_catalog_items.py`
-- `scripts/migrate_integration_state.py`
+Idempotent-скрипты старых миграций перенесены в legacy-папку:
+- `scripts/legacy/migrate_events_external.py`
+- `scripts/legacy/migrate_payments_mvp.py`
+- `scripts/legacy/migrate_funnel_contacts.py`
+- `scripts/legacy/migrate_catalog_items.py`
+- `scripts/legacy/migrate_integration_state.py`
 
 ### Secrets hygiene
 
@@ -384,6 +392,22 @@ Smoke:
 python scripts/rag_smoke.py
 python scripts/rag_smoke.py "как записаться на консультацию"
 ```
+
+## Ключевые скрипты и legacy
+
+Оставлены в `scripts/` (активно используются):
+- `scripts/run_migrations.py`
+- `scripts/smoke_openrouter.py`
+- `scripts/rag_smoke.py`
+- `scripts/create_admin_user.py`
+- `scripts/seed_crm.py`
+- `scripts/db_ping.py`
+
+Перенесены как legacy/one-off:
+- `scripts/legacy/*` (старые миграции и encoding-фиксы)
+- `legacy/tools/run_all.py`
+- `legacy/tools/create_models.py`
+- `legacy/tools/remove_bom.py`
 
 Проверка private channel (admin JWT):
 
