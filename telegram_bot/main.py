@@ -50,6 +50,7 @@ get_private_channel_paid_kb ,
 from telegram_bot .text_utils import normalize_text_for_telegram ,looks_like_mojibake 
 from telegram_bot .text_formatting import format_event_card 
 from telegram_bot .lock_utils import get_lock_path ,touch_lock_heartbeat 
+from telegram_bot .typing_indicator import TypingIndicator 
 from telegram_bot .utils import detect_intent
 
 try :
@@ -947,6 +948,11 @@ async def handle_ai_message (update :Update ,context :ContextTypes .DEFAULT_TYPE
         await _route_detected_intent (update ,context ,intent )
         return 
 
+    typing_indicator =None 
+    if context .user_data .get (AI_MODE_KEY )and update .effective_chat is not None :
+        typing_indicator =TypingIndicator (context .bot ,update .effective_chat .id )
+        await typing_indicator .start ()
+
     try :
         history =chat_histories .get (user_id ,[])
         assistant_source =str (context .user_data .get (ASSISTANT_SOURCE_KEY )or "").strip ().lower ()
@@ -972,6 +978,11 @@ async def handle_ai_message (update :Update ,context :ContextTypes .DEFAULT_TYPE
     except Exception as e :
         logger .exception ("Assistant error: %s",e )
         await _reply (update .message ,"РЎРµР№С‡Р°СЃ РЅРµ РїРѕР»СѓС‡РёР»РѕСЃСЊ РѕС‚РІРµС‚РёС‚СЊ. РџРѕРїСЂРѕР±СѓР№ С‡СѓС‚СЊ РїРѕР·Р¶Рµ.")
+
+
+    finally :
+        if typing_indicator is not None :
+            await typing_indicator .stop ()
 
 
 async def handle_text_outside_assistant (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
