@@ -1,7 +1,7 @@
 ﻿import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
-import { createClient, getClients, updateClient } from "../api/clients";
+import { createClient, deleteClient, getClients, requestClientContacts, updateClient } from "../api/clients";
 import { useAuth } from "../auth/AuthContext";
 import { RU, formatCurrencyRub, formatDateRu, stageLabel } from "../i18n/ru";
 import ClientModal from "../components/ClientModal";
@@ -32,6 +32,7 @@ export default function ClientsPage() {
   const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
 
   const [query, setQuery] = useState("");
   const [stageFilter, setStageFilter] = useState("all");
@@ -44,6 +45,7 @@ export default function ClientsPage() {
     try {
       setLoading(true);
       setError("");
+      setSuccess("");
       const data = await getClients();
       setClients(data.items ?? data ?? []);
     } catch (err) {
@@ -132,10 +134,42 @@ export default function ClientsPage() {
   const handleMarkManager = async (client) => {
     if (!canManage) return;
     try {
+      setSuccess("");
       const updated = await updateClient(client.id, { stage: "MANAGER_FOLLOWUP" });
       setClients((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
     } catch (err) {
-      setError(err?.message || RU.messages.stageUpdateError);
+      setError(err?.payload?.detail || err?.message || RU.messages.stageUpdateError);
+    }
+  };
+
+  const handleRequestContacts = async (client) => {
+    if (!canManage) return;
+    try {
+      setError("");
+      setSuccess("");
+      await requestClientContacts(client.id);
+      setSuccess(RU.messages.contactsSavedInfo);
+    } catch (err) {
+      setError(err?.payload?.detail || err?.message || RU.messages.clientSaveError);
+    }
+  };
+
+  const handleDeleteClient = async (client) => {
+    if (!canManage) return;
+    const confirmed = window.confirm("Удалить клиента? Действие необратимо.");
+    if (!confirmed) return;
+
+    try {
+      setError("");
+      setSuccess("");
+      await deleteClient(client.id);
+      if (editingClient?.id === client.id) {
+        closeModal();
+      }
+      await fetchClients();
+      setSuccess("Удалено");
+    } catch (err) {
+      setError(err?.payload?.detail || err?.message || "Не удалось удалить клиента.");
     }
   };
 
@@ -176,6 +210,11 @@ export default function ClientsPage() {
         {error && (
           <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
             {error}
+          </div>
+        )}
+        {success && (
+          <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+            {success}
           </div>
         )}
 
@@ -237,9 +276,12 @@ export default function ClientsPage() {
                         </Button>
                         <Button
                           variant="secondary"
-                          onClick={() => window.alert(RU.messages.contactsSavedInfo)}
+                          onClick={() => handleRequestContacts(client)}
                         >
                           {RU.buttons.requestContacts}
+                        </Button>
+                        <Button variant="danger" onClick={() => handleDeleteClient(client)}>
+                          {RU.buttons.delete}
                         </Button>
                       </div>
                     ) : (

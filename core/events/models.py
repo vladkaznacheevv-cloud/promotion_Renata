@@ -7,6 +7,8 @@
     ForeignKey,
     Text,
     Numeric,
+    String,
+    Time,
     func,
 )
 from sqlalchemy.orm import relationship
@@ -26,6 +28,16 @@ class Event(Base):
     ends_at = Column(DateTime(timezone=True), nullable=True)
 
     location = Column(Text, nullable=True)
+    schedule_type = Column(String(20), nullable=False, server_default="one_time", index=True)
+    start_date = Column(DateTime(timezone=True), nullable=True)
+    start_time = Column(Time, nullable=True)
+    end_time = Column(Time, nullable=True)
+    recurring_rule = Column(Text, nullable=True)
+    hosts = Column(Text, nullable=True)
+    price_individual_rub = Column(Integer, nullable=True)
+    price_group_rub = Column(Integer, nullable=True)
+    duration_hint = Column(Text, nullable=True)
+    booking_hint = Column(Text, nullable=True)
 
     link_getcourse = Column(Text, nullable=True)
     external_source = Column(Text, nullable=True, index=True)

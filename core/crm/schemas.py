@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import List, Optional, Literal
+from typing import Any, List, Optional, Literal
 
 from pydantic import BaseModel, Field
 
@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 ClientStatus = Literal["Новый", "В работе", "Клиент", "VIP Клиент"]
 ClientStage = Literal["NEW", "ENGAGED", "READY_TO_PAY", "MANAGER_FOLLOWUP", "PAID", "INACTIVE"]
 EventStatus = Literal["active", "finished"]
+EventScheduleType = Literal["one_time", "recurring", "rolling"]
 CatalogType = Literal["course", "product"]
 CatalogStatus = Literal["active", "archived"]
 
@@ -65,10 +66,20 @@ class EventCreate(BaseModel):
     title: str = Field(min_length=1)
     description: str = Field(min_length=1)
     location: Optional[str] = None
-    date: date
+    date: Optional[date] = None
     price: Optional[float] = None
     status: EventStatus = "active"
     link_getcourse: Optional[str] = None
+    schedule_type: Optional[EventScheduleType] = None
+    start_date: Optional[datetime] = None
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    recurring_rule: Optional[dict[str, Any]] = None
+    hosts: Optional[str] = None
+    price_individual_rub: Optional[int] = None
+    price_group_rub: Optional[int] = None
+    duration_hint: Optional[str] = None
+    booking_hint: Optional[str] = None
 
 
 class EventUpdate(BaseModel):
@@ -79,6 +90,16 @@ class EventUpdate(BaseModel):
     price: Optional[float] = None
     status: Optional[EventStatus] = None
     link_getcourse: Optional[str] = None
+    schedule_type: Optional[EventScheduleType] = None
+    start_date: Optional[datetime] = None
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    recurring_rule: Optional[dict[str, Any]] = None
+    hosts: Optional[str] = None
+    price_individual_rub: Optional[int] = None
+    price_group_rub: Optional[int] = None
+    duration_hint: Optional[str] = None
+    booking_hint: Optional[str] = None
 
 
 class EventOut(BaseModel):
@@ -93,6 +114,17 @@ class EventOut(BaseModel):
     location: Optional[str]
     link_getcourse: Optional[str]
     revenue: int
+    schedule_type: Optional[EventScheduleType] = None
+    start_date: Optional[str] = None
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    recurring_rule: Optional[dict[str, Any]] = None
+    schedule_text: Optional[str] = None
+    hosts: Optional[str] = None
+    price_individual_rub: Optional[int] = None
+    price_group_rub: Optional[int] = None
+    duration_hint: Optional[str] = None
+    booking_hint: Optional[str] = None
 
 
 class EventsOut(BaseModel):

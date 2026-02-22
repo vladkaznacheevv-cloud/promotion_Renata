@@ -16,7 +16,14 @@ const isValidUrl = (value) => {
   }
 };
 
-const isOnlineConsultation = (event) => !event?.date;
+const scheduleTypeOf = (event) => event?.schedule_type || (event?.date ? "one_time" : "rolling");
+const isOnlineConsultation = (event) => scheduleTypeOf(event) === "rolling";
+const isRecurring = (event) => scheduleTypeOf(event) === "recurring";
+const scheduleBadgeLabel = (event) => {
+  if (isRecurring(event)) return RU.labels.recurringBadge;
+  if (isOnlineConsultation(event)) return RU.labels.rollingBadge;
+  return RU.labels.oneTimeBadge;
+};
 
 export default function EventModal({
   event,
@@ -56,6 +63,9 @@ export default function EventModal({
           <Badge variant={isOnlineConsultation(event) || event.status === "active" ? "active" : "finished"}>
             {isOnlineConsultation(event) || event.status === "active" ? RU.statuses.active : RU.statuses.finished}
           </Badge>
+          <Badge variant={isRecurring(event) ? "default" : isOnlineConsultation(event) ? "active" : "default"}>
+            {scheduleBadgeLabel(event)}
+          </Badge>
         </div>
       }
       footer={footer}
@@ -65,13 +75,19 @@ export default function EventModal({
           <div>
             <p className="text-sm text-slate-500">{RU.labels.eventType}</p>
             <p className="text-base font-semibold text-slate-900">
-              {isOnlineConsultation(event) ? RU.labels.eventTypeOnlineConsultation : RU.labels.eventTypeEvent}
+              {isRecurring(event)
+                ? RU.labels.scheduleTypeRecurring
+                : isOnlineConsultation(event)
+                  ? RU.labels.scheduleTypeRolling
+                  : RU.labels.eventTypeEvent}
             </p>
           </div>
           <div>
             <p className="text-sm text-slate-500">{RU.labels.date}</p>
             <p className="text-base font-semibold text-slate-900">
-              {isOnlineConsultation(event)
+              {isRecurring(event)
+                ? (event.schedule_text || RU.labels.recurringPresetTwiceMonth)
+                : isOnlineConsultation(event)
                 ? RU.labels.rollingEventDate
                 : formatDateRu(event.date, { day: "2-digit", month: "long", year: "numeric" })}
             </p>
@@ -79,6 +95,21 @@ export default function EventModal({
           <div>
             <p className="text-sm text-slate-500">{RU.labels.price}</p>
             <p className="text-base font-semibold text-slate-900">{formatCurrencyRub(event.price)}</p>
+          </div>
+          <div className="col-span-2">
+            <p className="text-sm text-slate-500">{RU.labels.prices}</p>
+            <div className="space-y-1 text-base font-semibold text-slate-900">
+              <p>
+                {RU.labels.priceIndividualDisplay}:{" "}
+                {event.price_individual_rub != null ? formatCurrencyRub(event.price_individual_rub) : RU.messages.notSet}
+              </p>
+              <p>
+                {RU.labels.priceGroupDisplay}:{" "}
+                {event.price_group_rub != null
+                  ? `${formatCurrencyRub(event.price_group_rub)} / участник`
+                  : RU.messages.notSet}
+              </p>
+            </div>
           </div>
           <div>
             <p className="text-sm text-slate-500">{RU.labels.eventParticipants}</p>
@@ -88,6 +119,27 @@ export default function EventModal({
             <p className="text-sm text-slate-500">{RU.labels.revenue}</p>
             <p className="text-base font-semibold text-slate-900">{formatCurrencyRub(event.revenue)}</p>
           </div>
+        </div>
+
+        <div>
+          <p className="text-sm text-slate-500">{RU.labels.eventHosts}</p>
+          <p className="text-base font-medium text-slate-900 whitespace-pre-line">
+            {renderText(event.hosts) || RU.messages.notSet}
+          </p>
+        </div>
+
+        <div>
+          <p className="text-sm text-slate-500">{RU.labels.durationHint}</p>
+          <p className="text-base font-medium text-slate-900 whitespace-pre-line">
+            {renderText(event.duration_hint) || RU.messages.notSet}
+          </p>
+        </div>
+
+        <div>
+          <p className="text-sm text-slate-500">{RU.labels.bookingHint}</p>
+          <p className="text-base font-medium text-slate-900 whitespace-pre-line">
+            {renderText(event.booking_hint) || RU.messages.notSet}
+          </p>
         </div>
 
         <div>

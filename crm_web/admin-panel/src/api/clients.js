@@ -42,6 +42,18 @@ export async function updateClient(clientId, payload) {
   }
 }
 
+export async function requestClientContacts(clientId) {
+  try {
+    return await apiPost(`/api/crm/clients/${clientId}/request-contacts`);
+  } catch (error) {
+    if (shouldFallback(error)) {
+      markDevFallbackUsed();
+      return devStore.requestClientContacts(clientId);
+    }
+    throw error;
+  }
+}
+
 export async function deleteClient(clientId) {
   try {
     return await apiDelete(`/api/crm/clients/${clientId}`);
