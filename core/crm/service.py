@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, time, timezone, timedelta
 from decimal import Decimal
+import json
 import logging
 import os
 from uuid import uuid4
@@ -10,6 +11,7 @@ from typing import Any
 
 import httpx
 from sqlalchemy import String, and_, cast, func, or_, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.crm.schemas import ClientCreate, ClientUpdate, EventCreate, EventUpdate
@@ -40,6 +42,24 @@ DB_TO_STATUS = {
 
 logger = logging.getLogger(__name__)
 
+EVENT_SCHEDULE_ONE_TIME = "one_time"
+EVENT_SCHEDULE_RECURRING = "recurring"
+EVENT_SCHEDULE_ROLLING = "rolling"
+EVENT_SCHEDULE_CHOICES = {
+    EVENT_SCHEDULE_ONE_TIME,
+    EVENT_SCHEDULE_RECURRING,
+    EVENT_SCHEDULE_ROLLING,
+}
+DEFAULT_RECURRING_RULE = {"freq": "MONTHLY", "bysetpos": [2, 4], "byweekday": "TU"}
+DEFAULT_RECURRING_START_TIME = time(17, 0)
+DEFAULT_RECURRING_END_TIME = time(21, 0)
+DEFAULT_EVENT_HOSTS = (
+    "Диана Даниелян — клинический психолог, гештальттерапевт\n"
+    "Елена Анищенко — клинический психолог, супервизор, гештальттерапевт"
+)
+DEFAULT_DURATION_HINT = "Длительность игры 1–4 часа, в зависимости от количества игроков."
+DEFAULT_BOOKING_HINT = "Запись по запросу в удобное время и дату."
+
 
 class GetCourseSyncCooldownError(Exception):
     def __init__(self, *, next_allowed_at: datetime, cooldown_minutes: int) -> None:
@@ -49,6 +69,14 @@ class GetCourseSyncCooldownError(Exception):
 
 
 class GetCourseSyncAlreadyRunningError(Exception):
+    pass
+
+
+class CRMClientTelegramUnavailableError(Exception):
+    pass
+
+
+class CRMClientTelegramSendError(Exception):
     pass
 
 
@@ -80,6 +108,146 @@ class CRMService:
         _ = cls.normalize_stage(current_stage)
         return User.CRM_STAGE_PAID
 
+    @staticmethod
+    def _normalize_schedule_type(value: str | None) -> str:
+        normalized = (value or "").strip().lower()
+        if normalized in EVENT_SCHEDULE_CHOICES:
+            return normalized
+        return EVENT_SCHEDULE_ONE_TIME
+
+    @staticmethod
+    def _normalize_text_field(value: Any) -> str | None:
+        if value is None:
+            return None
+        text_value = str(value).strip()
+        return text_value or None
+
+    @staticmethod
+    def _normalize_int_field(value: Any) -> int | None:
+        if value is None or value == "":
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _parse_hhmm(value: Any) -> time | None:
+        if value is None or value == "":
+            return None
+        if isinstance(value, time):
+            return value.replace(second=0, microsecond=0)
+        text_value = str(value).strip()
+        if not text_value:
+            return None
+        try:
+            parsed = datetime.strptime(text_value[:5], "%H:%M").time()
+            return parsed.replace(second=0, microsecond=0)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _time_to_hhmm(value: Any) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, time):
+            return value.strftime("%H:%M")
+        text_value = str(value).strip()
+        if not text_value:
+            return None
+        return text_value[:5]
+
+    @staticmethod
+    def _normalize_recurring_rule(value: Any) -> dict[str, Any] | None:
+        if value in (None, ""):
+            return None
+        rule: dict[str, Any] | None = None
+        if isinstance(value, dict):
+            rule = dict(value)
+        elif isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict):
+                rule = dict(parsed)
+        if not rule:
+            return None
+
+        weekday = str(rule.get("byweekday") or "TU").upper()
+        if weekday not in {"MO", "TU", "WE", "TH", "FR", "SA", "SU"}:
+            weekday = "TU"
+
+        positions_raw = rule.get("bysetpos", [2, 4])
+        if isinstance(positions_raw, list):
+            positions = []
+            for item in positions_raw:
+                try:
+                    num = int(item)
+                except (TypeError, ValueError):
+                    continue
+                if 1 <= num <= 5 and num not in positions:
+                    positions.append(num)
+        else:
+            positions = []
+        if not positions:
+            positions = [2, 4]
+        positions.sort()
+
+        freq = str(rule.get("freq") or "MONTHLY").upper()
+        if freq != "MONTHLY":
+            freq = "MONTHLY"
+
+        return {"freq": freq, "bysetpos": positions, "byweekday": weekday}
+
+    @staticmethod
+    def _serialize_recurring_rule(rule: dict[str, Any] | None) -> str | None:
+        if not rule:
+            return None
+        return json.dumps(rule, ensure_ascii=False, separators=(",", ":"))
+
+    @staticmethod
+    def _recurring_weekday_ru(code: str) -> str:
+        mapping = {
+            "MO": "понедельник",
+            "TU": "вторник",
+            "WE": "среда",
+            "TH": "четверг",
+            "FR": "пятница",
+            "SA": "суббота",
+            "SU": "воскресенье",
+        }
+        return mapping.get((code or "").upper(), "вторник")
+
+    @classmethod
+    def _recurring_schedule_text(cls, recurring_rule: dict[str, Any] | None, start_time_value: Any, end_time_value: Any) -> str:
+        rule = recurring_rule or DEFAULT_RECURRING_RULE
+        positions_raw = rule.get("bysetpos") or [2, 4]
+        positions: list[int] = []
+        for item in positions_raw if isinstance(positions_raw, list) else [2, 4]:
+            try:
+                num = int(item)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= num <= 5:
+                positions.append(num)
+        if not positions:
+            positions = [2, 4]
+        weekday = cls._recurring_weekday_ru(str(rule.get("byweekday") or "TU"))
+        pos_text = " и ".join(f"{pos}-й" for pos in positions)
+        start_hhmm = cls._time_to_hhmm(start_time_value) or DEFAULT_RECURRING_START_TIME.strftime("%H:%M")
+        end_hhmm = cls._time_to_hhmm(end_time_value) or DEFAULT_RECURRING_END_TIME.strftime("%H:%M")
+        return f"{pos_text} {weekday}, {start_hhmm}–{end_hhmm}"
+
+    @classmethod
+    def _event_schedule_text(cls, event: Event, recurring_rule: dict[str, Any] | None = None) -> str | None:
+        schedule_type = cls._normalize_schedule_type(getattr(event, "schedule_type", None))
+        if schedule_type == EVENT_SCHEDULE_ROLLING:
+            return "Без даты / по запросу"
+        if schedule_type == EVENT_SCHEDULE_RECURRING:
+            return cls._recurring_schedule_text(recurring_rule, event.start_time, event.end_time)
+        return None
+
     async def _payments_has_event_id(self) -> bool:
         if self._payments_event_id_exists is not None:
             return self._payments_event_id_exists
@@ -105,7 +273,7 @@ class CRMService:
         stage: str | None = None,
         search: str | None = None,
     ) -> dict[str, Any]:
-        query = select(User)
+        query = select(User).where(User.status != User.STATUS_ARCHIVED)
 
         if stage:
             query = query.where(User.crm_stage == self.normalize_stage(stage))
@@ -481,29 +649,150 @@ class CRMService:
         user = await self._get_user(client_id)
         if user is None:
             return False
-        await self.db.delete(user)
+        try:
+            async with self.db.begin_nested():
+                await self.db.delete(user)
+                await self.db.flush()
+            return True
+        except IntegrityError:
+            logger.info("Client hard-delete failed, applying soft-delete fallback: client_id=%s", client_id)
+
+        user = await self._get_user(client_id)
+        if user is None:
+            return True
+
+        now = datetime.utcnow()
+        user.first_name = "deleted"
+        user.last_name = str(user.id)
+        user.username = None
+        user.phone = None
+        user.email = None
+        user.is_vip = False
+        user.status = User.STATUS_ARCHIVED
+        user.crm_stage = User.CRM_STAGE_INACTIVE
+        user.last_activity_at = now
         await self.db.flush()
         return True
+
+    async def request_client_contacts_via_bot(self, client_id: int) -> dict[str, Any] | None:
+        user = await self._get_user(client_id)
+        if user is None:
+            return None
+        if not user.tg_id:
+            raise CRMClientTelegramUnavailableError("Client has no Telegram ID")
+
+        bot_token = (os.getenv("BOT_TOKEN") or "").strip()
+        if not bot_token:
+            raise CRMClientTelegramSendError("BOT_TOKEN not configured")
+
+        text_message = (
+            "С Вами хочет связаться ассистент Ренаты. "
+            "Оставьте, пожалуйста, номер телефона и почту."
+        )
+        reply_markup = {
+            "keyboard": [
+                [{"text": "📱 Отправить номер", "request_contact": True}],
+                [{"text": "В меню"}],
+            ],
+            "resize_keyboard": True,
+            "one_time_keyboard": True,
+        }
+
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    url,
+                    json={
+                        "chat_id": int(user.tg_id),
+                        "text": text_message,
+                        "reply_markup": reply_markup,
+                    },
+                )
+            payload = response.json()
+        except Exception as exc:
+            logger.warning(
+                "Failed to send CRM contact request via Telegram: client_id=%s tg_id=%s error=%s",
+                client_id,
+                user.tg_id,
+                exc,
+            )
+            raise CRMClientTelegramSendError("Failed to send Telegram message") from exc
+
+        if response.status_code >= 400 or not payload.get("ok"):
+            logger.warning(
+                "Telegram sendMessage rejected CRM contact request: client_id=%s tg_id=%s status=%s",
+                client_id,
+                user.tg_id,
+                response.status_code,
+            )
+            raise CRMClientTelegramSendError("Failed to send Telegram message")
+
+        return {"ok": True}
 
     async def create_event(self, data: EventCreate) -> dict[str, Any]:
         payload = data.model_dump()
         status = payload.get("status") or "active"
         is_active = status == "active"
+        schedule_type = self._normalize_schedule_type(payload.get("schedule_type"))
+        if payload.get("date") is None and schedule_type == EVENT_SCHEDULE_ONE_TIME:
+            schedule_type = EVENT_SCHEDULE_ROLLING
 
         starts_at = None
+        start_date_value = payload.get("start_date")
         if payload.get("date"):
             starts_at = datetime.combine(payload["date"], time.min)
+            start_date_value = starts_at
+        elif isinstance(start_date_value, datetime):
+            starts_at = start_date_value if schedule_type == EVENT_SCHEDULE_ONE_TIME else None
 
         price = payload.get("price")
         if price is not None:
             price = Decimal(str(price))
 
+        start_time_value = self._parse_hhmm(payload.get("start_time"))
+        end_time_value = self._parse_hhmm(payload.get("end_time"))
+        recurring_rule = self._normalize_recurring_rule(payload.get("recurring_rule"))
+        if schedule_type == EVENT_SCHEDULE_RECURRING:
+            recurring_rule = recurring_rule or dict(DEFAULT_RECURRING_RULE)
+            start_time_value = start_time_value or DEFAULT_RECURRING_START_TIME
+            end_time_value = end_time_value or DEFAULT_RECURRING_END_TIME
+        elif schedule_type == EVENT_SCHEDULE_ROLLING:
+            starts_at = None
+            start_date_value = None
+            start_time_value = None
+            end_time_value = None
+            recurring_rule = None
+        else:
+            start_time_value = None
+            end_time_value = None
+            recurring_rule = None
+
         normalized_link, _ = normalize_getcourse_url(payload.get("link_getcourse"))
+        hosts = self._normalize_text_field(payload.get("hosts")) or DEFAULT_EVENT_HOSTS
+        duration_hint = self._normalize_text_field(payload.get("duration_hint")) or DEFAULT_DURATION_HINT
+        booking_hint = self._normalize_text_field(payload.get("booking_hint")) or DEFAULT_BOOKING_HINT
+        price_individual_rub = self._normalize_int_field(payload.get("price_individual_rub"))
+        if price_individual_rub is None:
+            price_individual_rub = 8000
+        price_group_rub = self._normalize_int_field(payload.get("price_group_rub"))
+        if price_group_rub is None:
+            price_group_rub = 5000
 
         event = Event(
             title=payload.get("title"),
             description=payload.get("description"),
             location=payload.get("location"),
+            schedule_type=schedule_type,
+            start_date=start_date_value,
+            start_time=start_time_value,
+            end_time=end_time_value,
+            recurring_rule=self._serialize_recurring_rule(recurring_rule),
+            hosts=hosts,
+            price_individual_rub=price_individual_rub,
+            price_group_rub=price_group_rub,
+            duration_hint=duration_hint,
+            booking_hint=booking_hint,
             link_getcourse=normalized_link,
             starts_at=starts_at,
             price=price,
@@ -520,6 +809,7 @@ class CRMService:
             return None
 
         payload = data.model_dump(exclude_unset=True)
+        current_schedule_type = self._normalize_schedule_type(getattr(event, "schedule_type", None))
         if "title" in payload:
             event.title = payload.get("title")
         if "description" in payload:
@@ -532,12 +822,58 @@ class CRMService:
         if "date" in payload:
             date_value = payload.get("date")
             event.starts_at = datetime.combine(date_value, time.min) if date_value else None
+            event.start_date = event.starts_at
         if "price" in payload:
             price = payload.get("price")
             event.price = Decimal(str(price)) if price is not None else None
         if "link_getcourse" in payload:
             normalized_link, _ = normalize_getcourse_url(payload.get("link_getcourse"))
             event.link_getcourse = normalized_link
+        if "schedule_type" in payload:
+            current_schedule_type = self._normalize_schedule_type(payload.get("schedule_type"))
+            event.schedule_type = current_schedule_type
+        if "start_date" in payload:
+            event.start_date = payload.get("start_date")
+        if "start_time" in payload:
+            event.start_time = self._parse_hhmm(payload.get("start_time"))
+        if "end_time" in payload:
+            event.end_time = self._parse_hhmm(payload.get("end_time"))
+        if "recurring_rule" in payload:
+            event.recurring_rule = self._serialize_recurring_rule(
+                self._normalize_recurring_rule(payload.get("recurring_rule"))
+            )
+        if "hosts" in payload:
+            event.hosts = self._normalize_text_field(payload.get("hosts"))
+        if "price_individual_rub" in payload:
+            event.price_individual_rub = self._normalize_int_field(payload.get("price_individual_rub"))
+        if "price_group_rub" in payload:
+            event.price_group_rub = self._normalize_int_field(payload.get("price_group_rub"))
+        if "duration_hint" in payload:
+            event.duration_hint = self._normalize_text_field(payload.get("duration_hint"))
+        if "booking_hint" in payload:
+            event.booking_hint = self._normalize_text_field(payload.get("booking_hint"))
+
+        if current_schedule_type == EVENT_SCHEDULE_ROLLING:
+            event.starts_at = None
+            event.start_date = None
+            event.start_time = None
+            event.end_time = None
+            event.recurring_rule = None
+        elif current_schedule_type == EVENT_SCHEDULE_RECURRING:
+            if event.start_time is None:
+                event.start_time = DEFAULT_RECURRING_START_TIME
+            if event.end_time is None:
+                event.end_time = DEFAULT_RECURRING_END_TIME
+            recurring_rule_value = self._normalize_recurring_rule(event.recurring_rule)
+            if recurring_rule_value is None:
+                recurring_rule_value = dict(DEFAULT_RECURRING_RULE)
+            event.recurring_rule = self._serialize_recurring_rule(recurring_rule_value)
+            if event.starts_at is None:
+                event.start_date = None if event.start_date is None else event.start_date
+        else:
+            event.start_time = None
+            event.end_time = None
+            event.recurring_rule = None
 
         await self.db.flush()
 
@@ -1812,12 +2148,15 @@ class CRMService:
 
     def _event_out(self, event: Event, attendees: int, revenue: int) -> dict[str, Any]:
         date_value = event.starts_at.date().isoformat() if event.starts_at else None
+        start_date_value = event.start_date.isoformat() if getattr(event, "start_date", None) else None
         price_value: float | None = None
         if event.price is not None:
             if isinstance(event.price, Decimal):
                 price_value = float(event.price)
             else:
                 price_value = float(event.price)
+        recurring_rule = self._normalize_recurring_rule(getattr(event, "recurring_rule", None))
+        schedule_type = self._normalize_schedule_type(getattr(event, "schedule_type", None))
 
         return {
             "id": event.id,
@@ -1831,10 +2170,22 @@ class CRMService:
             "location": event.location,
             "link_getcourse": normalize_getcourse_url(event.link_getcourse)[0],
             "revenue": revenue,
+            "schedule_type": schedule_type,
+            "start_date": start_date_value,
+            "start_time": self._time_to_hhmm(getattr(event, "start_time", None)),
+            "end_time": self._time_to_hhmm(getattr(event, "end_time", None)),
+            "recurring_rule": recurring_rule,
+            "schedule_text": self._event_schedule_text(event, recurring_rule),
+            "hosts": getattr(event, "hosts", None),
+            "price_individual_rub": getattr(event, "price_individual_rub", None),
+            "price_group_rub": getattr(event, "price_group_rub", None),
+            "duration_hint": getattr(event, "duration_hint", None),
+            "booking_hint": getattr(event, "booking_hint", None),
         }
 
     def _event_summary(self, event: Event) -> dict[str, Any]:
         date_value = event.starts_at.date().isoformat() if event.starts_at else None
+        recurring_rule = self._normalize_recurring_rule(getattr(event, "recurring_rule", None))
         price_value: float | None = None
         if event.price is not None:
             if isinstance(event.price, Decimal):
@@ -1850,6 +2201,11 @@ class CRMService:
             "location": event.location,
             "link_getcourse": normalize_getcourse_url(event.link_getcourse)[0],
             "price": price_value,
+            "schedule_type": self._normalize_schedule_type(getattr(event, "schedule_type", None)),
+            "schedule_text": self._event_schedule_text(event, recurring_rule),
+            "hosts": getattr(event, "hosts", None),
+            "price_individual_rub": getattr(event, "price_individual_rub", None),
+            "price_group_rub": getattr(event, "price_group_rub", None),
         }
 
     def _catalog_out(self, item: CatalogItem) -> dict[str, Any]:

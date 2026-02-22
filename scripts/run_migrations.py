@@ -44,6 +44,28 @@ MIGRATIONS = [
         WHERE external_source IS NOT NULL AND external_id IS NOT NULL
         """,
     ]),
+    ("events_schedule_meta", [
+        "ALTER TABLE events ADD COLUMN IF NOT EXISTS schedule_type VARCHAR(20) DEFAULT 'one_time'",
+        "ALTER TABLE events ADD COLUMN IF NOT EXISTS start_date TIMESTAMPTZ",
+        "ALTER TABLE events ADD COLUMN IF NOT EXISTS start_time TIME",
+        "ALTER TABLE events ADD COLUMN IF NOT EXISTS end_time TIME",
+        "ALTER TABLE events ADD COLUMN IF NOT EXISTS recurring_rule TEXT",
+        "ALTER TABLE events ADD COLUMN IF NOT EXISTS hosts TEXT",
+        "ALTER TABLE events ADD COLUMN IF NOT EXISTS price_individual_rub INTEGER",
+        "ALTER TABLE events ADD COLUMN IF NOT EXISTS price_group_rub INTEGER",
+        "ALTER TABLE events ADD COLUMN IF NOT EXISTS duration_hint TEXT",
+        "ALTER TABLE events ADD COLUMN IF NOT EXISTS booking_hint TEXT",
+        """
+        UPDATE events
+        SET schedule_type = CASE
+            WHEN starts_at IS NULL THEN 'rolling'
+            ELSE 'one_time'
+        END
+        WHERE schedule_type IS NULL OR schedule_type = ''
+        """,
+        "UPDATE events SET start_date = starts_at WHERE start_date IS NULL AND starts_at IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS ix_events_schedule_type ON events (schedule_type)",
+    ]),
     ("funnel_contacts", [
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(100)",

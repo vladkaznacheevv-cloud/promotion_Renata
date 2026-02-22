@@ -32,6 +32,8 @@ from core.crm.schemas import (
 )
 from core.crm.service import CRMService
 from core.crm.service import (
+    CRMClientTelegramSendError,
+    CRMClientTelegramUnavailableError,
     GetCourseSyncAlreadyRunningError,
     GetCourseSyncCooldownError,
 )
@@ -90,7 +92,28 @@ async def delete_client(
     ok = await service.delete_client(client_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Client not found")
-    return {"status": "deleted"}
+    return {"ok": True, "status": "deleted"}
+
+
+@router.post("/clients/{client_id}/request-contacts")
+async def request_client_contacts(
+    client_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: object = Depends(require_roles("admin", "manager")),
+):
+    service = CRMService(db)
+    try:
+        result = await service.request_client_contacts_via_bot(client_id)
+    except CRMClientTelegramUnavailableError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except CRMClientTelegramSendError as exc:
+        detail = str(exc)
+        if detail == "BOT_TOKEN not configured":
+            raise HTTPException(status_code=500, detail=detail)
+        raise HTTPException(status_code=502, detail=detail)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Client not found")
+    return result
 
 
 @router.get("/catalog", response_model=CatalogListOut)

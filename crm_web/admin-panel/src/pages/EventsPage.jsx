@@ -15,12 +15,19 @@ import { Card, CardContent, CardHeader } from "../components/ui/Card";
 import Input from "../components/ui/Input";
 import { Table, TBody, TD, TH, THead, TR } from "../components/ui/Table";
 
-const isOnlineConsultation = (event) => !event?.date;
+const scheduleTypeOf = (event) => event?.schedule_type || (event?.date ? "one_time" : "rolling");
+const isRolling = (event) => scheduleTypeOf(event) === "rolling";
+const isRecurring = (event) => scheduleTypeOf(event) === "recurring";
+const isOnlineConsultation = (event) => isRolling(event);
 
 const statusLabel = (event) =>
   (isOnlineConsultation(event) || event?.status !== "finished") ? RU.statuses.active : RU.statuses.finished;
 
-const eventTypeLabel = (event) => (isOnlineConsultation(event) ? RU.labels.eventTypeOnlineConsultation : RU.labels.eventTypeEvent);
+const eventTypeLabel = (event) => {
+  if (isRecurring(event)) return RU.labels.scheduleTypeRecurring;
+  if (isRolling(event)) return RU.labels.scheduleTypeRolling;
+  return RU.labels.eventTypeEvent;
+};
 
 export default function EventsPage() {
   const { currentUser } = useAuth();
@@ -76,7 +83,7 @@ export default function EventsPage() {
   const filteredEvents = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     return events.filter((event) => {
-      const normalizedStatus = isOnlineConsultation(event) ? "active" : event.status;
+      const normalizedStatus = isRolling(event) ? "active" : event.status;
       if (statusFilter !== "all" && normalizedStatus !== statusFilter) return false;
       if (!normalizedQuery) return true;
 
@@ -216,7 +223,16 @@ export default function EventsPage() {
                     </button>
                   </TD>
                   <TD>
-                    {eventTypeLabel(event)}
+                    <div className="flex flex-col gap-1">
+                      <span>{eventTypeLabel(event)}</span>
+                      <Badge variant={isRecurring(event) ? "default" : isRolling(event) ? "active" : "default"}>
+                        {isRecurring(event)
+                          ? RU.labels.recurringBadge
+                          : isRolling(event)
+                            ? RU.labels.rollingBadge
+                            : RU.labels.oneTimeBadge}
+                      </Badge>
+                    </div>
                   </TD>
                   <TD>
                     <Badge variant={statusLabel(event) === RU.statuses.active ? "active" : "finished"}>
@@ -224,9 +240,11 @@ export default function EventsPage() {
                     </Badge>
                   </TD>
                   <TD>
-                    {isOnlineConsultation(event)
-                      ? RU.labels.rollingEventDate
-                      : formatDateRu(event.date, { day: "2-digit", month: "2-digit", year: "numeric" })}
+                    {isRecurring(event)
+                      ? (event.schedule_text || RU.labels.recurringPresetTwiceMonth)
+                      : isRolling(event)
+                        ? "Без даты / по запросу"
+                        : formatDateRu(event.date, { day: "2-digit", month: "2-digit", year: "numeric" })}
                   </TD>
                   <TD>{formatCurrencyRub(event.price)}</TD>
                   <TD>{event.location || RU.messages.notSet}</TD>

@@ -530,23 +530,87 @@ async def _save_contacts (update :Update ,context :ContextTypes .DEFAULT_TYPE ,p
         await _notify_db_unavailable (update )
 
 
+async def _get_contact_snapshot (tg_id :int )->dict |None :
+    try :
+        db .init_db ()
+        async with db .async_session ()as session :
+            row =await session .execute (
+            select (User .id ,User .phone ,User .email ).where (User .tg_id ==tg_id )
+            )
+            data =row .first ()
+            if data is None :
+                return None 
+            return {"id":int (data [0 ]),"phone":data [1 ],"email":data [2 ]}
+    except Exception :
+        logger .exception ("Contact snapshot read failed for tg_id=%s",tg_id )
+        return None 
+
+
+async def _save_contact_field (update :Update ,*,phone :str |None =None ,email :str |None =None )->bool :
+    tg_user =update .effective_user 
+    if tg_user is None :
+        return False 
+    try :
+        db .init_db ()
+        async with db .async_session ()as session :
+            crm_service =CRMService (session )
+            result =await crm_service .update_client_contacts (
+            tg_id =tg_user .id ,
+            phone =phone ,
+            email =email ,
+            )
+            if result is None :
+                user_service =UserService (session )
+                await user_service .get_or_create_by_tg_id (
+                tg_id =tg_user .id ,
+                first_name =tg_user .first_name ,
+                last_name =tg_user .last_name ,
+                username =tg_user .username ,
+                source ="bot",
+                update_if_exists =True ,
+                )
+                await crm_service .update_client_contacts (
+                tg_id =tg_user .id ,
+                phone =phone ,
+                email =email ,
+                )
+            await session .commit ()
+        return True 
+    except Exception as e :
+        logger .exception ("Contact partial save failed: %s",e )
+        await _notify_db_unavailable (update )
+        return False 
+
+
 async def handle_contact_phone (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
-    if not context .user_data .get (WAITING_CONTACT_PHONE_KEY ):
-        return 
     if not update .message or not update .message .contact :
         return 
+
+    waiting_phone =bool (context .user_data .get (WAITING_CONTACT_PHONE_KEY ))
+    if not waiting_phone :
+        tg_user =update .effective_user 
+        if tg_user is None :
+            return 
+        snapshot =await _get_contact_snapshot (tg_user .id )
+        if snapshot is None :
+            return 
+        if snapshot .get ("phone")and snapshot .get ("email"):
+            await _reply (update .message ,'???????? ??? ????????, ???????!')
+            return 
 
     contact =update .message .contact 
     phone =(contact .phone_number or "").strip ()
     if not phone :
-        await _reply (update .message ,"РќРµ СѓРґР°Р»РѕСЃСЊ РїСЂРѕС‡РёС‚Р°С‚СЊ РЅРѕРјРµСЂ. РћС‚РїСЂР°РІСЊС‚Рµ РЅРѕРјРµСЂ С‚РµРєСЃС‚РѕРј.")
+        await _reply (update .message ,'?? ??????? ????????? ?????. ????????? ????? ???????.')
+        return 
+    if not await _save_contact_field (update ,phone =phone ):
         return 
 
     context .user_data [CONTACT_PHONE_KEY ]=phone 
     context .user_data [WAITING_CONTACT_PHONE_KEY ]=False 
     context .user_data [WAITING_CONTACT_EMAIL_KEY ]=True 
     context .user_data [SKIP_NEXT_EMAIL_KEY ]=True 
-    await _reply (update .message ,"РўРµРїРµСЂСЊ РѕС‚РїСЂР°РІСЊС‚Рµ email С‚РµРєСЃС‚РѕРј.",reply_markup =get_remove_reply_kb ())
+    await _reply (update .message ,'???????! ?????? ???????? ???? ????? ????? ?????????? (????????: name@example.com).',reply_markup =get_remove_reply_kb ())
 
 
 async def handle_contact_phone_text (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
@@ -556,49 +620,65 @@ async def handle_contact_phone_text (update :Update ,context :ContextTypes .DEFA
         return 
 
     text =(update .message .text or "").strip ()
-    if text .lower ()=="РѕС‚РјРµРЅР°":
+    if text .lower ()=="??????":
         _reset_states (context )
-        await _reply (update .message ,"Р”РµР№СЃС‚РІРёРµ РѕС‚РјРµРЅРµРЅРѕ.",reply_markup =get_main_menu ())
+        await _reply (update .message ,'???????? ????????.',reply_markup =get_main_menu ())
         return 
 
     normalized =re .sub (r"[^\\d+]","",text )
     if len (re .sub (r"\\D","",normalized ))<10 :
-        await _reply (update .message ,"РќРѕРјРµСЂ РІС‹РіР»СЏРґРёС‚ РЅРµРєРѕСЂСЂРµРєС‚РЅРѕ. РџСЂРёРјРµСЂ: +79991234567")
+        await _reply (update .message ,'????? ???????? ???????????. ??????: +79991234567')
+        return 
+    if not await _save_contact_field (update ,phone =normalized ):
         return 
 
     context .user_data [CONTACT_PHONE_KEY ]=normalized 
     context .user_data [WAITING_CONTACT_PHONE_KEY ]=False 
     context .user_data [WAITING_CONTACT_EMAIL_KEY ]=True 
     context .user_data [SKIP_NEXT_EMAIL_KEY ]=True 
-    await _reply (update .message ,"РћС‚Р»РёС‡РЅРѕ. РўРµРїРµСЂСЊ РѕС‚РїСЂР°РІСЊС‚Рµ email С‚РµРєСЃС‚РѕРј.",reply_markup =get_remove_reply_kb ())
+    await _reply (update .message ,'???????! ?????? ???????? ???? ????? ????? ?????????? (????????: name@example.com).',reply_markup =get_remove_reply_kb ())
 
 
 async def handle_contact_email_text (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     if context .user_data .pop (SKIP_NEXT_EMAIL_KEY ,False ):
         return 
-    if not context .user_data .get (WAITING_CONTACT_EMAIL_KEY ):
-        return 
     if not update .message or not update .message .text :
         return 
 
+    waiting_email =bool (context .user_data .get (WAITING_CONTACT_EMAIL_KEY ))
     email =(update .message .text or "").strip ().lower ()
-    if email =="РѕС‚РјРµРЅР°":
+    if waiting_email and email =="??????":
         _reset_states (context )
-        await _reply (update .message ,"Р”РµР№СЃС‚РІРёРµ РѕС‚РјРµРЅРµРЅРѕ.",reply_markup =get_main_menu ())
+        await _reply (update .message ,'???????? ????????.',reply_markup =get_main_menu ())
         return 
 
     if not EMAIL_RE .match (email ):
-        await _reply (update .message ,"РќРµРєРѕСЂСЂРµРєС‚РЅС‹Р№ email. РџСЂРёРјРµСЂ: name@example.com")
+        if waiting_email :
+            await _reply (update .message ,'???????????? email. ??????: name@example.com')
+        return 
+
+    tg_user =update .effective_user 
+    if tg_user is None :
+        return 
+
+    snapshot =await _get_contact_snapshot (tg_user .id )
+    if snapshot is not None and snapshot .get ("phone")and snapshot .get ("email"):
+        _reset_states (context )
+        await _reply (update .message ,'???????? ??? ????????, ???????!')
         return 
 
     phone =context .user_data .get (CONTACT_PHONE_KEY )
+    if not phone and snapshot is not None :
+        phone =snapshot .get ("phone")
     if not phone :
-        context .user_data [WAITING_CONTACT_EMAIL_KEY ]=False 
-        context .user_data [WAITING_CONTACT_PHONE_KEY ]=True 
-        await _reply (update .message ,"РЎРЅР°С‡Р°Р»Р° РѕС‚РїСЂР°РІСЊС‚Рµ РЅРѕРјРµСЂ С‚РµР»РµС„РѕРЅР°.")
+        if waiting_email :
+            context .user_data [WAITING_CONTACT_EMAIL_KEY ]=False 
+            context .user_data [WAITING_CONTACT_PHONE_KEY ]=True 
+        await _reply (update .message ,'??????? ????????? ????? ????????.')
         return 
 
     await _save_contacts (update ,context ,phone =phone ,email =email )
+
 
 
     # --------- Events ---------

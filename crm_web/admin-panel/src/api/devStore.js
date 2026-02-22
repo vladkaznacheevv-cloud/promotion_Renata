@@ -248,6 +248,49 @@ let getcourseState = {
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
 
+const DEFAULT_EVENT_HOSTS = `Диана Даниелян — клинический психолог, гештальттерапевт
+Елена Анищенко — клинический психолог, супервизор, гештальттерапевт`;
+const DEFAULT_DURATION_HINT = "Длительность игры 1–4 часа, в зависимости от количества игроков.";
+const DEFAULT_BOOKING_HINT = "Запись по запросу в удобное время и дату.";
+
+const formatScheduleText = (event) => {
+  const scheduleType = event.schedule_type || (event.date ? "one_time" : "rolling");
+  if (scheduleType === "rolling") return "Без даты / по запросу";
+  if (scheduleType !== "recurring") return null;
+  const rule = event.recurring_rule || { bysetpos: [2, 4], byweekday: "TU" };
+  const positions = Array.isArray(rule.bysetpos) ? rule.bysetpos : [2, 4];
+  const weekdays = {
+    MO: "понедельник",
+    TU: "вторник",
+    WE: "среда",
+    TH: "четверг",
+    FR: "пятница",
+    SA: "суббота",
+    SU: "воскресенье",
+  };
+  const day = weekdays[(rule.byweekday || "TU").toUpperCase()] || "вторник";
+  const from = event.start_time || "17:00";
+  const to = event.end_time || "21:00";
+  return `${positions.map((p) => `${p}-й`).join(" и ")} ${day}, ${from}–${to}`;
+};
+
+const normalizeEventShape = (event) => {
+  const schedule_type = event.schedule_type || (event.date ? "one_time" : "rolling");
+  return {
+    ...event,
+    schedule_type,
+    recurring_rule: event.recurring_rule || (schedule_type === "recurring" ? { freq: "MONTHLY", bysetpos: [2, 4], byweekday: "TU" } : null),
+    start_time: event.start_time || (schedule_type === "recurring" ? "17:00" : null),
+    end_time: event.end_time || (schedule_type === "recurring" ? "21:00" : null),
+    hosts: event.hosts || DEFAULT_EVENT_HOSTS,
+    price_individual_rub: event.price_individual_rub ?? 8000,
+    price_group_rub: event.price_group_rub ?? 5000,
+    duration_hint: event.duration_hint || DEFAULT_DURATION_HINT,
+    booking_hint: event.booking_hint || DEFAULT_BOOKING_HINT,
+    schedule_text: formatScheduleText({ ...event, schedule_type }),
+  };
+};
+
 const deriveClient = (client) => {
   const stage = client.stage || "NEW";
   const phone = client.phone || null;
@@ -312,13 +355,30 @@ export function deleteClient(id) {
   return true;
 }
 
+export function requestClientContacts(id) {
+  const client = clients.find((c) => c.id === id);
+  if (!client) {
+    const error = new Error("Client not found");
+    error.status = 404;
+    throw error;
+  }
+  if (!client.tg_id) {
+    const error = new Error("Client has no Telegram ID");
+    error.status = 400;
+    error.payload = { detail: "Client has no Telegram ID" };
+    throw error;
+  }
+  return { ok: true };
+}
+
 export function getEvents() {
-  return { items: clone(events), total: events.length };
+  return { items: clone(events.map(normalizeEventShape)), total: events.length };
 }
 
 export function createEvent(payload) {
   eventSeq += 1;
-  const event = {
+  const schedule_type = payload.schedule_type || (payload.date ? "one_time" : "rolling");
+  const event = normalizeEventShape({
     id: eventSeq,
     title: payload.title,
     type: payload.type || "Событие",
@@ -330,7 +390,16 @@ export function createEvent(payload) {
     location: payload.location || null,
     link_getcourse: payload.link_getcourse || null,
     revenue: payload.revenue ?? 0,
-  };
+    schedule_type,
+    start_time: payload.start_time ?? null,
+    end_time: payload.end_time ?? null,
+    recurring_rule: payload.recurring_rule ?? null,
+    hosts: payload.hosts ?? null,
+    price_individual_rub: payload.price_individual_rub ?? null,
+    price_group_rub: payload.price_group_rub ?? null,
+    duration_hint: payload.duration_hint ?? null,
+    booking_hint: payload.booking_hint ?? null,
+  });
   events.unshift(event);
   eventAttendees[event.id] = [];
   return clone(event);
@@ -339,7 +408,7 @@ export function createEvent(payload) {
 export function updateEvent(id, payload) {
   const idx = events.findIndex((e) => e.id === id);
   if (idx === -1) return null;
-  events[idx] = { ...events[idx], ...payload };
+  events[idx] = normalizeEventShape({ ...events[idx], ...payload });
   return clone(events[idx]);
 }
 
