@@ -243,7 +243,7 @@ export default function EventsPage() {
                     {isRecurring(event)
                       ? (event.schedule_text || RU.labels.recurringPresetTwiceMonth)
                       : isRolling(event)
-                        ? "Без даты / по запросу"
+                        ? RU.labels.rollingEventDate
                         : formatDateRu(event.date, { day: "2-digit", month: "2-digit", year: "numeric" })}
                   </TD>
                   <TD>{formatCurrencyRub(event.price)}</TD>

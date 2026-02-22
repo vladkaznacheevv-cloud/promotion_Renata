@@ -22,6 +22,26 @@ const STAGE_OPTIONS = [
   "INACTIVE",
 ];
 
+function humanizeRequestContactsError(err) {
+  const detail = err?.payload?.detail;
+  const detailText =
+    typeof detail === "string"
+      ? detail
+      : Array.isArray(detail)
+        ? detail.map((item) => item?.msg || item?.message || "").filter(Boolean).join("; ")
+        : "";
+
+  const rawText = detailText || (typeof err?.message === "string" ? err.message : "");
+  const lowered = rawText.toLowerCase();
+  if (lowered.includes("telegram id") || lowered.includes("tg_id")) {
+    return RU.messages.contactsRequestNoTgId;
+  }
+  if (detailText) {
+    return `${RU.messages.contactsRequestFailed} ${detailText}`;
+  }
+  return RU.messages.contactsRequestFailed;
+}
+
 export default function ClientsPage() {
   const { currentUser } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -150,7 +170,7 @@ export default function ClientsPage() {
       await requestClientContacts(client.id);
       setSuccess(RU.messages.contactsSavedInfo);
     } catch (err) {
-      setError(err?.payload?.detail || err?.message || RU.messages.clientSaveError);
+      setError(humanizeRequestContactsError(err));
     }
   };
 

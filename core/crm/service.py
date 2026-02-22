@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, time, timezone, timedelta
+from datetime import date as date_type, datetime, time, timezone, timedelta
 from decimal import Decimal
 import json
 import logging
@@ -207,6 +207,123 @@ class CRMService:
         return json.dumps(rule, ensure_ascii=False, separators=(",", ":"))
 
     @staticmethod
+    def _normalize_occurrence_dates(value: Any) -> list[date_type] | None:
+        if value in (None, ""):
+            return None
+
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return None
+            if not isinstance(parsed, list):
+                return None
+            items = parsed
+        elif isinstance(value, list):
+            items = value
+        else:
+            return None
+
+        result: list[date_type] = []
+        for item in items:
+            parsed_date: date_type | None = None
+            if isinstance(item, datetime):
+                parsed_date = item.date()
+            elif isinstance(item, date_type):
+                parsed_date = item
+            else:
+                text_value = str(item or "").strip()
+                if text_value:
+                    try:
+                        parsed_date = datetime.fromisoformat(text_value[:10]).date()
+                    except ValueError:
+                        parsed_date = None
+            if parsed_date and parsed_date not in result:
+                result.append(parsed_date)
+        result.sort()
+        return result or None
+
+    @staticmethod
+    def _serialize_occurrence_dates(values: list[date_type] | None) -> str | None:
+        if not values:
+            return None
+        return json.dumps([value.isoformat() for value in values], ensure_ascii=False, separators=(",", ":"))
+
+    @staticmethod
+    def _normalize_pricing_options(value: Any) -> list[dict[str, Any]] | None:
+        if value in (None, ""):
+            return None
+
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return None
+            if not isinstance(parsed, list):
+                return None
+            items = parsed
+        elif isinstance(value, list):
+            items = value
+        else:
+            return None
+
+        result: list[dict[str, Any]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("label") or "").strip()
+            if not label:
+                continue
+            try:
+                price_rub = int(item.get("price_rub"))
+            except (TypeError, ValueError):
+                continue
+            if price_rub < 0:
+                continue
+            note_raw = item.get("note")
+            note = str(note_raw).strip() if note_raw is not None else None
+            result.append({"label": label, "price_rub": price_rub, "note": note or None})
+        return result or None
+
+    @staticmethod
+    def _serialize_pricing_options(values: list[dict[str, Any]] | None) -> str | None:
+        if not values:
+            return None
+        return json.dumps(values, ensure_ascii=False, separators=(",", ":"))
+
+    @staticmethod
+    def _to_start_of_day(value: date_type | datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value.replace(hour=0, minute=0, second=0, microsecond=0)
+        return datetime.combine(value, time.min)
+
+    @staticmethod
+    def _format_date_short(value: date_type | datetime | None) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value.strftime("%d.%m")
+        return value.strftime("%d.%m")
+
+    @staticmethod
+    def _format_date_full(value: date_type | datetime | None) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value.strftime("%d.%m.%Y")
+        return value.strftime("%d.%m.%Y")
+
+    @classmethod
+    def _time_range_text(cls, start_time_value: Any, end_time_value: Any) -> str | None:
+        start_hhmm = cls._time_to_hhmm(start_time_value)
+        end_hhmm = cls._time_to_hhmm(end_time_value)
+        if start_hhmm and end_hhmm:
+            return f"{start_hhmm}–{end_hhmm}"
+        return start_hhmm or end_hhmm
+
+    @staticmethod
     def _recurring_weekday_ru(code: str) -> str:
         mapping = {
             "MO": "понедельник",
@@ -240,12 +357,33 @@ class CRMService:
         return f"{pos_text} {weekday}, {start_hhmm}–{end_hhmm}"
 
     @classmethod
-    def _event_schedule_text(cls, event: Event, recurring_rule: dict[str, Any] | None = None) -> str | None:
+    def _event_schedule_text(
+        cls,
+        event: Event,
+        recurring_rule: dict[str, Any] | None = None,
+        occurrence_dates: list[date_type] | None = None,
+    ) -> str | None:
         schedule_type = cls._normalize_schedule_type(getattr(event, "schedule_type", None))
         if schedule_type == EVENT_SCHEDULE_ROLLING:
-            return "Без даты / по запросу"
+            return "\u0411\u0435\u0437 \u0434\u0430\u0442\u044b / \u043f\u043e \u0437\u0430\u043f\u0440\u043e\u0441\u0443"
         if schedule_type == EVENT_SCHEDULE_RECURRING:
-            return cls._recurring_schedule_text(recurring_rule, event.start_time, event.end_time)
+            if occurrence_dates:
+                dates_text = ", ".join(
+                    part for part in (cls._format_date_short(item) for item in occurrence_dates) if part
+                )
+                parts: list[str] = []
+                if dates_text:
+                    parts.append(f"\u0414\u0430\u0442\u044b: {dates_text}")
+                time_text = cls._time_range_text(event.start_time, event.end_time)
+                if time_text:
+                    parts.append(time_text)
+                return "; ".join(parts) if parts else None
+
+            rule_text = cls._recurring_schedule_text(recurring_rule, event.start_time, event.end_time)
+            start_text = cls._format_date_full(getattr(event, "start_date", None))
+            if start_text:
+                return f"\u0421\u0442\u0430\u0440\u0442 {start_text}; {rule_text}"
+            return rule_text
         return None
 
     async def _payments_has_event_id(self) -> bool:
@@ -735,18 +873,20 @@ class CRMService:
         status = payload.get("status") or "active"
         is_active = status == "active"
         schedule_type = self._normalize_schedule_type(payload.get("schedule_type"))
-        if payload.get("date") is None and schedule_type == EVENT_SCHEDULE_ONE_TIME:
-            schedule_type = EVENT_SCHEDULE_ROLLING
 
         starts_at = None
-        start_date_value = payload.get("start_date")
+        start_date_value = self._to_start_of_day(payload.get("start_date"))
         if payload.get("date"):
             starts_at = datetime.combine(payload["date"], time.min)
-            start_date_value = starts_at
-        elif isinstance(start_date_value, datetime):
-            starts_at = start_date_value if schedule_type == EVENT_SCHEDULE_ONE_TIME else None
+            if schedule_type == EVENT_SCHEDULE_ONE_TIME:
+                start_date_value = starts_at
+
+        occurrence_dates = self._normalize_occurrence_dates(payload.get("occurrence_dates"))
+        pricing_options = self._normalize_pricing_options(payload.get("pricing_options"))
 
         price = payload.get("price")
+        if pricing_options:
+            price = pricing_options[0]["price_rub"]
         if price is not None:
             price = Decimal(str(price))
 
@@ -754,7 +894,9 @@ class CRMService:
         end_time_value = self._parse_hhmm(payload.get("end_time"))
         recurring_rule = self._normalize_recurring_rule(payload.get("recurring_rule"))
         if schedule_type == EVENT_SCHEDULE_RECURRING:
-            recurring_rule = recurring_rule or dict(DEFAULT_RECURRING_RULE)
+            starts_at = None
+            if not occurrence_dates:
+                recurring_rule = recurring_rule or dict(DEFAULT_RECURRING_RULE)
             start_time_value = start_time_value or DEFAULT_RECURRING_START_TIME
             end_time_value = end_time_value or DEFAULT_RECURRING_END_TIME
         elif schedule_type == EVENT_SCHEDULE_ROLLING:
@@ -763,21 +905,22 @@ class CRMService:
             start_time_value = None
             end_time_value = None
             recurring_rule = None
+            occurrence_dates = None
         else:
+            if starts_at is None and payload.get("date"):
+                starts_at = datetime.combine(payload["date"], time.min)
+            if starts_at is not None:
+                start_date_value = starts_at
             start_time_value = None
             end_time_value = None
             recurring_rule = None
+            occurrence_dates = None
 
-        normalized_link, _ = normalize_getcourse_url(payload.get("link_getcourse"))
         hosts = self._normalize_text_field(payload.get("hosts")) or DEFAULT_EVENT_HOSTS
         duration_hint = self._normalize_text_field(payload.get("duration_hint")) or DEFAULT_DURATION_HINT
         booking_hint = self._normalize_text_field(payload.get("booking_hint")) or DEFAULT_BOOKING_HINT
         price_individual_rub = self._normalize_int_field(payload.get("price_individual_rub"))
-        if price_individual_rub is None:
-            price_individual_rub = 8000
         price_group_rub = self._normalize_int_field(payload.get("price_group_rub"))
-        if price_group_rub is None:
-            price_group_rub = 5000
 
         event = Event(
             title=payload.get("title"),
@@ -788,12 +931,14 @@ class CRMService:
             start_time=start_time_value,
             end_time=end_time_value,
             recurring_rule=self._serialize_recurring_rule(recurring_rule),
+            occurrence_dates=self._serialize_occurrence_dates(occurrence_dates),
+            pricing_options=self._serialize_pricing_options(pricing_options),
             hosts=hosts,
             price_individual_rub=price_individual_rub,
             price_group_rub=price_group_rub,
             duration_hint=duration_hint,
             booking_hint=booking_hint,
-            link_getcourse=normalized_link,
+            link_getcourse=None,
             starts_at=starts_at,
             price=price,
             is_active=is_active,
@@ -822,18 +967,18 @@ class CRMService:
         if "date" in payload:
             date_value = payload.get("date")
             event.starts_at = datetime.combine(date_value, time.min) if date_value else None
-            event.start_date = event.starts_at
+            if current_schedule_type == EVENT_SCHEDULE_ONE_TIME:
+                event.start_date = event.starts_at
         if "price" in payload:
             price = payload.get("price")
             event.price = Decimal(str(price)) if price is not None else None
         if "link_getcourse" in payload:
-            normalized_link, _ = normalize_getcourse_url(payload.get("link_getcourse"))
-            event.link_getcourse = normalized_link
+            event.link_getcourse = None
         if "schedule_type" in payload:
             current_schedule_type = self._normalize_schedule_type(payload.get("schedule_type"))
             event.schedule_type = current_schedule_type
         if "start_date" in payload:
-            event.start_date = payload.get("start_date")
+            event.start_date = self._to_start_of_day(payload.get("start_date"))
         if "start_time" in payload:
             event.start_time = self._parse_hhmm(payload.get("start_time"))
         if "end_time" in payload:
@@ -842,6 +987,17 @@ class CRMService:
             event.recurring_rule = self._serialize_recurring_rule(
                 self._normalize_recurring_rule(payload.get("recurring_rule"))
             )
+        if "occurrence_dates" in payload:
+            event.occurrence_dates = self._serialize_occurrence_dates(
+                self._normalize_occurrence_dates(payload.get("occurrence_dates"))
+            )
+        if "pricing_options" in payload:
+            pricing_options = self._normalize_pricing_options(payload.get("pricing_options"))
+            event.pricing_options = self._serialize_pricing_options(pricing_options)
+            if pricing_options:
+                event.price = Decimal(str(pricing_options[0]["price_rub"]))
+            elif "price" not in payload:
+                event.price = None
         if "hosts" in payload:
             event.hosts = self._normalize_text_field(payload.get("hosts"))
         if "price_individual_rub" in payload:
@@ -859,21 +1015,31 @@ class CRMService:
             event.start_time = None
             event.end_time = None
             event.recurring_rule = None
+            event.occurrence_dates = None
         elif current_schedule_type == EVENT_SCHEDULE_RECURRING:
             if event.start_time is None:
                 event.start_time = DEFAULT_RECURRING_START_TIME
             if event.end_time is None:
                 event.end_time = DEFAULT_RECURRING_END_TIME
             recurring_rule_value = self._normalize_recurring_rule(event.recurring_rule)
-            if recurring_rule_value is None:
+            occurrence_dates_value = self._normalize_occurrence_dates(getattr(event, "occurrence_dates", None))
+            if recurring_rule_value is None and not occurrence_dates_value:
                 recurring_rule_value = dict(DEFAULT_RECURRING_RULE)
             event.recurring_rule = self._serialize_recurring_rule(recurring_rule_value)
-            if event.starts_at is None:
-                event.start_date = None if event.start_date is None else event.start_date
+            if recurring_rule_value is not None:
+                event.occurrence_dates = None
+            if event.starts_at is not None:
+                event.starts_at = None
         else:
             event.start_time = None
             event.end_time = None
             event.recurring_rule = None
+            event.occurrence_dates = None
+            if event.starts_at is not None:
+                event.start_date = event.starts_at
+
+        # Events are no longer linked directly to GetCourse in CRM.
+        event.link_getcourse = None
 
         await self.db.flush()
 
@@ -2148,7 +2314,10 @@ class CRMService:
 
     def _event_out(self, event: Event, attendees: int, revenue: int) -> dict[str, Any]:
         date_value = event.starts_at.date().isoformat() if event.starts_at else None
-        start_date_value = event.start_date.isoformat() if getattr(event, "start_date", None) else None
+        start_date_raw = getattr(event, "start_date", None)
+        start_date_value = start_date_raw.date().isoformat() if isinstance(start_date_raw, datetime) else (
+            start_date_raw.isoformat() if start_date_raw else None
+        )
         price_value: float | None = None
         if event.price is not None:
             if isinstance(event.price, Decimal):
@@ -2156,6 +2325,12 @@ class CRMService:
             else:
                 price_value = float(event.price)
         recurring_rule = self._normalize_recurring_rule(getattr(event, "recurring_rule", None))
+        occurrence_dates = self._normalize_occurrence_dates(getattr(event, "occurrence_dates", None))
+        pricing_options = self._normalize_pricing_options(getattr(event, "pricing_options", None))
+        if pricing_options is None:
+            pricing_options = self._pricing_options_fallback(event)
+        if price_value is None and pricing_options:
+            price_value = float(pricing_options[0]["price_rub"])
         schedule_type = self._normalize_schedule_type(getattr(event, "schedule_type", None))
 
         return {
@@ -2175,7 +2350,9 @@ class CRMService:
             "start_time": self._time_to_hhmm(getattr(event, "start_time", None)),
             "end_time": self._time_to_hhmm(getattr(event, "end_time", None)),
             "recurring_rule": recurring_rule,
-            "schedule_text": self._event_schedule_text(event, recurring_rule),
+            "occurrence_dates": [item.isoformat() for item in occurrence_dates] if occurrence_dates else None,
+            "schedule_text": self._event_schedule_text(event, recurring_rule, occurrence_dates),
+            "pricing_options": pricing_options,
             "hosts": getattr(event, "hosts", None),
             "price_individual_rub": getattr(event, "price_individual_rub", None),
             "price_group_rub": getattr(event, "price_group_rub", None),
@@ -2183,15 +2360,40 @@ class CRMService:
             "booking_hint": getattr(event, "booking_hint", None),
         }
 
+    def _pricing_options_fallback(self, event: Event) -> list[dict[str, Any]] | None:
+        direct = self._normalize_pricing_options(getattr(event, "pricing_options", None))
+        if direct:
+            return direct
+
+        if event.price is not None:
+            if isinstance(event.price, Decimal):
+                price_int = int(event.price)
+            else:
+                price_int = int(float(event.price))
+            return [{"label": "Стоимость", "price_rub": price_int, "note": None}]
+
+        options: list[dict[str, Any]] = []
+        if getattr(event, "price_individual_rub", None) is not None:
+            options.append({"label": "Индивидуально", "price_rub": int(event.price_individual_rub), "note": None})
+        if getattr(event, "price_group_rub", None) is not None:
+            options.append({"label": "Группа (за участника)", "price_rub": int(event.price_group_rub), "note": None})
+        if options:
+            return options
+        return None
+
     def _event_summary(self, event: Event) -> dict[str, Any]:
         date_value = event.starts_at.date().isoformat() if event.starts_at else None
         recurring_rule = self._normalize_recurring_rule(getattr(event, "recurring_rule", None))
+        occurrence_dates = self._normalize_occurrence_dates(getattr(event, "occurrence_dates", None))
         price_value: float | None = None
         if event.price is not None:
             if isinstance(event.price, Decimal):
                 price_value = float(event.price)
             else:
                 price_value = float(event.price)
+        pricing_options = self._pricing_options_fallback(event)
+        if price_value is None and pricing_options:
+            price_value = float(pricing_options[0]["price_rub"])
 
         return {
             "id": event.id,
@@ -2202,7 +2404,9 @@ class CRMService:
             "link_getcourse": normalize_getcourse_url(event.link_getcourse)[0],
             "price": price_value,
             "schedule_type": self._normalize_schedule_type(getattr(event, "schedule_type", None)),
-            "schedule_text": self._event_schedule_text(event, recurring_rule),
+            "schedule_text": self._event_schedule_text(event, recurring_rule, occurrence_dates),
+            "occurrence_dates": [item.isoformat() for item in occurrence_dates] if occurrence_dates else None,
+            "pricing_options": pricing_options,
             "hosts": getattr(event, "hosts", None),
             "price_individual_rub": getattr(event, "price_individual_rub", None),
             "price_group_rub": getattr(event, "price_group_rub", None),
