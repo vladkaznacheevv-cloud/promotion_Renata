@@ -247,7 +247,7 @@ export default function EventFormModal({
         </div>
       }
     >
-      <form id="event-form" className="space-y-4" onSubmit={handleSubmit}>
+      <form id="event-form" className="space-y-3" onSubmit={handleSubmit}>
         {error && <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
 
         <label className="block text-sm font-medium text-slate-700">
@@ -382,7 +382,7 @@ export default function EventFormModal({
             className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500"
             value={values.hosts}
             onChange={(e) => onFieldChange("hosts", e.target.value)}
-            rows={3}
+            rows={2}
           />
         </label>
 

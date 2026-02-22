@@ -71,7 +71,7 @@ export default function EventModal({
       footer={footer}
     >
       <div className="space-y-4">
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
             <p className="text-sm text-slate-500">{RU.labels.eventType}</p>
             <p className="text-base font-semibold text-slate-900">
@@ -96,7 +96,7 @@ export default function EventModal({
             <p className="text-sm text-slate-500">{RU.labels.price}</p>
             <p className="text-base font-semibold text-slate-900">{formatCurrencyRub(event.price)}</p>
           </div>
-          <div className="col-span-2">
+          <div className="sm:col-span-2">
             <p className="text-sm text-slate-500">{RU.labels.prices}</p>
             <div className="space-y-1 text-base font-semibold text-slate-900">
               <p>
