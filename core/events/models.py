@@ -33,6 +33,8 @@ class Event(Base):
     start_time = Column(Time, nullable=True)
     end_time = Column(Time, nullable=True)
     recurring_rule = Column(Text, nullable=True)
+    occurrence_dates = Column(Text, nullable=True)
+    pricing_options = Column(Text, nullable=True)
     hosts = Column(Text, nullable=True)
     price_individual_rub = Column(Integer, nullable=True)
     price_group_rub = Column(Integer, nullable=True)

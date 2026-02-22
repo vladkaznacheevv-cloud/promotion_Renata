@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date as dt_date, datetime
 from typing import Any, List, Optional, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 ClientStatus = Literal["Новый", "В работе", "Клиент", "VIP Клиент"]
@@ -62,44 +62,118 @@ class ClientsOut(BaseModel):
     total: int
 
 
+class PricingOption(BaseModel):
+    label: str = Field(min_length=1)
+    price_rub: int = Field(ge=0)
+    note: Optional[str] = None
+
+
+def _validate_event_schedule(
+    *,
+    schedule_type: str | None,
+    date_value: dt_date | None,
+    start_date_value: dt_date | None,
+    occurrence_dates: list[dt_date] | None,
+) -> None:
+    normalized = (schedule_type or "one_time").strip().lower() or "one_time"
+    has_occurrence_dates = bool(occurrence_dates)
+
+    if normalized == "rolling":
+        if date_value is not None:
+            raise ValueError("date must be null for rolling events")
+        if start_date_value is not None:
+            raise ValueError("start_date must be null for rolling events")
+        if has_occurrence_dates:
+            raise ValueError("occurrence_dates must be empty for rolling events")
+        return
+
+    if normalized == "one_time":
+        if date_value is None:
+            raise ValueError("date is required for one_time events")
+        return
+
+    if normalized == "recurring":
+        if start_date_value is None:
+            raise ValueError("start_date is required for recurring events")
+        return
+
+
 class EventCreate(BaseModel):
     title: str = Field(min_length=1)
     description: str = Field(min_length=1)
     location: Optional[str] = None
-    date: Optional[date] = None
+    date: Optional[dt_date] = None
     price: Optional[float] = None
     status: EventStatus = "active"
     link_getcourse: Optional[str] = None
     schedule_type: Optional[EventScheduleType] = None
-    start_date: Optional[datetime] = None
+    start_date: Optional[dt_date] = None
     start_time: Optional[str] = None
     end_time: Optional[str] = None
     recurring_rule: Optional[dict[str, Any]] = None
+    occurrence_dates: Optional[List[dt_date]] = None
+    pricing_options: Optional[List[PricingOption]] = None
     hosts: Optional[str] = None
     price_individual_rub: Optional[int] = None
     price_group_rub: Optional[int] = None
     duration_hint: Optional[str] = None
     booking_hint: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _validate_schedule(self) -> "EventCreate":
+        _validate_event_schedule(
+            schedule_type=self.schedule_type,
+            date_value=self.date,
+            start_date_value=self.start_date,
+            occurrence_dates=self.occurrence_dates,
+        )
+        if (self.schedule_type or "one_time") == "recurring":
+            if not self.recurring_rule and not self.occurrence_dates:
+                raise ValueError("recurring events require recurring_rule or occurrence_dates")
+        return self
 
 
 class EventUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     location: Optional[str] = None
-    date: Optional[date] = None
+    date: Optional[dt_date] = None
     price: Optional[float] = None
     status: Optional[EventStatus] = None
     link_getcourse: Optional[str] = None
     schedule_type: Optional[EventScheduleType] = None
-    start_date: Optional[datetime] = None
+    start_date: Optional[dt_date] = None
     start_time: Optional[str] = None
     end_time: Optional[str] = None
     recurring_rule: Optional[dict[str, Any]] = None
+    occurrence_dates: Optional[List[dt_date]] = None
+    pricing_options: Optional[List[PricingOption]] = None
     hosts: Optional[str] = None
     price_individual_rub: Optional[int] = None
     price_group_rub: Optional[int] = None
     duration_hint: Optional[str] = None
     booking_hint: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _validate_schedule(self) -> "EventUpdate":
+        normalized = (self.schedule_type or "").strip().lower()
+        provided = self.model_fields_set
+        if normalized == "rolling":
+            _validate_event_schedule(
+                schedule_type="rolling",
+                date_value=self.date if "date" in provided else None,
+                start_date_value=self.start_date if "start_date" in provided else None,
+                occurrence_dates=self.occurrence_dates if "occurrence_dates" in provided else None,
+            )
+        elif normalized == "one_time" and "date" in provided and self.date is None:
+            raise ValueError("date is required when schedule_type is one_time")
+        elif normalized == "recurring":
+            if "start_date" in provided and self.start_date is None:
+                raise ValueError("start_date is required when schedule_type is recurring")
+            if {"recurring_rule", "occurrence_dates"} & provided:
+                if not self.recurring_rule and not self.occurrence_dates:
+                    raise ValueError("recurring events require recurring_rule or occurrence_dates")
+        return self
 
 
 class EventOut(BaseModel):
@@ -119,7 +193,9 @@ class EventOut(BaseModel):
     start_time: Optional[str] = None
     end_time: Optional[str] = None
     recurring_rule: Optional[dict[str, Any]] = None
+    occurrence_dates: Optional[List[str]] = None
     schedule_text: Optional[str] = None
+    pricing_options: Optional[List[PricingOption]] = None
     hosts: Optional[str] = None
     price_individual_rub: Optional[int] = None
     price_group_rub: Optional[int] = None

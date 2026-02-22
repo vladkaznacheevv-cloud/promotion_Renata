@@ -153,3 +153,134 @@ def test_create_payment_then_mark_paid_smoke(monkeypatch):
     mark_res = client.patch("/api/crm/payments/10", json={"status": "paid"})
     assert mark_res.status_code == 200
     assert mark_res.json()["status"] == "paid"
+
+
+def _event_stub(**overrides):
+    payload = {
+        "id": 1,
+        "title": "Тестовое событие",
+        "type": "Событие",
+        "price": 4500,
+        "attendees": 0,
+        "date": None,
+        "status": "active",
+        "description": "Описание",
+        "location": "Онлайн",
+        "link_getcourse": None,
+        "revenue": 0,
+        "schedule_type": "recurring",
+        "start_date": "2026-09-08",
+        "start_time": "17:00",
+        "end_time": "21:00",
+        "recurring_rule": {"freq": "MONTHLY", "bysetpos": [2, 4], "byweekday": "TU"},
+        "occurrence_dates": None,
+        "schedule_text": "Старт 08.09.2026; 2-й и 4-й вторник, 17:00–21:00",
+        "pricing_options": [{"label": "Встреча", "price_rub": 4500, "note": None}],
+        "hosts": None,
+        "price_individual_rub": None,
+        "price_group_rub": None,
+        "duration_hint": None,
+        "booking_hint": None,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_create_event_one_time_without_date_returns_422():
+    app = _build_app()
+    client = TestClient(app)
+    response = client.post(
+        "/api/crm/events",
+        json={
+            "title": "Разовое",
+            "description": "Описание",
+            "schedule_type": "one_time",
+            "date": None,
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_create_event_rolling_with_date_returns_422():
+    app = _build_app()
+    client = TestClient(app)
+    response = client.post(
+        "/api/crm/events",
+        json={
+            "title": "Rolling",
+            "description": "Описание",
+            "schedule_type": "rolling",
+            "date": "2026-09-08",
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_create_event_recurring_without_start_date_returns_422():
+    app = _build_app()
+    client = TestClient(app)
+    response = client.post(
+        "/api/crm/events",
+        json={
+            "title": "Recurring",
+            "description": "Описание",
+            "schedule_type": "recurring",
+            "recurring_rule": {"freq": "MONTHLY", "bysetpos": [2, 4], "byweekday": "TU"},
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_create_event_recurring_with_rule_returns_200(monkeypatch):
+    monkeypatch.setattr(CRMService, "create_event", AsyncMock(return_value=_event_stub()))
+    app = _build_app()
+    client = TestClient(app)
+    response = client.post(
+        "/api/crm/events",
+        json={
+            "title": "Я взрослею",
+            "description": "Описание",
+            "schedule_type": "recurring",
+            "start_date": "2026-09-08",
+            "start_time": "17:00",
+            "end_time": "21:00",
+            "recurring_rule": {"freq": "MONTHLY", "bysetpos": [2, 4], "byweekday": "TU"},
+            "pricing_options": [{"label": "Встреча", "price_rub": 4500}],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["schedule_type"] == "recurring"
+
+
+def test_create_event_recurring_with_occurrence_dates_returns_200(monkeypatch):
+    monkeypatch.setattr(
+        CRMService,
+        "create_event",
+        AsyncMock(
+            return_value=_event_stub(
+                recurring_rule=None,
+                occurrence_dates=["2026-03-27", "2026-04-24", "2026-05-29"],
+                schedule_text="Даты: 27.03, 24.04, 29.05; 10:00–18:00",
+                start_time="10:00",
+                end_time="18:00",
+            )
+        ),
+    )
+    app = _build_app()
+    client = TestClient(app)
+    response = client.post(
+        "/api/crm/events",
+        json={
+            "title": "Супервизорская группа",
+            "description": "Описание",
+            "schedule_type": "recurring",
+            "start_date": "2026-03-01",
+            "start_time": "10:00",
+            "end_time": "18:00",
+            "occurrence_dates": ["2026-03-27", "2026-04-24", "2026-05-29"],
+            "pricing_options": [{"label": "Стоимость", "price_rub": 6000}],
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["occurrence_dates"] == ["2026-03-27", "2026-04-24", "2026-05-29"]

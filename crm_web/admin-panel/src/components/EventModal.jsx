@@ -6,16 +6,6 @@ import Badge from "./ui/Badge";
 import Button from "./ui/Button";
 import Modal from "./ui/Modal";
 
-const isValidUrl = (value) => {
-  if (!value) return false;
-  try {
-    new URL(value);
-    return true;
-  } catch {
-    return false;
-  }
-};
-
 const scheduleTypeOf = (event) => event?.schedule_type || (event?.date ? "one_time" : "rolling");
 const isOnlineConsultation = (event) => scheduleTypeOf(event) === "rolling";
 const isRecurring = (event) => scheduleTypeOf(event) === "recurring";
@@ -23,6 +13,24 @@ const scheduleBadgeLabel = (event) => {
   if (isRecurring(event)) return RU.labels.recurringBadge;
   if (isOnlineConsultation(event)) return RU.labels.rollingBadge;
   return RU.labels.oneTimeBadge;
+};
+
+const pricingOptionsOf = (event) => {
+  if (Array.isArray(event?.pricing_options) && event.pricing_options.length) {
+    return event.pricing_options;
+  }
+  const legacy = [];
+  if (event?.price_individual_rub != null) {
+    legacy.push({ label: RU.labels.priceIndividualDisplay, price_rub: event.price_individual_rub, note: "" });
+  }
+  if (event?.price_group_rub != null) {
+    legacy.push({ label: RU.labels.priceGroupDisplay, price_rub: event.price_group_rub, note: "за участника" });
+  }
+  if (legacy.length) return legacy;
+  if (event?.price != null) {
+    return [{ label: RU.labels.price, price_rub: event.price, note: "" }];
+  }
+  return [];
 };
 
 export default function EventModal({
@@ -35,7 +43,7 @@ export default function EventModal({
 }) {
   if (!event) return null;
 
-  const link = event.link_getcourse;
+  const pricingOptions = pricingOptionsOf(event);
   const footer = canEdit || canDelete ? (
     <div className="flex gap-3">
       {canEdit && (
@@ -92,24 +100,20 @@ export default function EventModal({
                 : formatDateRu(event.date, { day: "2-digit", month: "long", year: "numeric" })}
             </p>
           </div>
-          <div>
-            <p className="text-sm text-slate-500">{RU.labels.price}</p>
-            <p className="text-base font-semibold text-slate-900">{formatCurrencyRub(event.price)}</p>
-          </div>
           <div className="sm:col-span-2">
             <p className="text-sm text-slate-500">{RU.labels.prices}</p>
-            <div className="space-y-1 text-base font-semibold text-slate-900">
-              <p>
-                {RU.labels.priceIndividualDisplay}:{" "}
-                {event.price_individual_rub != null ? formatCurrencyRub(event.price_individual_rub) : RU.messages.notSet}
-              </p>
-              <p>
-                {RU.labels.priceGroupDisplay}:{" "}
-                {event.price_group_rub != null
-                  ? `${formatCurrencyRub(event.price_group_rub)} / участник`
-                  : RU.messages.notSet}
-              </p>
-            </div>
+            {pricingOptions.length ? (
+              <div className="space-y-1 text-base font-semibold text-slate-900">
+                {pricingOptions.map((option, index) => (
+                  <p key={`${option.label}-${index}`}>
+                    {option.label}: {formatCurrencyRub(option.price_rub)}
+                    {option.note ? ` (${option.note})` : ""}
+                  </p>
+                ))}
+              </div>
+            ) : (
+              <p className="text-base font-semibold text-slate-900">{RU.messages.notSet}</p>
+            )}
           </div>
           <div>
             <p className="text-sm text-slate-500">{RU.labels.eventParticipants}</p>
@@ -154,16 +158,6 @@ export default function EventModal({
           <p className="text-base font-medium text-slate-900">{event.location || RU.messages.notSet}</p>
         </div>
 
-        <div>
-          <p className="text-sm text-slate-500">{RU.labels.eventGetCourseLink}</p>
-          {isValidUrl(link) ? (
-            <a className="text-sm font-medium text-indigo-600 hover:underline" href={link} target="_blank" rel="noreferrer">
-              {link}
-            </a>
-          ) : (
-            <p className="text-base font-medium text-slate-900">{link || RU.messages.notSet}</p>
-          )}
-        </div>
       </div>
     </Modal>
   );

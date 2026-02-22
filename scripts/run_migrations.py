@@ -50,6 +50,8 @@ MIGRATIONS = [
         "ALTER TABLE events ADD COLUMN IF NOT EXISTS start_time TIME",
         "ALTER TABLE events ADD COLUMN IF NOT EXISTS end_time TIME",
         "ALTER TABLE events ADD COLUMN IF NOT EXISTS recurring_rule TEXT",
+        "ALTER TABLE events ADD COLUMN IF NOT EXISTS occurrence_dates TEXT",
+        "ALTER TABLE events ADD COLUMN IF NOT EXISTS pricing_options TEXT",
         "ALTER TABLE events ADD COLUMN IF NOT EXISTS hosts TEXT",
         "ALTER TABLE events ADD COLUMN IF NOT EXISTS price_individual_rub INTEGER",
         "ALTER TABLE events ADD COLUMN IF NOT EXISTS price_group_rub INTEGER",
