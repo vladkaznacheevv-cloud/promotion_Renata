@@ -29,8 +29,8 @@ class RagStore:
     max_chars: int = 600
     overlap: int = 100
 
-    def load_chunks(self) -> list[RagChunk]:
-        files = list(self._iter_files())
+    def load_chunks(self, collection_dir: str | None = None) -> list[RagChunk]:
+        files = list(self._iter_files(collection_dir=collection_dir))
         chunks: list[RagChunk] = []
         for path in files:
             text = self._read_text(path)
@@ -53,8 +53,8 @@ class RagStore:
                 )
         return chunks
 
-    def _iter_files(self) -> Iterable[Path]:
-        root = Path(self.data_dir)
+    def _iter_files(self, collection_dir: str | None = None) -> Iterable[Path]:
+        root = Path(collection_dir or self.data_dir)
         if not root.exists() or not root.is_dir():
             return []
         files = []

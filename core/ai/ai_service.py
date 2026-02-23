@@ -30,6 +30,7 @@ _DEFAULT_SYSTEM_PROMPT = (
 )
 
 _MOJIBAKE_RE = re.compile(r"[РСЃ][\w\d]{0,3}")
+_RAG_FOCUS_PREFIX_RE = re.compile(r"^\s*\[FOCUS:(?P<name>[A-Z0-9_]+)\]\s*", re.IGNORECASE)
 
 
 class AIService:
@@ -57,6 +58,7 @@ class AIService:
         self.rag_top_k = self._env_int("RAG_TOP_K", default=5, min_value=1, max_value=20)
         self.rag_min_score = self._env_float("RAG_MIN_SCORE", default=0.08)
         rag_dir = (os.getenv("RAG_DATA_DIR") or "rag_data").strip() or "rag_data"
+        self.rag_data_dir = rag_dir
         self.rag_retriever: RagRetriever | None = None
         if self.rag_enabled:
             self.rag_retriever = RagRetriever(store=RagStore(data_dir=rag_dir))
@@ -458,19 +460,51 @@ class AIService:
             logger.warning("Failed to build event context: %s", e.__class__.__name__)
             return "", counts
 
+    def _parse_rag_focus(self, query: str) -> tuple[str, str]:
+        raw = (query or "").strip()
+        match = _RAG_FOCUS_PREFIX_RE.match(raw)
+        if not match:
+            return raw, "default"
+        collection = (match.group("name") or "").strip().lower()
+        cleaned = raw[match.end() :].lstrip() or raw
+        return cleaned, collection or "default"
+
+    def _rag_collection_dir(self, collection_name: str | None) -> str:
+        name = (collection_name or "default").strip().lower()
+        if name in {"", "default"}:
+            return self.rag_data_dir
+        if name == "game10":
+            return os.path.join(self.rag_data_dir, "game10")
+        return self.rag_data_dir
+
     def _rag_context(self, query: str) -> tuple[str, str, int]:
         if not self.rag_enabled or self.rag_retriever is None:
             return "", "low", 0
+        rag_query, collection_name = self._parse_rag_focus(query)
+        collection_dir = self._rag_collection_dir(collection_name)
 
         try:
             result = self.rag_retriever.retrieve(
-                query=query,
+                query=rag_query,
                 k=self.rag_top_k,
                 min_score=self.rag_min_score,
+                collection_dir=collection_dir,
             )
         except Exception as e:
             logger.warning("RAG retrieve failed: %s", e.__class__.__name__)
             return "", "low", 0
+
+        if not result.top_chunks and collection_name == "game10":
+            try:
+                result = self.rag_retriever.retrieve(
+                    query=rag_query,
+                    k=self.rag_top_k,
+                    min_score=self.rag_min_score,
+                    collection_dir=self.rag_data_dir,
+                )
+            except Exception as e:
+                logger.warning("RAG retrieve fallback failed: %s", e.__class__.__name__)
+                return "", "low", 0
 
         if not result.top_chunks:
             return "", result.confidence, 0

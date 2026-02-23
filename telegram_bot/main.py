@@ -1,5 +1,6 @@
 import os 
 import json
+import asyncio
 import logging 
 import re 
 import socket 
@@ -47,6 +48,7 @@ get_remove_reply_kb ,
 get_retry_kb ,
 get_private_channel_pending_kb ,
 get_private_channel_paid_kb ,
+get_game10_kb ,
 )
 from telegram_bot .text_utils import normalize_text_for_telegram ,looks_like_mojibake 
 from telegram_bot .text_formatting import format_event_card 
@@ -94,6 +96,8 @@ ASSISTANT_EVENT_ID_KEY ="assistant_event_id"
 WAITING_CONTACT_PHONE_KEY ="waiting_contact_phone"
 WAITING_CONTACT_EMAIL_KEY ="waiting_contact_email"
 CONTACT_PHONE_KEY ="contact_phone"
+CONTACT_FLOW_KEY ="contact_flow"
+PENDING_CONTACTS_KEY ="pending_contacts"
 SKIP_NEXT_EMAIL_KEY ="skip_next_email"
 LOCK_FILE_PATH =get_lock_path ()
 _BOT_LOCK_FD =None 
@@ -345,6 +349,22 @@ ONLINE_COURSES_TEXT =(
 "Это не твой характер. Это роль \"Козла отпущения\" или \"Героя\", которую тебе навязали в 5 лет. Узнай, как её снять, на лекции-практикуме."
 )
 
+GAME10_SCREEN_TEXT =(
+"🔥 *«Игра 10:0»*\n\n"
+"Ты в закрытом сообществе «Игра 10:0». Здесь ты начнёшь действовать и побеждать. "
+"Ты получишь распаковку своей супер-силы в отношениях, карьере, бизнесе, здоровье. "
+"Это не просто «поддержка» и «разговоры». А жесткая, но бережная методология, собранная "
+"из системной психологии и нейропрактик."
+)
+
+GAME10_ASSISTANT_GREETING =(
+"*Задайте вопрос про «Игра 10:0»*\n"
+"Например:\n"
+"• С чего начать в «Игра 10:0»?\n"
+"• Что я получу в клубе?\n"
+"• Как проходит работа и поддержка?"
+)
+
 
 # ============ Helpers ============
 
@@ -355,12 +375,78 @@ def _reset_states (context :ContextTypes .DEFAULT_TYPE ):
     context .user_data .pop (ASSISTANT_EVENT_ID_KEY ,None )
     context .user_data [WAITING_CONTACT_PHONE_KEY ]=False 
     context .user_data [WAITING_CONTACT_EMAIL_KEY ]=False 
+    context .user_data .pop (CONTACT_FLOW_KEY ,None )
     context .user_data .pop (CONTACT_PHONE_KEY ,None )
     context .user_data .pop (SKIP_NEXT_EMAIL_KEY ,None )
 
 
-async def _notify_db_unavailable (update :Update ):
-    text ="вљ пёЏ РўРµС…СЂР°Р±РѕС‚С‹ СЃ Р±Р°Р·РѕР№. РџРѕРїСЂРѕР±СѓР№С‚Рµ РїРѕР·Р¶Рµ."
+def _err_name (exc :Exception |None )->str :
+    return exc .__class__ .__name__ if exc is not None else "UnknownError"
+
+
+def _err_short (exc :Exception |None ,limit :int =180 )->str :
+    if exc is None :
+        return ""
+    text =str (exc ).replace ("\r"," ").replace ("\n"," ").strip ()
+    if len (text )>limit :
+        text =text [:limit ]+"..."
+    return text
+
+
+def _log_db_issue (scope :str ,exc :Exception |None =None )->None :
+    short =_err_short (exc )
+    if short :
+        logger .warning ("DB issue [%s]: %s: %s",scope ,_err_name (exc ),short )
+    else :
+        logger .warning ("DB issue [%s]: %s",scope ,_err_name (exc ))
+
+
+def _remember_pending_contacts (context :ContextTypes .DEFAULT_TYPE ,update :Update ,*,phone :str |None =None ,email :str |None =None )->dict :
+    pending =dict (context .user_data .get (PENDING_CONTACTS_KEY )or {})
+    tg_user =update .effective_user 
+    if tg_user is not None :
+        pending ["tg_id"]=int (tg_user .id )
+        if tg_user .username :
+            pending ["username"]=tg_user .username 
+        name_parts =[tg_user .first_name or "",tg_user .last_name or ""]
+        full_name =" ".join (part for part in name_parts if part ).strip ()
+        if full_name :
+            pending ["name"]=full_name 
+    if phone :
+        pending ["phone"]=phone 
+    if email :
+        pending ["email"]=email 
+    pending ["updated_at"]=datetime .utcnow ().isoformat ()
+    context .user_data [PENDING_CONTACTS_KEY ]=pending 
+    return pending 
+
+
+async def _notify_admin_pending_contacts (context :ContextTypes .DEFAULT_TYPE ,payload :dict ):
+    if not ADMIN_CHAT_ID :
+        return 
+    try :
+        tg_id =payload .get ("tg_id")or "-"
+        username =str (payload .get ("username")or "-").strip ()
+        name =str (payload .get ("name")or "-").strip ()
+        phone =str (payload .get ("phone")or "-").strip ()
+        email =str (payload .get ("email")or "-").strip ()
+        user_line =f"@{username }" if username and username !="-" else "-"
+        text =(
+        "\u041a\u043e\u043d\u0442\u0430\u043a\u0442\u044b \u043f\u0440\u0438\u043d\u044f\u0442\u044b (fallback \u0431\u0435\u0437 \u0411\u0414).\n"
+        f"tg_id: {tg_id }\n"
+        f"username: {user_line }\n"
+        f"name: {name }\n"
+        f"phone: {phone }\n"
+        f"email: {email }"
+        )
+        await _send (context .bot ,chat_id =int (ADMIN_CHAT_ID ),text =text )
+    except Exception as e :
+        _log_db_issue ("contacts_admin_notify",e )
+
+
+async def _notify_db_unavailable (update :Update ,exc :Exception |None =None ,*,scope :str ="db" ):
+    _log_db_issue (scope ,exc )
+    text ="\u0422\u0435\u0445\u0440\u0430\u0431\u043e\u0442\u044b \u0441 \u0431\u0430\u0437\u043e\u0439. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u043f\u043e\u0437\u0436\u0435."
     keyboard =get_retry_kb ()
 
     if update .callback_query :
@@ -368,8 +454,8 @@ async def _notify_db_unavailable (update :Update ):
             await _answer (update .callback_query )
             await _edit (update .callback_query ,text ,reply_markup =keyboard )
             return 
-        except Exception :
-            logger .exception ("РќРµ СѓРґР°Р»РѕСЃСЊ РѕР±РЅРѕРІРёС‚СЊ СЃРѕРѕР±С‰РµРЅРёРµ РїСЂРё РѕС€РёР±РєРµ Р‘Р”")
+        except Exception as notify_exc :
+            _log_db_issue ("notify_db_unavailable_edit",notify_exc )
 
     if update .effective_message :
         await _reply (update .effective_message ,text ,reply_markup =keyboard )
@@ -420,6 +506,10 @@ async def ensure_user (update :Update ,source :str ="bot",ai_increment :int =0 )
         # ============ Handlers ============
 
 async def ensure_user_on_message (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    if context .user_data .get (CONTACT_FLOW_KEY ):
+        return
+    if context .user_data .get (WAITING_CONTACT_PHONE_KEY )or context .user_data .get (WAITING_CONTACT_EMAIL_KEY ):
+        return
     await ensure_user (update ,source ="bot")
 
 
@@ -447,17 +537,14 @@ async def show_contacts_request (update :Update ,context :ContextTypes .DEFAULT_
     query =update .callback_query 
     await _answer (query )
 
-    user_db =await ensure_user (update ,source ="bot")
-    if user_db is None :
-        return 
-
     _reset_states (context )
+    context .user_data [CONTACT_FLOW_KEY ]=True 
     context .user_data [WAITING_CONTACT_PHONE_KEY ]=True 
 
     await _show_screen (
     update ,
     context ,
-    "РћСЃС‚Р°РІСЊС‚Рµ РЅРѕРјРµСЂ С‚РµР»РµС„РѕРЅР° РєРЅРѕРїРєРѕР№ РЅРёР¶Рµ РёР»Рё РѕС‚РїСЂР°РІСЊС‚Рµ РЅРѕРјРµСЂ С‚РµРєСЃС‚РѕРј РІ СЌС‚РѕРј С‡Р°С‚Рµ.\n\nРќР°Р¶РјРёС‚Рµ РєРЅРѕРїРєСѓ В«РћС‚РїСЂР°РІРёС‚СЊ РЅРѕРјРµСЂВ».",
+    "\u041e\u0441\u0442\u0430\u0432\u044c\u0442\u0435, \u043f\u043e\u0436\u0430\u043b\u0443\u0439\u0441\u0442\u0430, \u043d\u043e\u043c\u0435\u0440 \u0442\u0435\u043b\u0435\u0444\u043e\u043d\u0430 \u043a\u043d\u043e\u043f\u043a\u043e\u0439 \u043d\u0438\u0436\u0435, \u0437\u0430\u0442\u0435\u043c \u044f \u043f\u043e\u043f\u0440\u043e\u0448\u0443 \u043f\u043e\u0447\u0442\u0443.",
     reply_markup =get_contact_request_kb (),
     )
 
@@ -467,43 +554,12 @@ async def contact_manager (update :Update ,context :ContextTypes .DEFAULT_TYPE )
     if query :
         await _answer (query )
 
-    tg_user =update .effective_user 
-    if tg_user is None :
-        return 
-
-    try :
-        db .init_db ()
-        async with db .async_session ()as session :
-            crm_service =CRMService (session )
-            user =await crm_service .set_client_stage_by_tg_id (
-            tg_id =tg_user .id ,
-            stage =User .CRM_STAGE_MANAGER_FOLLOWUP ,
-            )
-            if user is None :
-                user_service =UserService (session )
-                await user_service .get_or_create_by_tg_id (
-                tg_id =tg_user .id ,
-                first_name =tg_user .first_name ,
-                last_name =tg_user .last_name ,
-                username =tg_user .username ,
-                source ="bot",
-                update_if_exists =True ,
-                )
-                await crm_service .set_client_stage_by_tg_id (
-                tg_id =tg_user .id ,
-                stage =User .CRM_STAGE_MANAGER_FOLLOWUP ,
-                )
-            await session .commit ()
-
-        _reset_states (context )
-        text =(
-        "\u0421\u0432\u044f\u0436\u0443 \u0441 \u043c\u0435\u043d\u0435\u0434\u0436\u0435\u0440\u043e\u043c.\\n"
-        "\u041e\u0441\u0442\u0430\u0432\u044c\u0442\u0435 \u043a\u043e\u043d\u0442\u0430\u043a\u0442\u044b \u2014 \u043c\u0435\u043d\u0435\u0434\u0436\u0435\u0440 \u0441\u0432\u044f\u0436\u0435\u0442\u0441\u044f \u0441 \u0432\u0430\u043c\u0438 \u0432 \u0431\u043b\u0438\u0436\u0430\u0439\u0448\u0435\u0435 \u0432\u0440\u0435\u043c\u044f."
-        )
-        await _show_screen (update ,context ,text ,reply_markup =get_contact_manager_kb ())
-    except Exception as e :
-        logger .exception ("????????????????????????? ?????????? ???? contact_manager: %s",e )
-        await _notify_db_unavailable (update )
+    _reset_states (context )
+    text =(
+    "\u0421\u0432\u044f\u0436\u0443 \u0441 \u043c\u0435\u043d\u0435\u0434\u0436\u0435\u0440\u043e\u043c.\n"
+    "\u041e\u0441\u0442\u0430\u0432\u044c\u0442\u0435 \u043a\u043e\u043d\u0442\u0430\u043a\u0442\u044b \u2014 \u043c\u0435\u043d\u0435\u0434\u0436\u0435\u0440 \u0441\u0432\u044f\u0436\u0435\u0442\u0441\u044f \u0441 \u0432\u0430\u043c\u0438 \u0432 \u0431\u043b\u0438\u0436\u0430\u0439\u0448\u0435\u0435 \u0432\u0440\u0435\u043c\u044f."
+    )
+    await _show_screen (update ,context ,text ,reply_markup =get_contact_manager_kb ())
 
 
 async def _save_contacts (update :Update ,context :ContextTypes .DEFAULT_TYPE ,phone :str ,email :str ):
@@ -536,17 +592,28 @@ async def _save_contacts (update :Update ,context :ContextTypes .DEFAULT_TYPE ,p
                 email =email ,
                 )
             await session .commit ()
-
+    except Exception as e :
+        _log_db_issue ("save_contacts",e )
+        pending =_remember_pending_contacts (context ,update ,phone =phone ,email =email )
+        await _notify_admin_pending_contacts (context ,pending )
         _reset_states (context )
         await _show_screen (
         update ,
         context ,
-        "\u2705 \u041e\u0442\u043b\u0438\u0447\u043d\u043e, \u043a\u043e\u043d\u0442\u0430\u043a\u0442\u044b \u0441\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u044b. \u041c\u044b \u0441\u043a\u043e\u0440\u043e \u0441\u0432\u044f\u0436\u0435\u043c\u0441\u044f \u0441 \u0432\u0430\u043c\u0438.",
+        "\u2705 \u041a\u043e\u043d\u0442\u0430\u043a\u0442\u044b \u043f\u0440\u0438\u043d\u044f\u0442\u044b. \u041c\u0435\u043d\u0435\u0434\u0436\u0435\u0440 \u0441\u0432\u044f\u0436\u0435\u0442\u0441\u044f \u0441 \u0432\u0430\u043c\u0438 \u0432 \u0431\u043b\u0438\u0436\u0430\u0439\u0448\u0435\u0435 \u0432\u0440\u0435\u043c\u044f.",
         reply_markup =get_back_to_menu_kb (),
         )
-    except Exception as e :
-        logger .exception ("????????????????????????? ?????????? ???????????? ????????????????????????????????????????? ??????????????????????????????????????: %s",e )
-        await _notify_db_unavailable (update )
+        return 
+
+    _reset_states (context )
+    context .user_data .pop (PENDING_CONTACTS_KEY ,None )
+    await _show_screen (
+    update ,
+    context ,
+    "\u2705 \u041e\u0442\u043b\u0438\u0447\u043d\u043e, \u043a\u043e\u043d\u0442\u0430\u043a\u0442\u044b \u0441\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u044b. \u041c\u044b \u0441\u043a\u043e\u0440\u043e \u0441\u0432\u044f\u0436\u0435\u043c\u0441\u044f \u0441 \u0432\u0430\u043c\u0438.",
+    reply_markup =get_back_to_menu_kb (),
+    )
+
 
 async def _get_contact_snapshot (tg_id :int )->dict |None :
     try :
@@ -559,12 +626,12 @@ async def _get_contact_snapshot (tg_id :int )->dict |None :
             if data is None :
                 return None 
             return {"id":int (data [0 ]),"phone":data [1 ],"email":data [2 ]}
-    except Exception :
-        logger .exception ("Contact snapshot read failed for tg_id=%s",tg_id )
+    except Exception as e :
+        _log_db_issue ("contact_snapshot",e )
         return None 
 
 
-async def _save_contact_field (update :Update ,*,phone :str |None =None ,email :str |None =None )->bool :
+async def _save_contact_field (update :Update ,context :ContextTypes .DEFAULT_TYPE ,*,phone :str |None =None ,email :str |None =None )->bool :
     tg_user =update .effective_user 
     if tg_user is None :
         return False 
@@ -595,9 +662,9 @@ async def _save_contact_field (update :Update ,*,phone :str |None =None ,email :
             await session .commit ()
         return True 
     except Exception as e :
-        logger .exception ("Contact partial save failed: %s",e )
-        await _notify_db_unavailable (update )
-        return False 
+        _log_db_issue ("save_contact_field",e )
+        _remember_pending_contacts (context ,update ,phone =phone ,email =email )
+        return True 
 
 
 async def handle_contact_phone (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
@@ -621,7 +688,7 @@ async def handle_contact_phone (update :Update ,context :ContextTypes .DEFAULT_T
     if not phone :
         await _show_screen (update ,context ,'Не удалось прочитать номер. Отправьте контакт ещё раз.',reply_markup =get_contact_request_kb ())
         return 
-    if not await _save_contact_field (update ,phone =phone ):
+    if not await _save_contact_field (update ,context ,phone =phone ):
         return 
 
     context .user_data [CONTACT_PHONE_KEY ]=phone 
@@ -647,7 +714,7 @@ async def handle_contact_phone_text (update :Update ,context :ContextTypes .DEFA
     if len (re .sub (r"\\D","",normalized ))<10 :
         await _show_screen (update ,context ,'Номер выглядит некорректно. Пример: +79991234567',reply_markup =get_contact_request_kb ())
         return 
-    if not await _save_contact_field (update ,phone =normalized ):
+    if not await _save_contact_field (update ,context ,phone =normalized ):
         return 
 
     context .user_data [CONTACT_PHONE_KEY ]=normalized 
@@ -1082,43 +1149,12 @@ async def show_private_channel (update :Update ,context :ContextTypes .DEFAULT_T
     if user_db is None :
         return 
 
-    user =update .effective_user 
-    if user is None :
-        await _show_screen (update ,context ,"Сервис закрытого канала временно недоступен.",reply_markup =get_back_to_menu_kb ())
-        return 
-
-    payload =await _get_private_channel_payload (user .id )
-    if payload is None :
-        await _show_screen (update ,context ,"Сервис закрытого канала временно недоступен.",reply_markup =get_back_to_menu_kb ())
-        return 
-
-    status =str (payload .get ("status")or "pending").strip ().lower ()
-    invite_url =str (payload .get ("invite_url")or "").strip ()
-    payment_url =str (payload .get ("payment_url")or _private_channel_payment_url ()or "").strip ()
-
-    if status =="paid"and invite_url :
-        await _show_screen (
-        update ,
-        context ,
-        f"Вот ваша персональная ссылка: {invite_url }",
-        reply_markup =get_private_channel_paid_kb (invite_url ),
-        )
-        return 
-
-    if status =="paid":
-        await _show_screen (
-        update ,
-        context ,
-        "Оплата подтверждена. Персональная ссылка будет отправлена вам в ближайшее время.",
-        reply_markup =get_back_to_menu_kb (),
-        )
-        return 
-
     await _show_screen (
     update ,
     context ,
-    "Доступ в закрытый канал стоит 5 000 ₽. После оплаты я пришлю персональную ссылку.",
-    reply_markup =get_private_channel_pending_kb (payment_url ),
+    GAME10_SCREEN_TEXT ,
+    parse_mode ="Markdown",
+    reply_markup =get_game10_kb (_private_channel_payment_url ()),
     )
 
 
@@ -1310,6 +1346,31 @@ async def show_course_questions (update :Update ,context :ContextTypes .DEFAULT_
     )
 
 
+async def game10_questions (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    query =update .callback_query
+    await _answer (query )
+
+    user_db =await ensure_user (update ,source ="bot")
+    if user_db is None :
+        return
+
+    user_id =update .effective_user .id
+    chat_histories [user_id ]=[]
+
+    context .user_data [WAITING_LEAD_KEY ]=None
+    context .user_data [AI_MODE_KEY ]=True
+    context .user_data [ASSISTANT_SOURCE_KEY ]="game10"
+    context .user_data .pop (ASSISTANT_EVENT_ID_KEY ,None )
+
+    await _show_screen (
+    update ,
+    context ,
+    GAME10_ASSISTANT_GREETING ,
+    parse_mode ="Markdown",
+    reply_markup =get_back_to_menu_kb (),
+    )
+
+
 async def _show_consultations_from_text (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     _reset_states (context )
     user_db =await ensure_user (update ,source ="bot")
@@ -1384,6 +1445,8 @@ async def handle_ai_message (update :Update ,context :ContextTypes .DEFAULT_TYPE
         ai_message =user_message 
         if assistant_source =="course":
             ai_message =f"Контекст: вопросы о курсе GetCourse.\n{user_message }"
+        elif assistant_source =="game10":
+            ai_message =f"[FOCUS:GAME10]\n{user_message }"
         elif assistant_source =="event":
             event_context =""
             try :
@@ -1481,10 +1544,16 @@ async def retry_db (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     query =update .callback_query 
     if query :
         await _answer (query )
-
-    user_db =await ensure_user (update ,source ="bot")
-    if user_db is None :
+    try :
+        async def _ping_db ():
+            db .init_db ()
+            async with db .async_session ()as session :
+                await session .execute (text ("SELECT 1"))
+        await asyncio .wait_for (_ping_db (),timeout =2.0 )
+    except Exception as e :
+        await _notify_db_unavailable (update ,e ,scope ="retry_db")
         return 
+
     await _show_screen (update ,context ,"\u2705 \u0411\u0430\u0437\u0430 \u0441\u043d\u043e\u0432\u0430 \u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0430.",reply_markup =get_main_menu ())
 
 
@@ -1777,6 +1846,7 @@ def build_app ()->Application :
 
     # Menu callbacks
     app .add_handler (CallbackQueryHandler (main_menu ,pattern ="^main_menu$"))
+    app .add_handler (CallbackQueryHandler (main_menu ,pattern ="^menu$"))
     app .add_handler (CallbackQueryHandler (retry_db ,pattern ="^retry_db$"))
 
     # Sections
@@ -1795,6 +1865,7 @@ def build_app ()->Application :
     app .add_handler (CallbackQueryHandler (show_formats_and_prices ,pattern ="^consult_formats$"))
     app .add_handler (CallbackQueryHandler (show_ai_chat ,pattern ="^ai_chat$"))
     app .add_handler (CallbackQueryHandler (show_course_questions ,pattern ="^course_questions$"))
+    app .add_handler (CallbackQueryHandler (game10_questions ,pattern ="^game10_questions$"))
     app .add_handler (CallbackQueryHandler (event_questions ,pattern ="^event_questions:"))
     app .add_handler (CallbackQueryHandler (show_contacts_request ,pattern ="^share_contacts$"))
     app .add_handler (CallbackQueryHandler (contact_manager ,pattern ="^contact_manager$"))

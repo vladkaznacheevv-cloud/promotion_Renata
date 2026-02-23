@@ -5,6 +5,7 @@ import os
 import re
 from collections import Counter
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from core.rag.rag_schema import RagHit, RagRetrieveResult
 from core.rag.rag_store import RagStore
@@ -47,31 +48,61 @@ class RagRetriever:
     chunks: list = field(default_factory=list)
     idf: dict[str, float] = field(default_factory=dict)
     tf_by_chunk: list[Counter[str]] = field(default_factory=list)
+    _index_cache: dict[str, tuple[list, dict[str, float], list[Counter[str]]]] = field(default_factory=dict)
 
-    def refresh(self) -> None:
-        self.chunks = self.store.load_chunks()
-        self.tf_by_chunk = [Counter(chunk.tokens) for chunk in self.chunks]
+    def _cache_key(self, collection_dir: str | None = None) -> str:
+        target = collection_dir or self.store.data_dir
+        try:
+            return str(Path(target).resolve())
+        except Exception:
+            return str(target)
 
-        total_docs = len(self.chunks)
+    def refresh(self, collection_dir: str | None = None) -> None:
+        chunks = self.store.load_chunks(collection_dir=collection_dir)
+        tf_by_chunk = [Counter(chunk.tokens) for chunk in chunks]
+
+        total_docs = len(chunks)
         if total_docs == 0:
-            self.idf = {}
+            idf: dict[str, float] = {}
+            cache_key = self._cache_key(collection_dir)
+            self._index_cache[cache_key] = (chunks, idf, tf_by_chunk)
+            if collection_dir is None:
+                self.chunks = chunks
+                self.idf = idf
+                self.tf_by_chunk = tf_by_chunk
             return
 
         df: Counter[str] = Counter()
-        for chunk in self.chunks:
+        for chunk in chunks:
             for token in set(chunk.tokens):
                 df[token] += 1
 
-        self.idf = {token: math.log((total_docs + 1) / (count + 1)) + 1.0 for token, count in df.items()}
+        idf = {token: math.log((total_docs + 1) / (count + 1)) + 1.0 for token, count in df.items()}
+        cache_key = self._cache_key(collection_dir)
+        self._index_cache[cache_key] = (chunks, idf, tf_by_chunk)
+        if collection_dir is None:
+            self.chunks = chunks
+            self.idf = idf
+            self.tf_by_chunk = tf_by_chunk
 
     def retrieve(
         self,
         query: str,
         k: int | None = None,
         min_score: float | None = None,
+        collection_dir: str | None = None,
     ) -> RagRetrieveResult:
-        if not self.chunks:
-            self.refresh()
+        cache_key = self._cache_key(collection_dir)
+        if collection_dir is None:
+            if not self.chunks:
+                self.refresh()
+            chunks = self.chunks
+            tf_by_chunk = self.tf_by_chunk
+            idf = self.idf
+        else:
+            if cache_key not in self._index_cache:
+                self.refresh(collection_dir=collection_dir)
+            chunks, idf, tf_by_chunk = self._index_cache.get(cache_key, ([], {}, []))
 
         top_k = k if k is not None else _env_int("RAG_TOP_K", 5)
         top_k = max(1, min(top_k, 20))
@@ -83,17 +114,17 @@ class RagRetriever:
 
         query_tf = Counter(query_tokens)
         scored: list[tuple[float, int]] = []
-        for idx, tf in enumerate(self.tf_by_chunk):
+        for idx, tf in enumerate(tf_by_chunk):
             raw_score = 0.0
             for token, q_count in query_tf.items():
                 d_count = tf.get(token, 0)
                 if d_count == 0:
                     continue
-                raw_score += q_count * d_count * self.idf.get(token, 1.0)
+                raw_score += q_count * d_count * idf.get(token, 1.0)
 
             if raw_score <= 0:
                 continue
-            norm = 1.0 + 0.015 * len(self.chunks[idx].tokens)
+            norm = 1.0 + 0.015 * len(chunks[idx].tokens)
             score = raw_score / norm
             if score >= threshold:
                 scored.append((score, idx))
@@ -101,9 +132,9 @@ class RagRetriever:
         scored.sort(key=lambda item: item[0], reverse=True)
         hits = [
             RagHit(
-                source=self.chunks[idx].source,
-                title=self.chunks[idx].title,
-                text=self.chunks[idx].text,
+                source=chunks[idx].source,
+                title=chunks[idx].title,
+                text=chunks[idx].text,
                 score=round(score, 4),
             )
             for score, idx in scored[:top_k]

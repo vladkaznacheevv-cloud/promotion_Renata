@@ -13,7 +13,7 @@ def get_main_menu():
     keyboard = [
         [InlineKeyboardButton("Мероприятия", callback_data="events")],
         [InlineKeyboardButton("Онлайн-курсы", callback_data="courses")],
-        [InlineKeyboardButton("Закрытый канал", callback_data="private_channel")],
+        [InlineKeyboardButton("«Игра 10:0»", callback_data="private_channel")],
         [InlineKeyboardButton("Консультации", callback_data="consultations")],
         [InlineKeyboardButton("Связаться с менеджером", callback_data="contact_manager")],
         [InlineKeyboardButton("Помощь", callback_data="help")],
@@ -124,3 +124,14 @@ def get_private_channel_paid_kb(invite_url: str | None = None):
         buttons.append([InlineKeyboardButton("Открыть ссылку", url=invite_url)])
     buttons.append([InlineKeyboardButton("В меню", callback_data="main_menu")])
     return InlineKeyboardMarkup(buttons)
+
+
+def get_game10_kb(payment_url: str | None = None):
+    rows = []
+    if payment_url and payment_url.startswith(("http://", "https://")):
+        rows.append([InlineKeyboardButton("Оплатить 5 000 ₽", url=payment_url)])
+    else:
+        rows.append([InlineKeyboardButton("Оплатить 5 000 ₽", callback_data="private_channel_payment_info")])
+    rows.append([InlineKeyboardButton("Вопросы к ассистенту", callback_data="game10_questions")])
+    rows.append([InlineKeyboardButton("В меню", callback_data="menu")])
+    return InlineKeyboardMarkup(rows)
