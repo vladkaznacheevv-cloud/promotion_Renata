@@ -906,7 +906,7 @@ async def show_events_list_screen (update :Update ,context :ContextTypes .DEFAUL
         page =int (context .user_data .get (EVENTS_LIST_PAGE_KEY )or 0 )
     page =max (0 ,min (int (page ),total_pages -1 ))
     context .user_data [EVENTS_LIST_PAGE_KEY ]=page
-    text ="\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u043c\u0435\u0440\u043e\u043f\u0440\u0438\u044f\u0442\u0438\u0435 \ud83d\udc47"
+    text ="Выберите мероприятие 👇"
     if total_pages >1 :
         text =f"{text }\n\u0421\u0442\u0440\u0430\u043d\u0438\u0446\u0430 {page +1 }/{total_pages }"
     _set_screen_meta (context ,kind ="events_list")

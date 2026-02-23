@@ -3,7 +3,7 @@ from __future__ import annotations
 from telegram import Update
 from telegram.error import BadRequest
 
-from telegram_bot.text_utils import normalize_text_for_telegram
+from telegram_bot.text_utils import normalize_telegram_text, normalize_text_for_telegram
 
 
 class ScreenManager:
@@ -33,7 +33,9 @@ class ScreenManager:
             return None
 
         chat_id = chat.id
-        normalized_text = normalize_text_for_telegram(text, label="screen") or ""
+        normalized_text = normalize_telegram_text(
+            normalize_text_for_telegram(text, label="screen")
+        ) or ""
         last_message_id = context.user_data.get(self.LAST_SCREEN_MESSAGE_ID_KEY)
 
         if last_message_id:
