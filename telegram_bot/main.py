@@ -1,4 +1,5 @@
 import os 
+import json
 import logging 
 import re 
 import socket 
@@ -29,7 +30,7 @@ from core .crm .activity_service import ActivityService
 from core .payments .models import Payment 
 from core .catalog .models import CatalogItem 
 from core .integrations .getcourse .url_utils import normalize_getcourse_url 
-from telegram .error import Conflict 
+from telegram .error import Conflict ,BadRequest
 from telegram import Message ,CallbackQuery 
 
 from telegram_bot .keyboards import (
@@ -89,6 +90,7 @@ chat_histories :dict [int ,list [dict ]]={}
 WAITING_LEAD_KEY ="waiting_lead"# None | "individual" | "group"
 AI_MODE_KEY ="assistant_mode"# bool
 ASSISTANT_SOURCE_KEY ="assistant_source"# None | "course"
+ASSISTANT_EVENT_ID_KEY ="assistant_event_id"
 WAITING_CONTACT_PHONE_KEY ="waiting_contact_phone"
 WAITING_CONTACT_EMAIL_KEY ="waiting_contact_email"
 CONTACT_PHONE_KEY ="contact_phone"
@@ -99,6 +101,11 @@ LOCK_HEARTBEAT_SECONDS =30
 
 EMAIL_RE =re .compile (r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")
 COURSES_PAGE_SIZE =5 
+EVENTS_LIST_PAGE_SIZE =6
+EVENTS_CACHE_KEY ="events_cache"
+EVENTS_LIST_PAGE_KEY ="events_list_page"
+SCREEN_KIND_KEY ="screen_kind"
+SCREEN_EVENT_ID_KEY ="screen_event_id"
 
 
 def _instance_meta ()->dict [str ,str ]:
@@ -187,6 +194,18 @@ async def _send (bot ,chat_id :int ,text :str |None =None ,**kwargs ):
 
 async def _show_screen (update :Update ,context :ContextTypes .DEFAULT_TYPE ,text :str |None ,**kwargs ):
     return await screen_manager .show_screen (update ,context ,text ,**kwargs )
+
+
+async def _safe_edit_reply_markup (query :CallbackQuery |None ,*,reply_markup =None ):
+    if query is None :
+        return None
+    try :
+        return await query .edit_message_reply_markup (reply_markup =reply_markup )
+    except BadRequest as e :
+        message =(str (e )or "").lower ()
+        if "message is not modified" in message :
+            return None
+        raise
 
 
 async def _answer (query :CallbackQuery ,text :str |None =None ,**kwargs ):
@@ -333,6 +352,7 @@ def _reset_states (context :ContextTypes .DEFAULT_TYPE ):
     context .user_data [WAITING_LEAD_KEY ]=None 
     context .user_data [AI_MODE_KEY ]=False 
     context .user_data .pop (ASSISTANT_SOURCE_KEY ,None )
+    context .user_data .pop (ASSISTANT_EVENT_ID_KEY ,None )
     context .user_data [WAITING_CONTACT_PHONE_KEY ]=False 
     context .user_data [WAITING_CONTACT_EMAIL_KEY ]=False 
     context .user_data .pop (CONTACT_PHONE_KEY ,None )
@@ -518,13 +538,12 @@ async def _save_contacts (update :Update ,context :ContextTypes .DEFAULT_TYPE ,p
             await session .commit ()
 
         _reset_states (context )
-        if update .effective_message :
-            await _reply (
-            update .effective_message ,
-            "\u041e\u0442\u043b\u0438\u0447\u043d\u043e, \u043a\u043e\u043d\u0442\u0430\u043a\u0442\u044b \u0441\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u044b. \u041c\u044b \u0441\u043a\u043e\u0440\u043e \u0441\u0432\u044f\u0436\u0435\u043c\u0441\u044f \u0441 \u0432\u0430\u043c\u0438.",
-            reply_markup =get_remove_reply_kb (),
-            )
-            await _show_screen (update ,context ,"\u0413\u043b\u0430\u0432\u043d\u043e\u0435 \u043c\u0435\u043d\u044e",reply_markup =get_main_menu ())
+        await _show_screen (
+        update ,
+        context ,
+        "\u2705 \u041e\u0442\u043b\u0438\u0447\u043d\u043e, \u043a\u043e\u043d\u0442\u0430\u043a\u0442\u044b \u0441\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u044b. \u041c\u044b \u0441\u043a\u043e\u0440\u043e \u0441\u0432\u044f\u0436\u0435\u043c\u0441\u044f \u0441 \u0432\u0430\u043c\u0438.",
+        reply_markup =get_back_to_menu_kb (),
+        )
     except Exception as e :
         logger .exception ("????????????????????????? ?????????? ???????????? ????????????????????????????????????????? ??????????????????????????????????????: %s",e )
         await _notify_db_unavailable (update )
@@ -677,6 +696,322 @@ async def handle_contact_email_text (update :Update ,context :ContextTypes .DEFA
         return 
 
     await _save_contacts (update ,context ,phone =phone ,email =email )
+
+
+def _set_screen_meta (context :ContextTypes .DEFAULT_TYPE ,*,kind :str ,event_id :int |None =None )->None :
+    context .user_data [SCREEN_KIND_KEY ]=kind
+    if event_id is None :
+        context .user_data .pop (SCREEN_EVENT_ID_KEY ,None )
+    else :
+        context .user_data [SCREEN_EVENT_ID_KEY ]=int (event_id )
+
+
+def _safe_json_list (value ):
+    if isinstance (value ,list ):
+        return value
+    if isinstance (value ,str ):
+        try :
+            parsed =json .loads (value )
+            return parsed if isinstance (parsed ,list )else None
+        except Exception :
+            return None
+    return None
+
+
+def _format_rub (value )->str :
+    try :
+        amount =int (float (value ))
+    except Exception :
+        return str (value )
+    return f"{amount :,}".replace (","," ")
+
+
+def _event_prices_lines (event :dict )->list [str ]:
+    pricing_options =_safe_json_list (event .get ("pricing_options"))or []
+    lines :list [str ]=[]
+    for item in pricing_options :
+        if not isinstance (item ,dict ):
+            continue
+        label =str (item .get ("label")or "\u0421\u0442\u043e\u0438\u043c\u043e\u0441\u0442\u044c").strip ()
+        price_rub =item .get ("price_rub")
+        if price_rub in (None ,""):
+            continue
+        note =str (item .get ("note")or "").strip ()
+        line =f"\u2022 {label} — {_format_rub (price_rub )} \u20bd"
+        if note :
+            line =f"{line} ({note })"
+        lines .append (line )
+    if lines :
+        return lines
+    fallback_price =event .get ("price")
+    if fallback_price not in (None ,""):
+        return [f"\u2022 \u0421\u0442\u043e\u0438\u043c\u043e\u0441\u0442\u044c — {_format_rub (fallback_price )} \u20bd"]
+    return []
+
+
+def _event_schedule_label (event :dict )->str :
+    schedule_type =str (event .get ("schedule_type")or "").strip ().lower ()
+    schedule_text =str (event .get ("schedule_text")or "").strip ()
+    if schedule_text :
+        return schedule_text
+    if schedule_type =="rolling":
+        return "\u0414\u0430\u0442\u0430 \u0443\u0442\u043e\u0447\u043d\u044f\u0435\u0442\u0441\u044f"
+    date_value =str (event .get ("date")or "").strip ()
+    if date_value :
+        return date_value
+    return "\u0414\u0430\u0442\u0430 \u0443\u0442\u043e\u0447\u043d\u044f\u0435\u0442\u0441\u044f"
+
+
+def _truncate_plain_text (value :str ,limit :int =1000 )->str :
+    normalized =(value or "").replace ("\r\n","\n").strip ()
+    if len (normalized )<=limit :
+        return normalized
+    return normalized [:max (0 ,limit -1 )].rstrip ()+"\u2026"
+
+
+def _build_events_list_keyboard (events :list [dict ],page :int )->InlineKeyboardMarkup :
+    start =page *EVENTS_LIST_PAGE_SIZE
+    end =start +EVENTS_LIST_PAGE_SIZE
+    rows :list [list [InlineKeyboardButton ]]=[]
+    for event in events [start :end ]:
+        title =str (event .get ("title")or f"\u041c\u0435\u0440\u043e\u043f\u0440\u0438\u044f\u0442\u0438\u0435 #{event .get ('id')}")
+        title =title .strip ()or f"\u041c\u0435\u0440\u043e\u043f\u0440\u0438\u044f\u0442\u0438\u0435 #{event .get ('id')}"
+        if len (title )>64 :
+            title =title [:61 ]+"\u2026"
+        rows .append ([InlineKeyboardButton (title ,callback_data =f"event_open:{event ['id']}")])
+
+    nav :list [InlineKeyboardButton ]=[]
+    if page >0 :
+        nav .append (InlineKeyboardButton ("\u25c0",callback_data ="event_list_prev"))
+    if end <len (events ):
+        nav .append (InlineKeyboardButton ("\u25b6",callback_data ="event_list_next"))
+    if nav :
+        rows .append (nav )
+    rows .append ([
+    InlineKeyboardButton ("\u041e\u0431\u043d\u043e\u0432\u0438\u0442\u044c",callback_data ="event_list_refresh"),
+    InlineKeyboardButton ("\u0412 \u043c\u0435\u043d\u044e",callback_data ="main_menu"),
+    ])
+    return InlineKeyboardMarkup (rows )
+
+
+def _build_event_detail_keyboard (event_id :int )->InlineKeyboardMarkup :
+    return InlineKeyboardMarkup ([
+    [InlineKeyboardButton ("\u0417\u0430\u043f\u0438\u0441\u0430\u0442\u044c\u0441\u044f",callback_data =f"event_register:{event_id}")],
+    [InlineKeyboardButton ("\u0412\u043e\u043f\u0440\u043e\u0441\u044b \u043a \u0430\u0441\u0441\u0438\u0441\u0442\u0435\u043d\u0442\u0443",callback_data =f"event_questions:{event_id}")],
+    [
+    InlineKeyboardButton ("\u041d\u0430\u0437\u0430\u0434 \u043a \u0441\u043f\u0438\u0441\u043a\u0443",callback_data ="events_list"),
+    InlineKeyboardButton ("\u0412 \u043c\u0435\u043d\u044e",callback_data ="main_menu"),
+    ],
+    ])
+
+
+def _build_event_detail_text (event :dict )->str :
+    title =str (event .get ("title")or "\u041c\u0435\u0440\u043e\u043f\u0440\u0438\u044f\u0442\u0438\u0435").strip ()
+    lines =[
+    title ,
+    "",
+    f"\U0001f4c5 {_event_schedule_label (event )}",
+    ]
+    location =str (event .get ("location")or "").strip ()
+    if location :
+        lines .append (f"\U0001f4cd {location }")
+    hosts =str (event .get ("hosts")or "").strip ()
+    if hosts :
+        hosts_line =hosts .replace ("\r\n","\n").strip ()
+        lines .append (f"\U0001f3a4 \u0412\u0435\u0434\u0443\u0449\u0438\u0435: {hosts_line }")
+    price_lines =_event_prices_lines (event )
+    if price_lines :
+        lines .append ("\U0001f4b3 \u0426\u0435\u043d\u044b:")
+        lines .extend (price_lines )
+    description =_truncate_plain_text (str (event .get ("description")or ""),limit =1000 )
+    if description :
+        lines .append ("")
+        lines .append ("\U0001f4dd "+description )
+    return "\n".join (lines )[:3500 ]
+
+
+def _event_ai_context_text (event :dict |None )->str :
+    if not isinstance (event ,dict ):
+        return ""
+    parts :list [str ]=[]
+    title =str (event .get ("title")or "").strip ()
+    if title :
+        parts .append (f"\u041c\u0435\u0440\u043e\u043f\u0440\u0438\u044f\u0442\u0438\u0435: {title }")
+    parts .append (f"\u0420\u0430\u0441\u043f\u0438\u0441\u0430\u043d\u0438\u0435: {_event_schedule_label (event )}")
+    location =str (event .get ("location")or "").strip ()
+    if location :
+        parts .append (f"\u041b\u043e\u043a\u0430\u0446\u0438\u044f: {location }")
+    hosts =str (event .get ("hosts")or "").strip ()
+    if hosts :
+        parts .append (f"\u0412\u0435\u0434\u0443\u0449\u0438\u0435: {hosts }")
+    price_lines =_event_prices_lines (event )
+    if price_lines :
+        parts .append ("\u0426\u0435\u043d\u044b:\n"+"\n".join (price_lines ))
+    description =_truncate_plain_text (str (event .get ("description")or ""),limit =700 )
+    if description :
+        parts .append (f"\u041e\u043f\u0438\u0441\u0430\u043d\u0438\u0435: {description }")
+    return "\n".join (parts )
+
+
+def _get_cached_events (context :ContextTypes .DEFAULT_TYPE )->list [dict ]:
+    cached =context .user_data .get (EVENTS_CACHE_KEY )
+    return cached if isinstance (cached ,list )else []
+
+
+def _find_cached_event (context :ContextTypes .DEFAULT_TYPE ,event_id :int )->dict |None :
+    for item in _get_cached_events (context ):
+        try :
+            if int (item .get ("id"))==int (event_id ):
+                return item
+        except Exception :
+            continue
+    return None
+
+
+async def _load_events_cache (update :Update ,context :ContextTypes .DEFAULT_TYPE ,*,force_refresh :bool =False )->list [dict ]|None :
+    if not force_refresh :
+        cached =context .user_data .get (EVENTS_CACHE_KEY )
+        if isinstance (cached ,list ):
+            return cached
+    try :
+        db .init_db ()
+        async with db .async_session ()as session :
+            crm_service =CRMService (session )
+            result =await crm_service .list_active_events ()
+            items =result .get ("items",[])
+            events =items if isinstance (items ,list )else []
+            context .user_data [EVENTS_CACHE_KEY ]=events
+            return events
+    except Exception as e :
+        logger .exception ("Events cache load failed: %s",e )
+        await _notify_db_unavailable (update )
+        return None
+
+
+async def show_events_list_screen (update :Update ,context :ContextTypes .DEFAULT_TYPE ,*,force_refresh :bool =False ,page :int |None =None ):
+    events =await _load_events_cache (update ,context ,force_refresh =force_refresh )
+    if events is None :
+        return
+    if not events :
+        context .user_data [EVENTS_LIST_PAGE_KEY ]=0
+        _set_screen_meta (context ,kind ="events_list")
+        await _show_screen (update ,context ,"\u041f\u043e\u043a\u0430 \u043d\u0435\u0442 \u0430\u043a\u0442\u0443\u0430\u043b\u044c\u043d\u044b\u0445 \u043c\u0435\u0440\u043e\u043f\u0440\u0438\u044f\u0442\u0438\u0439.",reply_markup =InlineKeyboardMarkup ([
+        [InlineKeyboardButton ("\u041e\u0431\u043d\u043e\u0432\u0438\u0442\u044c",callback_data ="event_list_refresh")],
+        [InlineKeyboardButton ("\u0412 \u043c\u0435\u043d\u044e",callback_data ="main_menu")],
+        ]))
+        return
+
+    total_pages =max (1 ,(len (events )+EVENTS_LIST_PAGE_SIZE -1 )//EVENTS_LIST_PAGE_SIZE )
+    if page is None :
+        page =int (context .user_data .get (EVENTS_LIST_PAGE_KEY )or 0 )
+    page =max (0 ,min (int (page ),total_pages -1 ))
+    context .user_data [EVENTS_LIST_PAGE_KEY ]=page
+    text ="\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u043c\u0435\u0440\u043e\u043f\u0440\u0438\u044f\u0442\u0438\u0435 \ud83d\udc47"
+    if total_pages >1 :
+        text =f"{text }\n\u0421\u0442\u0440\u0430\u043d\u0438\u0446\u0430 {page +1 }/{total_pages }"
+    _set_screen_meta (context ,kind ="events_list")
+    await _show_screen (update ,context ,text ,reply_markup =_build_events_list_keyboard (events ,page ))
+
+
+async def show_event_detail_screen (update :Update ,context :ContextTypes .DEFAULT_TYPE ,event_id :int ,*,force_refresh :bool =False ):
+    events =await _load_events_cache (update ,context ,force_refresh =force_refresh )
+    if events is None :
+        return
+    event =_find_cached_event (context ,event_id )
+    if event is None and not force_refresh :
+        return await show_event_detail_screen (update ,context ,event_id ,force_refresh =True )
+    if event is None :
+        _set_screen_meta (context ,kind ="events_list")
+        await _show_screen (update ,context ,"\u041c\u0435\u0440\u043e\u043f\u0440\u0438\u044f\u0442\u0438\u0435 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e.",reply_markup =InlineKeyboardMarkup ([
+        [InlineKeyboardButton ("\u041a \u0441\u043f\u0438\u0441\u043a\u0443",callback_data ="events_list")],
+        [InlineKeyboardButton ("\u0412 \u043c\u0435\u043d\u044e",callback_data ="main_menu")],
+        ]))
+        return
+    _set_screen_meta (context ,kind ="event_detail",event_id =event_id )
+    await _show_screen (update ,context ,_build_event_detail_text (event ),reply_markup =_build_event_detail_keyboard (event_id ))
+
+
+async def events_list_callback (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    query =update .callback_query
+    await _answer (query )
+    user_db =await ensure_user (update ,source ="bot")
+    if user_db is None :
+        return
+    await show_events_list_screen (update ,context )
+
+
+async def event_list_refresh (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    query =update .callback_query
+    await _answer (query )
+    user_db =await ensure_user (update ,source ="bot")
+    if user_db is None :
+        return
+    await show_events_list_screen (update ,context ,force_refresh =True )
+
+
+async def event_list_next (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    query =update .callback_query
+    await _answer (query )
+    user_db =await ensure_user (update ,source ="bot")
+    if user_db is None :
+        return
+    page =int (context .user_data .get (EVENTS_LIST_PAGE_KEY )or 0 )+1
+    await show_events_list_screen (update ,context ,page =page )
+
+
+async def event_list_prev (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    query =update .callback_query
+    await _answer (query )
+    user_db =await ensure_user (update ,source ="bot")
+    if user_db is None :
+        return
+    page =int (context .user_data .get (EVENTS_LIST_PAGE_KEY )or 0 )-1
+    await show_events_list_screen (update ,context ,page =page )
+
+
+async def event_open (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    query =update .callback_query
+    await _answer (query )
+    try :
+        event_id =int ((query .data or "").split (":",1 )[1 ])
+    except Exception :
+        await _show_screen (update ,context ,"\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0442\u043a\u0440\u044b\u0442\u044c \u043c\u0435\u0440\u043e\u043f\u0440\u0438\u044f\u0442\u0438\u0435.",reply_markup =InlineKeyboardMarkup ([
+        [InlineKeyboardButton ("\u041a \u0441\u043f\u0438\u0441\u043a\u0443",callback_data ="events_list")],
+        [InlineKeyboardButton ("\u0412 \u043c\u0435\u043d\u044e",callback_data ="main_menu")],
+        ]))
+        return
+    user_db =await ensure_user (update ,source ="bot")
+    if user_db is None :
+        return
+    await show_event_detail_screen (update ,context ,event_id )
+
+
+async def event_questions (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    query =update .callback_query
+    await _answer (query )
+    try :
+        event_id =int ((query .data or "").split (":",1 )[1 ])
+    except Exception :
+        await _show_screen (update ,context ,"\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0442\u043a\u0440\u044b\u0442\u044c \u0447\u0430\u0442 \u043f\u043e \u043c\u0435\u0440\u043e\u043f\u0440\u0438\u044f\u0442\u0438\u044e.",reply_markup =get_back_to_menu_kb ())
+        return
+    user_db =await ensure_user (update ,source ="bot")
+    if user_db is None :
+        return
+    user_id =update .effective_user .id
+    chat_histories [user_id ]=[]
+    context .user_data [WAITING_LEAD_KEY ]=None
+    context .user_data [AI_MODE_KEY ]=True
+    context .user_data [ASSISTANT_SOURCE_KEY ]="event"
+    context .user_data [ASSISTANT_EVENT_ID_KEY ]=event_id
+    event =_find_cached_event (context ,event_id )
+    if event is None :
+        await _load_events_cache (update ,context ,force_refresh =True )
+        event =_find_cached_event (context ,event_id )
+    title =str ((event or {}).get ("title")or "").strip ()
+    prompt ="\u0417\u0430\u0434\u0430\u0439\u0442\u0435 \u0432\u043e\u043f\u0440\u043e\u0441 \u043f\u043e \u043c\u0435\u0440\u043e\u043f\u0440\u0438\u044f\u0442\u0438\u044e \u2014 \u044f \u043f\u043e\u043c\u043e\u0433\u0443 \u043f\u043e \u0440\u0430\u0441\u043f\u0438\u0441\u0430\u043d\u0438\u044e, \u0444\u043e\u0440\u043c\u0430\u0442\u0443 \u0438 \u0437\u0430\u043f\u0438\u0441\u0438."
+    if title :
+        prompt =f"\u0412\u043e\u043f\u0440\u043e\u0441\u044b \u043f\u043e \u043c\u0435\u0440\u043e\u043f\u0440\u0438\u044f\u0442\u0438\u044e: {title }\n\n{prompt }"
+    await _show_screen (update ,context ,prompt ,reply_markup =get_back_to_menu_kb ())
 
 
 
@@ -916,8 +1251,12 @@ async def handle_lead_message (update :Update ,context :ContextTypes .DEFAULT_TY
         except Exception as e :
             logger .exception ("Lead notify admin failed: %s",e )
 
-    await _reply (update .message ,"\u2705 \u0421\u043f\u0430\u0441\u0438\u0431\u043e! \u0417\u0430\u044f\u0432\u043a\u0430 \u043f\u0440\u0438\u043d\u044f\u0442\u0430. \u041c\u044b \u0441\u043a\u043e\u0440\u043e \u0441\u0432\u044f\u0436\u0435\u043c\u0441\u044f.")
-    await _show_screen (update ,context ,"\u0413\u043b\u0430\u0432\u043d\u043e\u0435 \u043c\u0435\u043d\u044e",reply_markup =get_main_menu ())
+    await _show_screen (
+    update ,
+    context ,
+    "\u2705 \u0421\u043f\u0430\u0441\u0438\u0431\u043e! \u0417\u0430\u044f\u0432\u043a\u0430 \u043f\u0440\u0438\u043d\u044f\u0442\u0430. \u041c\u044b \u0441\u043a\u043e\u0440\u043e \u0441\u0432\u044f\u0436\u0435\u043c\u0441\u044f.",
+    reply_markup =get_back_to_menu_kb (),
+    )
 
 
 
@@ -939,6 +1278,7 @@ async def show_ai_chat (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     context .user_data [WAITING_LEAD_KEY ]=None 
     context .user_data [AI_MODE_KEY ]=True 
     context .user_data .pop (ASSISTANT_SOURCE_KEY ,None )
+    context .user_data .pop (ASSISTANT_EVENT_ID_KEY ,None )
 
     await _show_screen (update ,context ,
     ASSISTANT_GREETING ,
@@ -960,6 +1300,7 @@ async def show_course_questions (update :Update ,context :ContextTypes .DEFAULT_
     context .user_data [WAITING_LEAD_KEY ]=None 
     context .user_data [AI_MODE_KEY ]=True 
     context .user_data [ASSISTANT_SOURCE_KEY ]="course"
+    context .user_data .pop (ASSISTANT_EVENT_ID_KEY ,None )
 
     await _show_screen (
     update ,
@@ -1043,6 +1384,20 @@ async def handle_ai_message (update :Update ,context :ContextTypes .DEFAULT_TYPE
         ai_message =user_message 
         if assistant_source =="course":
             ai_message =f"Контекст: вопросы о курсе GetCourse.\n{user_message }"
+        elif assistant_source =="event":
+            event_context =""
+            try :
+                event_id =context .user_data .get (ASSISTANT_EVENT_ID_KEY )
+                if event_id is not None :
+                    event_context =_event_ai_context_text (_find_cached_event (context ,int (event_id )))
+            except Exception :
+                event_context =""
+            if event_context :
+                ai_message =(
+                "\u041a\u043e\u043d\u0442\u0435\u043a\u0441\u0442: \u0432\u043e\u043f\u0440\u043e\u0441 \u043f\u043e \u043c\u0435\u0440\u043e\u043f\u0440\u0438\u044f\u0442\u0438\u044e.\n"
+                f"{event_context }\n\n"
+                f"\u0412\u043e\u043f\u0440\u043e\u0441 \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044f: {user_message }"
+                )
         response ,new_history =await ai_service .chat (
         ai_message ,
         history ,
@@ -1145,54 +1500,10 @@ user_db ,
 context :ContextTypes .DEFAULT_TYPE ,
 from_callback :bool ,
 ):
-    try :
-        db .init_db ()
-        async with db .async_session ()as session :
-            crm_service =CRMService (session )
-            events_result =await crm_service .list_active_events ()
-            events =events_result .get ("items",[])
-            if not events :
-                message ="рџ“… РЎРєРѕСЂРѕ РїРѕСЏРІСЏС‚СЃСЏ РЅРѕРІС‹Рµ РјРµСЂРѕРїСЂРёСЏС‚РёСЏ!"
-                await _show_screen (update ,context ,message ,reply_markup =get_back_to_menu_kb ())
-                return 
-
-            event_service =EventService (session )
-
-            header ="📅 *Ближайшие мероприятия*\nВыберите событие и запишитесь:"
-            await _show_screen (update ,context ,header ,parse_mode ="Markdown",reply_markup =get_back_to_menu_kb ())
-
-            for event in events :
-                event_id =event ["id"]
-                registered =await event_service .is_user_registered (user_db .id ,event_id )
-                for field_name in ("title","description","location"):
-                    raw =event .get (field_name )
-                    if isinstance (raw ,str )and looks_like_mojibake (raw ):
-                        logger .warning (
-                        "Detected mojibake in event.%s id=%s repr=%r utf8_len=%s",
-                        field_name ,
-                        event_id ,
-                        raw ,
-                        len (raw .encode ("utf-8",errors ="replace")),
-                        )
-
-                text =format_event_card (event )
-                gc_link ,_ =normalize_getcourse_url (
-                event .get ("link_getcourse"),
-                base_url =os .getenv ("GETCOURSE_BASE_URL"),
-                )
-                await _send (context .bot ,
-                chat_id =update .effective_chat .id ,
-                text =text ,
-                parse_mode ="Markdown",
-                reply_markup =get_event_actions_kb (
-                event_id ,
-                registered ,
-                gc_link if _is_valid_http_url (gc_link )else None ,
-                ),
-                )
-    except Exception as e :
-        logger .exception ("РћС€РёР±РєР° Р‘Р” РІ show_events: %s",e )
-        await _notify_db_unavailable (update )
+    _ =user_db
+    _ =from_callback
+    context .user_data [EVENTS_LIST_PAGE_KEY ]=0
+    await show_events_list_screen (update ,context ,force_refresh =True )
 
 
 async def _send_courses_list (
@@ -1236,9 +1547,13 @@ async def event_register (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
                 await _answer (query ,"РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ",show_alert =True )
                 return 
             await session .commit ()
-            await query .edit_message_reply_markup (
-            reply_markup =get_event_actions_kb (event_id ,registered =True )
-            )
+            if str (context .user_data .get (SCREEN_KIND_KEY )or "")=="event_detail"and int (context .user_data .get (SCREEN_EVENT_ID_KEY )or 0 )==event_id :
+                await show_event_detail_screen (update ,context ,event_id )
+            else :
+                await _safe_edit_reply_markup (
+                query ,
+                reply_markup =get_event_actions_kb (event_id ,registered =True ),
+                )
             await _answer (query ,"Р’С‹ Р·Р°РїРёСЃР°РЅС‹!"if not result .get ("already")else "Р’С‹ СѓР¶Рµ Р±С‹Р»Рё Р·Р°РїРёСЃР°РЅС‹")
     except Exception as e :
         logger .exception ("РћС€РёР±РєР° Р‘Р” РІ event_register: %s",e )
@@ -1272,9 +1587,13 @@ async def event_cancel (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
                 await _answer (query ,"РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ",show_alert =True )
                 return 
             await session .commit ()
-            await query .edit_message_reply_markup (
-            reply_markup =get_event_actions_kb (event_id ,registered =False )
-            )
+            if str (context .user_data .get (SCREEN_KIND_KEY )or "")=="event_detail"and int (context .user_data .get (SCREEN_EVENT_ID_KEY )or 0 )==event_id :
+                await show_event_detail_screen (update ,context ,event_id )
+            else :
+                await _safe_edit_reply_markup (
+                query ,
+                reply_markup =get_event_actions_kb (event_id ,registered =False ),
+                )
             await _answer (query ,"Р—Р°РїРёСЃСЊ РѕС‚РјРµРЅРµРЅР°"if result .get ("removed")else "Р’С‹ РЅРµ Р±С‹Р»Рё Р·Р°РїРёСЃР°РЅС‹")
     except Exception as e :
         logger .exception ("РћС€РёР±РєР° Р‘Р” РІ event_cancel: %s",e )
@@ -1462,6 +1781,11 @@ def build_app ()->Application :
 
     # Sections
     app .add_handler (CallbackQueryHandler (show_events ,pattern ="^events$"))
+    app .add_handler (CallbackQueryHandler (events_list_callback ,pattern ="^events_list$"))
+    app .add_handler (CallbackQueryHandler (event_list_prev ,pattern ="^event_list_prev$"))
+    app .add_handler (CallbackQueryHandler (event_list_next ,pattern ="^event_list_next$"))
+    app .add_handler (CallbackQueryHandler (event_list_refresh ,pattern ="^event_list_refresh$"))
+    app .add_handler (CallbackQueryHandler (event_open ,pattern ="^event_open:"))
     app .add_handler (CallbackQueryHandler (show_courses ,pattern ="^courses$"))
     app .add_handler (CallbackQueryHandler (show_courses_page ,pattern ="^courses_page:"))
     app .add_handler (CallbackQueryHandler (show_private_channel ,pattern ="^private_channel$"))
@@ -1471,6 +1795,7 @@ def build_app ()->Application :
     app .add_handler (CallbackQueryHandler (show_formats_and_prices ,pattern ="^consult_formats$"))
     app .add_handler (CallbackQueryHandler (show_ai_chat ,pattern ="^ai_chat$"))
     app .add_handler (CallbackQueryHandler (show_course_questions ,pattern ="^course_questions$"))
+    app .add_handler (CallbackQueryHandler (event_questions ,pattern ="^event_questions:"))
     app .add_handler (CallbackQueryHandler (show_contacts_request ,pattern ="^share_contacts$"))
     app .add_handler (CallbackQueryHandler (contact_manager ,pattern ="^contact_manager$"))
     app .add_handler (CallbackQueryHandler (show_help ,pattern ="^help$"))
