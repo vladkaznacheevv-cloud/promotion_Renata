@@ -51,6 +51,7 @@ from telegram_bot .text_utils import normalize_text_for_telegram ,looks_like_moj
 from telegram_bot .text_formatting import format_event_card 
 from telegram_bot .lock_utils import get_lock_path ,touch_lock_heartbeat 
 from telegram_bot .typing_indicator import TypingIndicator 
+from telegram_bot .screen_manager import ScreenManager
 from telegram_bot .utils import detect_intent
 
 try :
@@ -78,6 +79,7 @@ YOOMONEY_PAY_URL_PLACEHOLDER =(os .getenv ("YOOMONEY_PAY_URL_PLACEHOLDER")or "")
 # Services
 ai_service =AIService (api_key =AI_API_KEY )
 logger .info ("AI configured: key=%s model=%s",bool (AI_API_KEY ),ai_service .model )
+screen_manager =ScreenManager ()
 
 
 # In-memory (РїРѕР·Р¶Рµ РјРѕР¶РЅРѕ РІС‹РЅРµСЃС‚Рё РёСЃС‚РѕСЂРёСЋ РІ Redis/DB)
@@ -181,6 +183,10 @@ async def _edit (query :CallbackQuery |None ,text :str |None ,**kwargs ):
 async def _send (bot ,chat_id :int ,text :str |None =None ,**kwargs ):
     payload =text if text is not None else kwargs .pop ("text",None )
     return await bot .send_message (chat_id =chat_id ,text =_t (payload ,label ="send")or "",**kwargs )
+
+
+async def _show_screen (update :Update ,context :ContextTypes .DEFAULT_TYPE ,text :str |None ,**kwargs ):
+    return await screen_manager .show_screen (update ,context ,text ,**kwargs )
 
 
 async def _answer (query :CallbackQuery ,text :str |None =None ,**kwargs ):
@@ -403,17 +409,18 @@ async def start (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     if user_db is None :
         return 
 
+    screen_manager .clear_screen (context )
     _reset_states (context )
 
     text ="РђСЃСЃРёСЃС‚РµРЅС‚ РіРѕС‚РѕРІ РїРѕРјРѕС‡СЊ СЃ... рџ‘‡"
-    await _reply (update .message ,text ,reply_markup =get_main_menu ())
+    await _show_screen (update ,context ,text ,reply_markup =get_main_menu ())
 
 
 async def main_menu (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     query =update .callback_query 
     await _answer (query )
     _reset_states (context )
-    await _edit (query ,"рџ“‹ Р“Р»Р°РІРЅРѕРµ РјРµРЅСЋ",reply_markup =get_main_menu ())
+    await _show_screen (update ,context ,"рџ“‹ Р“Р»Р°РІРЅРѕРµ РјРµРЅСЋ",reply_markup =get_main_menu ())
 
 
 async def show_contacts_request (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
@@ -427,12 +434,10 @@ async def show_contacts_request (update :Update ,context :ContextTypes .DEFAULT_
     _reset_states (context )
     context .user_data [WAITING_CONTACT_PHONE_KEY ]=True 
 
-    await _edit (query ,
-    "РћСЃС‚Р°РІСЊС‚Рµ РЅРѕРјРµСЂ С‚РµР»РµС„РѕРЅР° РєРЅРѕРїРєРѕР№ РЅРёР¶Рµ РёР»Рё РѕС‚РїСЂР°РІСЊС‚Рµ РЅРѕРјРµСЂ С‚РµРєСЃС‚РѕРј РІ СЌС‚РѕРј С‡Р°С‚Рµ."
-    )
-    await _send (context .bot ,
-    chat_id =update .effective_chat .id ,
-    text ="РќР°Р¶РјРёС‚Рµ РєРЅРѕРїРєСѓ В«РћС‚РїСЂР°РІРёС‚СЊ РЅРѕРјРµСЂВ».",
+    await _show_screen (
+    update ,
+    context ,
+    "РћСЃС‚Р°РІСЊС‚Рµ РЅРѕРјРµСЂ С‚РµР»РµС„РѕРЅР° РєРЅРѕРїРєРѕР№ РЅРёР¶Рµ РёР»Рё РѕС‚РїСЂР°РІСЊС‚Рµ РЅРѕРјРµСЂ С‚РµРєСЃС‚РѕРј РІ СЌС‚РѕРј С‡Р°С‚Рµ.\n\nРќР°Р¶РјРёС‚Рµ РєРЅРѕРїРєСѓ В«РћС‚РїСЂР°РІРёС‚СЊ РЅРѕРјРµСЂВ».",
     reply_markup =get_contact_request_kb (),
     )
 
@@ -475,10 +480,7 @@ async def contact_manager (update :Update ,context :ContextTypes .DEFAULT_TYPE )
         "\u0421\u0432\u044f\u0436\u0443 \u0441 \u043c\u0435\u043d\u0435\u0434\u0436\u0435\u0440\u043e\u043c.\\n"
         "\u041e\u0441\u0442\u0430\u0432\u044c\u0442\u0435 \u043a\u043e\u043d\u0442\u0430\u043a\u0442\u044b \u2014 \u043c\u0435\u043d\u0435\u0434\u0436\u0435\u0440 \u0441\u0432\u044f\u0436\u0435\u0442\u0441\u044f \u0441 \u0432\u0430\u043c\u0438 \u0432 \u0431\u043b\u0438\u0436\u0430\u0439\u0448\u0435\u0435 \u0432\u0440\u0435\u043c\u044f."
         )
-        if query :
-            await _edit (query ,text ,reply_markup =get_contact_manager_kb ())
-        elif update .effective_message :
-            await _reply (update .effective_message ,text ,reply_markup =get_contact_manager_kb ())
+        await _show_screen (update ,context ,text ,reply_markup =get_contact_manager_kb ())
     except Exception as e :
         logger .exception ("????????????????????????? ?????????? ???? contact_manager: %s",e )
         await _notify_db_unavailable (update )
@@ -522,11 +524,7 @@ async def _save_contacts (update :Update ,context :ContextTypes .DEFAULT_TYPE ,p
             "\u041e\u0442\u043b\u0438\u0447\u043d\u043e, \u043a\u043e\u043d\u0442\u0430\u043a\u0442\u044b \u0441\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u044b. \u041c\u044b \u0441\u043a\u043e\u0440\u043e \u0441\u0432\u044f\u0436\u0435\u043c\u0441\u044f \u0441 \u0432\u0430\u043c\u0438.",
             reply_markup =get_remove_reply_kb (),
             )
-            await _reply (
-            update .effective_message ,
-            "\u0413\u043b\u0430\u0432\u043d\u043e\u0435 \u043c\u0435\u043d\u044e",
-            reply_markup =get_main_menu (),
-            )
+            await _show_screen (update ,context ,"\u0413\u043b\u0430\u0432\u043d\u043e\u0435 \u043c\u0435\u043d\u044e",reply_markup =get_main_menu ())
     except Exception as e :
         logger .exception ("????????????????????????? ?????????? ???????????? ????????????????????????????????????????? ??????????????????????????????????????: %s",e )
         await _notify_db_unavailable (update )
@@ -596,13 +594,13 @@ async def handle_contact_phone (update :Update ,context :ContextTypes .DEFAULT_T
         if snapshot is None :
             return 
         if snapshot .get ("phone")and snapshot .get ("email"):
-            await _reply (update .message ,'Контакты уже получены, спасибо!')
+            await _show_screen (update ,context ,'Контакты уже получены, спасибо!',reply_markup =get_main_menu ())
             return 
 
     contact =update .message .contact 
     phone =(contact .phone_number or "").strip ()
     if not phone :
-        await _reply (update .message ,'Не удалось прочитать номер. Отправьте контакт ещё раз.')
+        await _show_screen (update ,context ,'Не удалось прочитать номер. Отправьте контакт ещё раз.',reply_markup =get_contact_request_kb ())
         return 
     if not await _save_contact_field (update ,phone =phone ):
         return 
@@ -611,7 +609,7 @@ async def handle_contact_phone (update :Update ,context :ContextTypes .DEFAULT_T
     context .user_data [WAITING_CONTACT_PHONE_KEY ]=False 
     context .user_data [WAITING_CONTACT_EMAIL_KEY ]=True 
     context .user_data [SKIP_NEXT_EMAIL_KEY ]=True 
-    await _reply (update .message ,'Спасибо! Теперь пришлите вашу почту одним сообщением (например: name@example.com).',reply_markup =get_remove_reply_kb ())
+    await _show_screen (update ,context ,'Спасибо! Теперь пришлите вашу почту одним сообщением (например: name@example.com).',reply_markup =get_remove_reply_kb ())
 
 
 async def handle_contact_phone_text (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
@@ -623,12 +621,12 @@ async def handle_contact_phone_text (update :Update ,context :ContextTypes .DEFA
     text =(update .message .text or "").strip ()
     if text .lower ()=="отмена":
         _reset_states (context )
-        await _reply (update .message ,'Действие отменено.',reply_markup =get_main_menu ())
+        await _show_screen (update ,context ,'Действие отменено.',reply_markup =get_main_menu ())
         return 
 
     normalized =re .sub (r"[^\\d+]","",text )
     if len (re .sub (r"\\D","",normalized ))<10 :
-        await _reply (update .message ,'Номер выглядит некорректно. Пример: +79991234567')
+        await _show_screen (update ,context ,'Номер выглядит некорректно. Пример: +79991234567',reply_markup =get_contact_request_kb ())
         return 
     if not await _save_contact_field (update ,phone =normalized ):
         return 
@@ -637,7 +635,7 @@ async def handle_contact_phone_text (update :Update ,context :ContextTypes .DEFA
     context .user_data [WAITING_CONTACT_PHONE_KEY ]=False 
     context .user_data [WAITING_CONTACT_EMAIL_KEY ]=True 
     context .user_data [SKIP_NEXT_EMAIL_KEY ]=True 
-    await _reply (update .message ,'Спасибо! Теперь пришлите вашу почту одним сообщением (например: name@example.com).',reply_markup =get_remove_reply_kb ())
+    await _show_screen (update ,context ,'Спасибо! Теперь пришлите вашу почту одним сообщением (например: name@example.com).',reply_markup =get_remove_reply_kb ())
 
 
 async def handle_contact_email_text (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
@@ -650,12 +648,12 @@ async def handle_contact_email_text (update :Update ,context :ContextTypes .DEFA
     email =(update .message .text or "").strip ().lower ()
     if waiting_email and email =="отмена":
         _reset_states (context )
-        await _reply (update .message ,'Действие отменено.',reply_markup =get_main_menu ())
+        await _show_screen (update ,context ,'Действие отменено.',reply_markup =get_main_menu ())
         return 
 
     if not EMAIL_RE .match (email ):
         if waiting_email :
-            await _reply (update .message ,'Некорректный email. Пример: name@example.com')
+            await _show_screen (update ,context ,'Некорректный email. Пример: name@example.com',reply_markup =get_remove_reply_kb ())
         return 
 
     tg_user =update .effective_user 
@@ -665,7 +663,7 @@ async def handle_contact_email_text (update :Update ,context :ContextTypes .DEFA
     snapshot =await _get_contact_snapshot (tg_user .id )
     if snapshot is not None and snapshot .get ("phone")and snapshot .get ("email"):
         _reset_states (context )
-        await _reply (update .message ,'Контакты уже получены, спасибо!')
+        await _show_screen (update ,context ,'Контакты уже получены, спасибо!',reply_markup =get_main_menu ())
         return 
 
     phone =context .user_data .get (CONTACT_PHONE_KEY )
@@ -675,7 +673,7 @@ async def handle_contact_email_text (update :Update ,context :ContextTypes .DEFA
         if waiting_email :
             context .user_data [WAITING_CONTACT_EMAIL_KEY ]=False 
             context .user_data [WAITING_CONTACT_PHONE_KEY ]=True 
-        await _reply (update .message ,'Сначала отправьте номер телефона.')
+        await _show_screen (update ,context ,'Сначала отправьте номер телефона.',reply_markup =get_contact_request_kb ())
         return 
 
     await _save_contacts (update ,context ,phone =phone ,email =email )
@@ -751,12 +749,12 @@ async def show_private_channel (update :Update ,context :ContextTypes .DEFAULT_T
 
     user =update .effective_user 
     if user is None :
-        await _edit (query ,"Сервис закрытого канала временно недоступен.",reply_markup =get_back_to_menu_kb ())
+        await _show_screen (update ,context ,"Сервис закрытого канала временно недоступен.",reply_markup =get_back_to_menu_kb ())
         return 
 
     payload =await _get_private_channel_payload (user .id )
     if payload is None :
-        await _edit (query ,"Сервис закрытого канала временно недоступен.",reply_markup =get_back_to_menu_kb ())
+        await _show_screen (update ,context ,"Сервис закрытого канала временно недоступен.",reply_markup =get_back_to_menu_kb ())
         return 
 
     status =str (payload .get ("status")or "pending").strip ().lower ()
@@ -764,23 +762,26 @@ async def show_private_channel (update :Update ,context :ContextTypes .DEFAULT_T
     payment_url =str (payload .get ("payment_url")or _private_channel_payment_url ()or "").strip ()
 
     if status =="paid"and invite_url :
-        await _edit (
-        query ,
+        await _show_screen (
+        update ,
+        context ,
         f"Вот ваша персональная ссылка: {invite_url }",
         reply_markup =get_private_channel_paid_kb (invite_url ),
         )
         return 
 
     if status =="paid":
-        await _edit (
-        query ,
+        await _show_screen (
+        update ,
+        context ,
         "Оплата подтверждена. Персональная ссылка будет отправлена вам в ближайшее время.",
         reply_markup =get_back_to_menu_kb (),
         )
         return 
 
-    await _edit (
-    query ,
+    await _show_screen (
+    update ,
+    context ,
     "Доступ в закрытый канал стоит 5 000 ₽. После оплаты я пришлю персональную ссылку.",
     reply_markup =get_private_channel_pending_kb (payment_url ),
     )
@@ -805,7 +806,7 @@ async def show_consultations (update :Update ,context :ContextTypes .DEFAULT_TYP
     if user_db is None :
         return 
 
-    await _edit (query ,
+    await _show_screen (update ,context ,
     GESTALT_SHORT_SCREEN_1 ,
     parse_mode ="Markdown",
     reply_markup =get_consultations_menu (),
@@ -821,7 +822,7 @@ async def show_formats_and_prices (update :Update ,context :ContextTypes .DEFAUL
     if user_db is None :
         return 
 
-    await _edit (query ,
+    await _show_screen (update ,context ,
     GESTALT_SHORT_SCREEN_2 ,
     parse_mode ="Markdown",
     reply_markup =get_consultation_formats_menu (),
@@ -838,7 +839,7 @@ async def begin_booking_individual (update :Update ,context :ContextTypes .DEFAU
     if user_db is None :
         return 
 
-    await _edit (query ,
+    await _show_screen (update ,context ,
     "📩 *Запись на индивидуальную терапию*\n\n"
     "Отправьте одним сообщением:\n"
     "1) Имя\n"
@@ -860,7 +861,7 @@ async def begin_booking_group (update :Update ,context :ContextTypes .DEFAULT_TY
     if user_db is None :
         return 
 
-    await _edit (query ,
+    await _show_screen (update ,context ,
     "📩 *Запись в терапевтическую группу*\n\n"
     "Отправьте одним сообщением:\n"
     "1) Имя\n"
@@ -873,7 +874,7 @@ async def begin_booking_group (update :Update ,context :ContextTypes .DEFAULT_TY
 
 
 async def handle_lead_message (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
-    """Р›РѕРІРёРј Р·Р°СЏРІРєРё С‚РѕР»СЊРєРѕ РµСЃР»Рё Р°РєС‚РёРІРµРЅ WAITING_LEAD."""
+    """Lead request handler when WAITING_LEAD is active."""
     if context .user_data .get (WAITING_CONTACT_PHONE_KEY )or context .user_data .get (WAITING_CONTACT_EMAIL_KEY ):
         return 
 
@@ -883,28 +884,28 @@ async def handle_lead_message (update :Update ,context :ContextTypes .DEFAULT_TY
 
     text =(update .message .text or "").strip ()
     if not text :
-        await _reply (update .message ,"РќР°РїРёС€Рё С‚РµРєСЃС‚РѕРј, РїРѕР¶Р°Р»СѓР№СЃС‚Р° рџ™‚")
+        await _reply (update .message ,"\u041d\u0430\u043f\u0438\u0448\u0438\u0442\u0435 \u0442\u0435\u043a\u0441\u0442\u043e\u043c, \u043f\u043e\u0436\u0430\u043b\u0443\u0439\u0441\u0442\u0430.")
         return 
 
-        # РњРѕР¶РЅРѕ РіР°СЂР°РЅС‚РёСЂРѕРІР°С‚СЊ user РІ Р‘Р” Рё Р·РґРµСЃСЊ (РЅР° СЃР»СѓС‡Р°Р№ РµСЃР»Рё Р·Р°СЏРІРєР° РїСЂРёС€Р»Р° Р±РµР· /start)
     user_db =await ensure_user (update ,source ="bot")
     if user_db is None :
         return 
 
     user =update .effective_user 
-    lead_type ="РРЅРґРёРІРёРґСѓР°Р»СЊРЅРѕ"if mode =="individual"else "Р“СЂСѓРїРїР°"
+    if user is None :
+        return 
+
+    lead_type ="\u0418\u043d\u0434\u0438\u0432\u0438\u0434\u0443\u0430\u043b\u044c\u043d\u043e"if mode =="individual"else "\u0413\u0440\u0443\u043f\u043f\u0430"
 
     lead_payload =(
-    f"рџ†• Р—Р°СЏРІРєР°: *{lead_type }*\n"
-    f"рџ‘¤ {user .first_name } {user .last_name or ''} (@{user .username or 'вЂ”'})\n"
-    f"рџ†” tg_id: `{user .id }`\n\n"
-    f"рџ’¬ РЎРѕРѕР±С‰РµРЅРёРµ:\n{text }"
+    f"NEW lead: *{lead_type }*\n"
+    f"user: {user .first_name } {user .last_name or ''} (@{user .username or '-'})\n"
+    f"tg_id: `{user .id }`\n\n"
+    f"message:\n{text }"
     )
 
-    # РЎР±СЂР°СЃС‹РІР°РµРј СЂРµР¶РёРј Р·Р°СЏРІРєРё
     context .user_data [WAITING_LEAD_KEY ]=None 
 
-    # РћС‚РїСЂР°РІРєР° Р°РґРјРёРЅСѓ (РµСЃР»Рё Р·Р°РґР°РЅРѕ)
     if ADMIN_CHAT_ID :
         try :
             await _send (context .bot ,
@@ -913,12 +914,13 @@ async def handle_lead_message (update :Update ,context :ContextTypes .DEFAULT_TY
             parse_mode ="Markdown",
             )
         except Exception as e :
-            logger .exception ("РќРµ СЃРјРѕРі РѕС‚РїСЂР°РІРёС‚СЊ Р·Р°СЏРІРєСѓ Р°РґРјРёРЅСѓ: %s",e )
+            logger .exception ("Lead notify admin failed: %s",e )
 
-    await _reply (update .message ,
-    "вњ… РЎРїР°СЃРёР±Рѕ! Р—Р°СЏРІРєР° РїСЂРёРЅСЏС‚Р°. РњС‹ СЃРєРѕСЂРѕ СЃРІСЏР¶РµРјСЃСЏ.",
-    reply_markup =get_main_menu (),
-    )
+    await _reply (update .message ,"\u2705 \u0421\u043f\u0430\u0441\u0438\u0431\u043e! \u0417\u0430\u044f\u0432\u043a\u0430 \u043f\u0440\u0438\u043d\u044f\u0442\u0430. \u041c\u044b \u0441\u043a\u043e\u0440\u043e \u0441\u0432\u044f\u0436\u0435\u043c\u0441\u044f.")
+    await _show_screen (update ,context ,"\u0413\u043b\u0430\u0432\u043d\u043e\u0435 \u043c\u0435\u043d\u044e",reply_markup =get_main_menu ())
+
+
+
 
 
     # --------- AI ---------
@@ -938,7 +940,7 @@ async def show_ai_chat (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     context .user_data [AI_MODE_KEY ]=True 
     context .user_data .pop (ASSISTANT_SOURCE_KEY ,None )
 
-    await _edit (query ,
+    await _show_screen (update ,context ,
     ASSISTANT_GREETING ,
     reply_markup =get_back_to_menu_kb (),
     )
@@ -959,8 +961,9 @@ async def show_course_questions (update :Update ,context :ContextTypes .DEFAULT_
     context .user_data [AI_MODE_KEY ]=True 
     context .user_data [ASSISTANT_SOURCE_KEY ]="course"
 
-    await _edit (
-    query ,
+    await _show_screen (
+    update ,
+    context ,
     COURSE_ASSISTANT_GREETING ,
     reply_markup =get_back_to_menu_kb (),
     )
@@ -973,7 +976,7 @@ async def _show_consultations_from_text (update :Update ,context :ContextTypes .
         return 
     message =update .effective_message 
     if message is not None :
-        await _reply (message ,"Выберите формат консультации 👇",reply_markup =get_consultations_menu ())
+        await _show_screen (update ,context ,"Выберите формат консультации 👇",reply_markup =get_consultations_menu ())
 
 
 async def _route_detected_intent (update :Update ,context :ContextTypes .DEFAULT_TYPE ,intent :str )->bool :
@@ -1087,7 +1090,7 @@ async def handle_text_outside_assistant (update :Update ,context :ContextTypes .
         if routed :
             return 
 
-    await _reply (message ,"Выберите раздел 👇",reply_markup =get_main_menu ())
+    await _show_screen (update ,context ,"Выберите раздел 👇",reply_markup =get_main_menu ())
 
 
         # --------- Help ---------
@@ -1109,7 +1112,7 @@ async def show_help (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     "• 🤝 Ассистент Ренаты — вопросы\n\n"
     "Если не получается — напишите сюда, я помогу 🙂"
     )
-    await _edit (query ,text ,reply_markup =get_back_to_menu_kb (),parse_mode ="Markdown")
+    await _show_screen (update ,context ,text ,reply_markup =get_back_to_menu_kb (),parse_mode ="Markdown")
 
 
 async def course_link_unavailable (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
@@ -1127,11 +1130,7 @@ async def retry_db (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     user_db =await ensure_user (update ,source ="bot")
     if user_db is None :
         return 
-
-    if query :
-        await _edit (query ,"вњ… Р‘Р°Р·Р° СЃРЅРѕРІР° РґРѕСЃС‚СѓРїРЅР°.",reply_markup =get_main_menu ())
-    elif update .effective_message :
-        await _reply (update .effective_message ,"вњ… Р‘Р°Р·Р° СЃРЅРѕРІР° РґРѕСЃС‚СѓРїРЅР°.",reply_markup =get_main_menu ())
+    await _show_screen (update ,context ,"\u2705 \u0411\u0430\u0437\u0430 \u0441\u043d\u043e\u0432\u0430 \u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0430.",reply_markup =get_main_menu ())
 
 
 async def on_error (update :object ,context :ContextTypes .DEFAULT_TYPE )->None :
@@ -1154,27 +1153,13 @@ from_callback :bool ,
             events =events_result .get ("items",[])
             if not events :
                 message ="рџ“… РЎРєРѕСЂРѕ РїРѕСЏРІСЏС‚СЃСЏ РЅРѕРІС‹Рµ РјРµСЂРѕРїСЂРёСЏС‚РёСЏ!"
-                if from_callback and update .callback_query :
-                    await _edit (update .callback_query ,
-                    message ,reply_markup =get_back_to_menu_kb ()
-                    )
-                elif update .effective_message :
-                    await _reply (update .effective_message ,
-                    message ,reply_markup =get_back_to_menu_kb ()
-                    )
+                await _show_screen (update ,context ,message ,reply_markup =get_back_to_menu_kb ())
                 return 
 
             event_service =EventService (session )
 
             header ="📅 *Ближайшие мероприятия*\nВыберите событие и запишитесь:"
-            if from_callback and update .callback_query :
-                await _edit (update .callback_query ,
-                header ,parse_mode ="Markdown",reply_markup =get_back_to_menu_kb ()
-                )
-            elif update .effective_message :
-                await _reply (update .effective_message ,
-                header ,parse_mode ="Markdown",reply_markup =get_back_to_menu_kb ()
-                )
+            await _show_screen (update ,context ,header ,parse_mode ="Markdown",reply_markup =get_back_to_menu_kb ())
 
             for event in events :
                 event_id =event ["id"]
@@ -1221,10 +1206,7 @@ from_callback :bool ,
     _ =offset 
     message =ONLINE_COURSES_TEXT 
     markup =get_courses_empty_kb ()
-    if from_callback and update .callback_query :
-        await _edit (update .callback_query ,message ,reply_markup =markup )
-    elif update .effective_message :
-        await _reply (update .effective_message ,message ,reply_markup =markup )
+    await _show_screen (update ,context ,message ,reply_markup =markup )
 
 
 async def event_register (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
@@ -1373,7 +1355,7 @@ async def menu_command (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
         return 
     _reset_states (context )
     if update .effective_message :
-        await _reply (update .effective_message ,"Р“Р»Р°РІРЅРѕРµ РјРµРЅСЋ",reply_markup =get_main_menu ())
+        await _show_screen (update ,context ,"\u0413\u043b\u0430\u0432\u043d\u043e\u0435 \u043c\u0435\u043d\u044e",reply_markup =get_main_menu ())
 
 
 async def mark_paid_dev (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
