@@ -278,17 +278,34 @@ export default function EventFormModal({
 
   const handleSubmit = async (event) => {
     event.preventDefault();
+    const occurrenceDates = (values.occurrence_dates || [])
+      .map((value) => String(value || "").slice(0, 10))
+      .filter(Boolean)
+      .filter((value, index, arr) => arr.indexOf(value) === index)
+      .sort();
+    const shouldAutofillRecurringStartDate =
+      values.schedule_type === "recurring" &&
+      values.recurring_mode === "dates" &&
+      !values.start_date &&
+      occurrenceDates.length > 0;
+    const effectiveStartDate = shouldAutofillRecurringStartDate ? occurrenceDates[0] : values.start_date;
+    if (shouldAutofillRecurringStartDate) {
+      setValues((prev) => ({ ...prev, start_date: occurrenceDates[0] }));
+    }
+    const submitValues = shouldAutofillRecurringStartDate ? { ...values, start_date: effectiveStartDate } : values;
+
     setTouched({
       title: true,
       description: true,
-      date: values.schedule_type === "one_time",
-      start_date: values.schedule_type === "recurring",
-      recurring_positions: values.schedule_type === "recurring" && values.recurring_mode === "rule",
-      occurrence_dates: values.schedule_type === "recurring" && values.recurring_mode === "dates",
+      date: submitValues.schedule_type === "one_time",
+      start_date: submitValues.schedule_type === "recurring",
+      recurring_positions: submitValues.schedule_type === "recurring" && submitValues.recurring_mode === "rule",
+      occurrence_dates: submitValues.schedule_type === "recurring" && submitValues.recurring_mode === "dates",
       pricing_options: true,
     });
 
-    if (hasErrors || submitting) return;
+    const submitErrors = validate(submitValues);
+    if (Object.keys(submitErrors).length || submitting) return;
 
     const cleanedPricingOptions = (values.pricing_options || [])
       .map((row) => ({
@@ -299,12 +316,6 @@ export default function EventFormModal({
       .filter((row) => row.label && Number.isFinite(row.price_rub) && row.price_rub >= 0)
       .map((row) => ({ ...row, price_rub: Math.round(row.price_rub), note: row.note || null }));
 
-    const occurrenceDates = (values.occurrence_dates || [])
-      .map((value) => String(value || "").slice(0, 10))
-      .filter(Boolean)
-      .filter((value, index, arr) => arr.indexOf(value) === index)
-      .sort();
-
     const isRecurringRuleMode = isRecurring && values.recurring_mode === "rule";
     const payload = {
       title: values.title.trim(),
@@ -313,7 +324,7 @@ export default function EventFormModal({
       status: values.status,
       schedule_type: values.schedule_type,
       date: values.schedule_type === "one_time" ? values.date : null,
-      start_date: isRecurring ? (values.start_date || null) : null,
+      start_date: isRecurring ? (effectiveStartDate || null) : null,
       start_time: isRecurring ? (values.start_time || null) : null,
       end_time: isRecurring ? (values.end_time || null) : null,
       recurring_rule: isRecurring
@@ -346,7 +357,7 @@ export default function EventFormModal({
           <Button variant="secondary" onClick={onClose} type="button" disabled={submitting}>
             {RU.buttons.cancel}
           </Button>
-          <Button type="submit" form="event-form" disabled={hasErrors || submitting}>
+          <Button type="submit" form="event-form" disabled={submitting}>
             {submitting ? "Сохранение..." : RU.buttons.save}
           </Button>
         </div>

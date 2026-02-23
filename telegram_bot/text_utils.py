@@ -130,6 +130,8 @@ def normalize_text_for_telegram(text: str | None, *, label: str | None = None) -
 
     repaired = repair_mojibake(text)
     rendered = render_text(repaired)
+    if rendered is not None and "\ufffd" in rendered:
+        rendered = rendered.replace("\ufffd", "")
 
     if os.getenv("BOT_TEXT_DEBUG") == "1":
         marker = label or "text"
