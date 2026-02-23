@@ -22,6 +22,7 @@ _CYRILLIC_RE = re.compile(r"[А-Яа-яЁё]")
 _MOJIBAKE_LATIN_RE = re.compile(r"[ÐÑÃ]")
 _TRAILING_SPACES_RE = re.compile(r"[ \t]+\n")
 _TOO_MANY_NEWLINES_RE = re.compile(r"\n{3,}")
+_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
 
 
 def _is_russian_cyrillic_char(ch: str) -> bool:
@@ -124,14 +125,30 @@ def render_text(text: str | None) -> str | None:
     return value
 
 
+def normalize_telegram_text(text: str | None) -> str | None:
+    if text is None:
+        return None
+
+    value = text
+    try:
+        # Join valid surrogate pairs into normal Unicode code points.
+        value = value.encode("utf-16", "surrogatepass").decode("utf-16")
+    except UnicodeError:
+        pass
+
+    value = _SURROGATE_RE.sub("", value)
+    if "\ufffd" in value:
+        value = value.replace("\ufffd", "")
+    return value
+
+
 def normalize_text_for_telegram(text: str | None, *, label: str | None = None) -> str | None:
     if text is None:
         return None
 
     repaired = repair_mojibake(text)
     rendered = render_text(repaired)
-    if rendered is not None and "\ufffd" in rendered:
-        rendered = rendered.replace("\ufffd", "")
+    rendered = normalize_telegram_text(rendered)
 
     if os.getenv("BOT_TEXT_DEBUG") == "1":
         marker = label or "text"
