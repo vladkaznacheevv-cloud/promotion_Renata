@@ -472,15 +472,15 @@ async def contact_manager (update :Update ,context :ContextTypes .DEFAULT_TYPE )
 
         _reset_states (context )
         text =(
-        "РЎРІСЏР·СЊ СЃ РјРµРЅРµРґР¶РµСЂРѕРј.\n"
-        "РћСЃС‚Р°РІСЊС‚Рµ РєРѕРЅС‚Р°РєС‚С‹ вЂ” РјРµРЅРµРґР¶РµСЂ СЃРІСЏР¶РµС‚СЃСЏ СЃ РІР°РјРё РІ Р±Р»РёР¶Р°Р№С€РµРµ РІСЂРµРјСЏ."
+        "\u0421\u0432\u044f\u0436\u0443 \u0441 \u043c\u0435\u043d\u0435\u0434\u0436\u0435\u0440\u043e\u043c.\\n"
+        "\u041e\u0441\u0442\u0430\u0432\u044c\u0442\u0435 \u043a\u043e\u043d\u0442\u0430\u043a\u0442\u044b \u2014 \u043c\u0435\u043d\u0435\u0434\u0436\u0435\u0440 \u0441\u0432\u044f\u0436\u0435\u0442\u0441\u044f \u0441 \u0432\u0430\u043c\u0438 \u0432 \u0431\u043b\u0438\u0436\u0430\u0439\u0448\u0435\u0435 \u0432\u0440\u0435\u043c\u044f."
         )
         if query :
             await _edit (query ,text ,reply_markup =get_contact_manager_kb ())
         elif update .effective_message :
             await _reply (update .effective_message ,text ,reply_markup =get_contact_manager_kb ())
     except Exception as e :
-        logger .exception ("РћС€РёР±РєР° Р‘Р” РІ contact_manager: %s",e )
+        logger .exception ("????????????????????????? ?????????? ???? contact_manager: %s",e )
         await _notify_db_unavailable (update )
 
 
@@ -517,18 +517,19 @@ async def _save_contacts (update :Update ,context :ContextTypes .DEFAULT_TYPE ,p
 
         _reset_states (context )
         if update .effective_message :
-            await _reply (update .effective_message ,
-            "РЎРїР°СЃРёР±Рѕ! РљРѕРЅС‚Р°РєС‚С‹ СЃРѕС…СЂР°РЅРµРЅС‹. РњРµРЅРµРґР¶РµСЂ СЃРІСЏР¶РµС‚СЃСЏ СЃ РІР°РјРё.",
+            await _reply (
+            update .effective_message ,
+            "\u041e\u0442\u043b\u0438\u0447\u043d\u043e, \u043a\u043e\u043d\u0442\u0430\u043a\u0442\u044b \u0441\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u044b. \u041c\u044b \u0441\u043a\u043e\u0440\u043e \u0441\u0432\u044f\u0436\u0435\u043c\u0441\u044f \u0441 \u0432\u0430\u043c\u0438.",
             reply_markup =get_remove_reply_kb (),
             )
-            await _reply (update .effective_message ,
-            "Р“Р»Р°РІРЅРѕРµ РјРµРЅСЋ",
+            await _reply (
+            update .effective_message ,
+            "\u0413\u043b\u0430\u0432\u043d\u043e\u0435 \u043c\u0435\u043d\u044e",
             reply_markup =get_main_menu (),
             )
     except Exception as e :
-        logger .exception ("РћС€РёР±РєР° Р‘Р” РїСЂРё СЃРѕС…СЂР°РЅРµРЅРёРё РєРѕРЅС‚Р°РєС‚РѕРІ: %s",e )
+        logger .exception ("????????????????????????? ?????????? ???????????? ????????????????????????????????????????? ??????????????????????????????????????: %s",e )
         await _notify_db_unavailable (update )
-
 
 async def _get_contact_snapshot (tg_id :int )->dict |None :
     try :
@@ -595,13 +596,13 @@ async def handle_contact_phone (update :Update ,context :ContextTypes .DEFAULT_T
         if snapshot is None :
             return 
         if snapshot .get ("phone")and snapshot .get ("email"):
-            await _reply (update .message ,'???????? ??? ????????, ???????!')
+            await _reply (update .message ,'Контакты уже получены, спасибо!')
             return 
 
     contact =update .message .contact 
     phone =(contact .phone_number or "").strip ()
     if not phone :
-        await _reply (update .message ,'?? ??????? ????????? ?????. ????????? ????? ???????.')
+        await _reply (update .message ,'Не удалось прочитать номер. Отправьте контакт ещё раз.')
         return 
     if not await _save_contact_field (update ,phone =phone ):
         return 
@@ -610,7 +611,7 @@ async def handle_contact_phone (update :Update ,context :ContextTypes .DEFAULT_T
     context .user_data [WAITING_CONTACT_PHONE_KEY ]=False 
     context .user_data [WAITING_CONTACT_EMAIL_KEY ]=True 
     context .user_data [SKIP_NEXT_EMAIL_KEY ]=True 
-    await _reply (update .message ,'???????! ?????? ???????? ???? ????? ????? ?????????? (????????: name@example.com).',reply_markup =get_remove_reply_kb ())
+    await _reply (update .message ,'Спасибо! Теперь пришлите вашу почту одним сообщением (например: name@example.com).',reply_markup =get_remove_reply_kb ())
 
 
 async def handle_contact_phone_text (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
@@ -620,14 +621,14 @@ async def handle_contact_phone_text (update :Update ,context :ContextTypes .DEFA
         return 
 
     text =(update .message .text or "").strip ()
-    if text .lower ()=="??????":
+    if text .lower ()=="отмена":
         _reset_states (context )
-        await _reply (update .message ,'???????? ????????.',reply_markup =get_main_menu ())
+        await _reply (update .message ,'Действие отменено.',reply_markup =get_main_menu ())
         return 
 
     normalized =re .sub (r"[^\\d+]","",text )
     if len (re .sub (r"\\D","",normalized ))<10 :
-        await _reply (update .message ,'????? ???????? ???????????. ??????: +79991234567')
+        await _reply (update .message ,'Номер выглядит некорректно. Пример: +79991234567')
         return 
     if not await _save_contact_field (update ,phone =normalized ):
         return 
@@ -636,7 +637,7 @@ async def handle_contact_phone_text (update :Update ,context :ContextTypes .DEFA
     context .user_data [WAITING_CONTACT_PHONE_KEY ]=False 
     context .user_data [WAITING_CONTACT_EMAIL_KEY ]=True 
     context .user_data [SKIP_NEXT_EMAIL_KEY ]=True 
-    await _reply (update .message ,'???????! ?????? ???????? ???? ????? ????? ?????????? (????????: name@example.com).',reply_markup =get_remove_reply_kb ())
+    await _reply (update .message ,'Спасибо! Теперь пришлите вашу почту одним сообщением (например: name@example.com).',reply_markup =get_remove_reply_kb ())
 
 
 async def handle_contact_email_text (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
@@ -647,14 +648,14 @@ async def handle_contact_email_text (update :Update ,context :ContextTypes .DEFA
 
     waiting_email =bool (context .user_data .get (WAITING_CONTACT_EMAIL_KEY ))
     email =(update .message .text or "").strip ().lower ()
-    if waiting_email and email =="??????":
+    if waiting_email and email =="отмена":
         _reset_states (context )
-        await _reply (update .message ,'???????? ????????.',reply_markup =get_main_menu ())
+        await _reply (update .message ,'Действие отменено.',reply_markup =get_main_menu ())
         return 
 
     if not EMAIL_RE .match (email ):
         if waiting_email :
-            await _reply (update .message ,'???????????? email. ??????: name@example.com')
+            await _reply (update .message ,'Некорректный email. Пример: name@example.com')
         return 
 
     tg_user =update .effective_user 
@@ -664,7 +665,7 @@ async def handle_contact_email_text (update :Update ,context :ContextTypes .DEFA
     snapshot =await _get_contact_snapshot (tg_user .id )
     if snapshot is not None and snapshot .get ("phone")and snapshot .get ("email"):
         _reset_states (context )
-        await _reply (update .message ,'???????? ??? ????????, ???????!')
+        await _reply (update .message ,'Контакты уже получены, спасибо!')
         return 
 
     phone =context .user_data .get (CONTACT_PHONE_KEY )
@@ -674,7 +675,7 @@ async def handle_contact_email_text (update :Update ,context :ContextTypes .DEFA
         if waiting_email :
             context .user_data [WAITING_CONTACT_EMAIL_KEY ]=False 
             context .user_data [WAITING_CONTACT_PHONE_KEY ]=True 
-        await _reply (update .message ,'??????? ????????? ????? ????????.')
+        await _reply (update .message ,'Сначала отправьте номер телефона.')
         return 
 
     await _save_contacts (update ,context ,phone =phone ,email =email )

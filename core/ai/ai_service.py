@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import date as dt_date, datetime, time as dt_time
 from typing import List, Tuple
 
 from openai import OpenAI
@@ -128,23 +129,23 @@ class AIService:
     @staticmethod
     def _fmt_dt(value: datetime | None) -> str:
         if value is None:
-            return "дата уточняется"
+            return "date TBD"
         try:
             return value.strftime("%d.%m.%Y %H:%M")
         except Exception:
-            return "дата уточняется"
+            return "date TBD"
 
     @staticmethod
     def _fmt_price(value, currency: str = "RUB") -> str:
         try:
             if value is None:
-                return "цена по запросу"
+                return "price on request"
             amount = float(value)
             if amount <= 0:
-                return "бесплатно"
+                return "free"
             return f"{int(amount)} {currency}"
         except Exception:
-            return "цена по запросу"
+            return "price on request"
 
     @staticmethod
     def _short(value: str | None, limit: int = 220) -> str:
@@ -155,7 +156,190 @@ class AIService:
             return text
         return text[:limit].rstrip() + "..."
 
-    async def _event_context(self, tg_id: int | None, limit: int = 10) -> tuple[str, dict[str, int]]:
+
+    @staticmethod
+    def _fmt_date(value) -> str:
+        if value is None:
+            return ""
+        try:
+            if isinstance(value, datetime):
+                return value.strftime("%d.%m.%Y")
+            if isinstance(value, dt_date):
+                return value.strftime("%d.%m.%Y")
+            text = str(value).strip()
+            if not text:
+                return ""
+            if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+                yyyy, mm, dd = text[:10].split("-")
+                return f"{dd}.{mm}.{yyyy}"
+            return text
+        except Exception:
+            return str(value)
+
+    @staticmethod
+    def _fmt_time(value) -> str:
+        if value is None:
+            return ""
+        try:
+            if isinstance(value, dt_time):
+                return value.strftime("%H:%M")
+            text = str(value).strip()
+            if not text:
+                return ""
+            return text[:5] if ":" in text else text
+        except Exception:
+            return str(value)
+
+    @classmethod
+    def _time_range_text(cls, start_value, end_value) -> str:
+        start = cls._fmt_time(start_value)
+        end = cls._fmt_time(end_value)
+        if start and end:
+            return f"{start}-{end}"
+        return start or end
+
+    @staticmethod
+    def _parse_json_field(value):
+        if value is None:
+            return None
+        if isinstance(value, (list, dict)):
+            return value
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return None
+            try:
+                return json.loads(raw)
+            except Exception:
+                return None
+        return None
+
+    @staticmethod
+    def _normalize_query_text(value: str | None) -> str:
+        if not value:
+            return ""
+        return re.sub(r"[^a-z0-9\u0430-\u044f]+", " ", value.lower().replace("\u0451", "\u0435")).strip()
+
+    def _event_match_score(self, event: Event, query: str | None) -> int:
+        normalized_query = self._normalize_query_text(query)
+        if not normalized_query:
+            return 0
+        title = self._normalize_query_text(getattr(event, "title", None))
+        description = self._normalize_query_text(getattr(event, "description", None))
+        haystack = " ".join(part for part in (title, description) if part).strip()
+        if not haystack:
+            return 0
+        score = 0
+        if title and title in normalized_query:
+            score += 8
+        if normalized_query in haystack:
+            score += 6
+        for token in [t for t in normalized_query.split() if len(t) >= 3]:
+            if token in title:
+                score += 2
+            elif token in haystack:
+                score += 1
+        return score
+
+    def _event_schedule_summary(self, event: Event) -> str:
+        schedule_type = (getattr(event, "schedule_type", None) or "").strip() or "one_time"
+        if schedule_type == "rolling":
+            return "No fixed date / on request"
+
+        if schedule_type == "recurring":
+            parts: list[str] = []
+            start_date_text = self._fmt_date(getattr(event, "start_date", None))
+            if start_date_text:
+                parts.append(f"Start {start_date_text}")
+
+            occurrence_dates = self._parse_json_field(getattr(event, "occurrence_dates", None))
+            if isinstance(occurrence_dates, list) and occurrence_dates:
+                dates_text = [self._fmt_date(item) for item in occurrence_dates if item]
+                dates_text = [item for item in dates_text if item]
+                if dates_text:
+                    parts.append(f"Dates: {', '.join(dates_text)}")
+            else:
+                recurring_rule = self._parse_json_field(getattr(event, "recurring_rule", None))
+                if isinstance(recurring_rule, dict):
+                    weekday_map = {
+                        "MO": "monday",
+                        "TU": "tuesday",
+                        "WE": "wednesday",
+                        "TH": "thursday",
+                        "FR": "friday",
+                        "SA": "saturday",
+                        "SU": "sunday",
+                    }
+                    raw_positions = recurring_rule.get("bysetpos") or []
+                    positions = []
+                    for item in raw_positions:
+                        try:
+                            pos = int(item)
+                        except Exception:
+                            continue
+                        if 1 <= pos <= 5:
+                            positions.append(pos)
+                    weekday = weekday_map.get(str(recurring_rule.get("byweekday") or "").upper(), "")
+                    if positions or weekday:
+                        pos_text = " and ".join(f"#{pos}" for pos in sorted(set(positions))) if positions else ""
+                        parts.append(" ".join(part for part in (pos_text, weekday) if part).strip())
+
+            time_text = self._time_range_text(getattr(event, "start_time", None), getattr(event, "end_time", None))
+            if time_text:
+                parts.append(time_text)
+            return "; ".join(part for part in parts if part) or "Recurring schedule"
+
+        starts_at = getattr(event, "starts_at", None)
+        if starts_at is not None:
+            return self._fmt_dt(starts_at)
+        return "date TBD"
+
+    def _event_prices_summary(self, event: Event) -> str:
+        pricing_options = self._parse_json_field(getattr(event, "pricing_options", None))
+        if isinstance(pricing_options, list) and pricing_options:
+            parts: list[str] = []
+            for item in pricing_options[:5]:
+                if not isinstance(item, dict):
+                    continue
+                label = str(item.get("label") or "Price").strip() or "Price"
+                price = item.get("price_rub")
+                note = self._short(str(item.get("note") or ""), limit=80)
+                if price in (None, ""):
+                    chunk = f"{label}: on request"
+                else:
+                    chunk = f"{label}: {self._fmt_price(price)}"
+                if note:
+                    chunk += f" ({note})"
+                parts.append(chunk)
+            if parts:
+                return "; ".join(parts)
+        return f"Price: {self._fmt_price(getattr(event, 'price', None))}"
+
+    def _event_detail_lines(self, event: Event) -> list[str]:
+        lines = [f"- Title: {getattr(event, 'title', '')}"]
+        lines.append(f"- Schedule: {self._event_schedule_summary(event)}")
+        lines.append(f"- Location: {getattr(event, 'location', None) or 'online'}")
+        lines.append(f"- Prices: {self._event_prices_summary(event)}")
+
+        for label, value, limit in (
+            ("Hosts", getattr(event, "hosts", None), 320),
+            ("Description", getattr(event, "description", None), 360),
+            ("Duration", getattr(event, "duration_hint", None), 220),
+            ("Booking", getattr(event, "booking_hint", None), 220),
+        ):
+            text = self._short(value, limit=limit)
+            if text:
+                lines.append(f"- {label}: {text}")
+
+        occurrence_dates = self._parse_json_field(getattr(event, "occurrence_dates", None))
+        if isinstance(occurrence_dates, list) and occurrence_dates:
+            dates_text = [self._fmt_date(item) for item in occurrence_dates if item]
+            dates_text = [item for item in dates_text if item]
+            if dates_text:
+                lines.append(f"- Occurrence dates: {', '.join(dates_text)}")
+        return lines
+
+    async def _event_context(self, tg_id: int | None, limit: int = 10, query: str | None = None) -> tuple[str, dict[str, int]]:
         if db.async_session is None:
             return "", {"user_events": 0, "consultations": 0, "active_events": 0, "catalog": 0, "webhooks": 0}
 
@@ -180,10 +364,10 @@ class AIService:
                     user_events = list(user_events_rows.all())
                     counts["user_events"] = len(user_events)
                     if user_events:
-                        lines.append("События пользователя:")
+                        lines.append("User events:")
                         for row in user_events:
                             lines.append(
-                                f"- {row[0]} | {self._fmt_dt(row[1])} | {row[2] or 'онлайн'} | {self._fmt_price(row[3])} | статус: {row[4] or 'unknown'}"
+                                f"- {row[0]} | {self._fmt_dt(row[1])} | {row[2] or 'online'} | {self._fmt_price(row[3])} | status: {row[4] or 'unknown'}"
                             )
 
                     user_consult_rows = await session.execute(
@@ -202,26 +386,37 @@ class AIService:
                     user_consults = list(user_consult_rows.all())
                     counts["consultations"] = len(user_consults)
                     if user_consults:
-                        lines.append("Консультации пользователя:")
+                        lines.append("User consultations:")
                         for row in user_consults:
                             lines.append(
-                                f"- {row[0]} ({row[1] or 'формат не указан'}) | {self._fmt_price(row[2])} | {self._fmt_dt(row[4])} | статус: {row[3] or 'unknown'}"
+                                f"- {row[0]} ({row[1] or 'format not specified'}) | {self._fmt_price(row[2])} | {self._fmt_dt(row[4])} | status: {row[3] or 'unknown'}"
                             )
 
                 active_events_rows = await session.execute(
-                    select(Event.title, Event.starts_at, Event.location, Event.price, Event.link_getcourse)
+                    select(Event)
                     .where(Event.is_active.is_(True))
-                    .order_by(Event.starts_at.asc(), Event.id.desc())
-                    .limit(min(limit, 5))
+                    .order_by(Event.updated_at.desc(), Event.id.desc())
+                    .limit(min(limit, 10))
                 )
-                active_events = list(active_events_rows.all())
+                active_events = list(active_events_rows.scalars().all())
                 counts["active_events"] = len(active_events)
                 if active_events:
-                    lines.append("Актуальные мероприятия:")
-                    for row in active_events:
+                    lines.append("Active events:")
+                    for event in active_events[: min(limit, 5)]:
                         lines.append(
-                            f"- {row[0]} | {self._fmt_dt(row[1])} | {row[2] or 'онлайн'} | {self._fmt_price(row[3])} | ссылка: {row[4] or 'уточняется'}"
+                            f"- {event.title} | {self._event_schedule_summary(event)} | {event.location or 'online'} | {self._event_prices_summary(event)}"
                         )
+
+                    best_event = None
+                    best_score = 0
+                    for event in active_events:
+                        score = self._event_match_score(event, query)
+                        if score > best_score:
+                            best_score = score
+                            best_event = event
+                    if best_event is not None and best_score > 0:
+                        lines.append("Relevant event (details):")
+                        lines.extend(self._event_detail_lines(best_event))
 
                 catalog_rows = await session.execute(
                     select(CatalogItem.title, CatalogItem.price, CatalogItem.currency, CatalogItem.link_getcourse)
@@ -232,10 +427,10 @@ class AIService:
                 catalog_items = list(catalog_rows.all())
                 counts["catalog"] = len(catalog_items)
                 if catalog_items:
-                    lines.append("Каталог:")
+                    lines.append("Catalog:")
                     for row in catalog_items:
                         lines.append(
-                            f"- {row[0]} | {self._fmt_price(row[1], row[2] or 'RUB')} | ссылка: {row[3] or 'уточняется'}"
+                            f"- {row[0]} | {self._fmt_price(row[1], row[2] or 'RUB')} | link: {row[3] or 'pending'}"
                         )
 
                 webhook_rows = await session.execute(
@@ -252,13 +447,13 @@ class AIService:
                 webhook_events = list(webhook_rows.all())
                 counts["webhooks"] = len(webhook_events)
                 if webhook_events:
-                    lines.append("Последние webhook-события GetCourse:")
+                    lines.append("Recent GetCourse webhook events:")
                     for row in webhook_events:
                         lines.append(
-                            f"- {row[0] or 'unknown'} | статус: {row[1] or 'unknown'} | сумма: {self._fmt_price(row[2], row[3] or 'RUB')} | {self._fmt_dt(row[4])}"
+                            f"- {row[0] or 'unknown'} | status: {row[1] or 'unknown'} | amount: {self._fmt_price(row[2], row[3] or 'RUB')} | {self._fmt_dt(row[4])}"
                         )
 
-                return "\n".join(lines).strip(), counts
+                return "\\n".join(lines).strip(), counts
         except Exception as e:
             logger.warning("Failed to build event context: %s", e.__class__.__name__)
             return "", counts
@@ -338,9 +533,9 @@ class AIService:
         rag_context = ""
 
         if include_events:
-            event_context, event_counts = await self._event_context(tg_id=tg_id, limit=10)
+            event_context, event_counts = await self._event_context(tg_id=tg_id, limit=10, query=user_message)
             if event_context:
-                messages.append({"role": "system", "content": f"Контекст CRM и событий:\n{event_context}"})
+                messages.append({"role": "system", "content": f"CRM and events context:\\n{event_context}"})
             rag_context, rag_confidence, rag_chunks_count = self._rag_context(user_message)
             if rag_context:
                 messages.append({"role": "system", "content": rag_context})

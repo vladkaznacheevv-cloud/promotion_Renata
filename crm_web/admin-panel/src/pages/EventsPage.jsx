@@ -29,6 +29,35 @@ const eventTypeLabel = (event) => {
   return RU.labels.eventTypeEvent;
 };
 
+function humanizeEventSaveError(err) {
+  const detail = err?.payload?.detail;
+  if (Array.isArray(detail) && detail.length) {
+    const fieldLabels = {
+      date: "Дата мероприятия",
+      start_date: "Дата старта",
+      occurrence_dates: "Список дат",
+      recurring_rule: "Правило расписания",
+      pricing_options: "Цены",
+      title: "Название",
+      description: "Описание",
+    };
+    const text = detail
+      .map((item) => {
+        const loc = Array.isArray(item?.loc) ? item.loc : [];
+        const field = String(loc[loc.length - 1] || "");
+        const label = fieldLabels[field] || field;
+        const msg = String(item?.msg || item?.message || "").trim();
+        if (!msg) return "";
+        return label ? `${label}: ${msg}` : msg;
+      })
+      .filter(Boolean)
+      .join("; ");
+    if (text) return text;
+  }
+  if (typeof detail === "string" && detail.trim()) return detail.trim();
+  return err?.message || RU.messages.eventSaveError;
+}
+
 export default function EventsPage() {
   const { currentUser } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -131,7 +160,7 @@ export default function EventsPage() {
 
       closeFormModal();
     } catch (err) {
-      setFormError(err?.message || RU.messages.eventSaveError);
+      setFormError(humanizeEventSaveError(err));
     } finally {
       setSubmitting(false);
     }
