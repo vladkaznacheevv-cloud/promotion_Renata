@@ -49,6 +49,7 @@ get_retry_kb ,
 get_private_channel_pending_kb ,
 get_private_channel_paid_kb ,
 get_game10_kb ,
+get_ai_quick_actions_kb ,
 )
 from telegram_bot .text_utils import normalize_text_for_telegram ,looks_like_mojibake 
 from telegram_bot .text_formatting import format_event_card 
@@ -98,6 +99,7 @@ WAITING_CONTACT_EMAIL_KEY ="waiting_contact_email"
 CONTACT_PHONE_KEY ="contact_phone"
 CONTACT_FLOW_KEY ="contact_flow"
 PENDING_CONTACTS_KEY ="pending_contacts"
+PENDING_EVENT_ACTIONS_KEY ="pending_event_actions"
 SKIP_NEXT_EMAIL_KEY ="skip_next_email"
 LOCK_FILE_PATH =get_lock_path ()
 _BOT_LOCK_FD =None 
@@ -110,6 +112,9 @@ EVENTS_CACHE_KEY ="events_cache"
 EVENTS_LIST_PAGE_KEY ="events_list_page"
 SCREEN_KIND_KEY ="screen_kind"
 SCREEN_EVENT_ID_KEY ="screen_event_id"
+AUTO_AI_REPLY_TIMESTAMPS_KEY ="auto_ai_reply_timestamps"
+AUTO_AI_RATE_LIMIT_WINDOW_SEC =12
+AUTO_AI_RATE_LIMIT_MAX =3
 
 
 def _instance_meta ()->dict [str ,str ]:
@@ -388,6 +393,10 @@ def _err_short (exc :Exception |None ,limit :int =180 )->str :
     if exc is None :
         return ""
     text =str (exc ).replace ("\r"," ").replace ("\n"," ").strip ()
+    text =re .sub (r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^\\s@]+@","\\1***@",text )
+    text =re .sub (r"(password\\s*[=:]\\s*)([^\\s,;]+)",r"\\1***",text ,flags =re .IGNORECASE )
+    text =re .sub (r"(pwd\\s*[=:]\\s*)([^\\s,;]+)",r"\\1***",text ,flags =re .IGNORECASE )
+    text =re .sub (r"(token\\s*[=:]\\s*)([^\\s,;]+)",r"\\1***",text ,flags =re .IGNORECASE )
     if len (text )>limit :
         text =text [:limit ]+"..."
     return text
@@ -400,6 +409,20 @@ def _log_db_issue (scope :str ,exc :Exception |None =None )->None :
     else :
         logger .warning ("DB issue [%s]: %s",scope ,_err_name (exc ))
 
+
+
+def _remember_pending_event_action (context :ContextTypes .DEFAULT_TYPE ,update :Update ,*,action :str ,event_id :int )->None :
+    pending =list (context .user_data .get (PENDING_EVENT_ACTIONS_KEY )or [])
+    tg_user =update .effective_user
+    payload ={
+    "action":str (action ),
+    "event_id":int (event_id ),
+    "updated_at":datetime .utcnow ().isoformat (),
+    }
+    if tg_user is not None :
+        payload ["tg_id"]=int (tg_user .id )
+    pending .append (payload )
+    context .user_data [PENDING_EVENT_ACTIONS_KEY ]=pending [-10 :]
 
 def _remember_pending_contacts (context :ContextTypes .DEFAULT_TYPE ,update :Update ,*,phone :str |None =None ,email :str |None =None )->dict :
     pending =dict (context .user_data .get (PENDING_CONTACTS_KEY )or {})
@@ -461,7 +484,56 @@ async def _notify_db_unavailable (update :Update ,exc :Exception |None =None ,*,
         await _reply (update .effective_message ,text ,reply_markup =keyboard )
 
 
-async def ensure_user (update :Update ,source :str ="bot",ai_increment :int =0 ):
+
+def classify_update_need_db (update :Update ,context :ContextTypes .DEFAULT_TYPE |None =None )->bool :
+    message =getattr (update ,"effective_message",None )
+    callback =getattr (update ,"callback_query",None )
+    callback_data =str (getattr (callback ,"data",None )or "")
+
+    if callback_data :
+        nav_prefixes =(
+        "main_menu",
+        "menu",
+        "events",
+        "events_list",
+        "event_open:",
+        "event_list_prev",
+        "event_list_next",
+        "event_list_refresh",
+        "courses",
+        "courses_page:",
+        "private_channel",
+        "game10_questions",
+        "consultations",
+        "consult_formats",
+        "ai_chat",
+        "course_questions",
+        "share_contacts",
+        "contact_manager",
+        "help",
+        "retry_db",
+        )
+        if any (callback_data .startswith (prefix )for prefix in nav_prefixes ):
+            return False
+        if any (callback_data .startswith (prefix )for prefix in ("event_register:","event_cancel:","event_pay:")):
+            return True
+
+    if message is None :
+        return False
+    text_value =str (getattr (message ,"text",None )or "").strip ()
+    if text_value .startswith ("/"):
+        command =text_value .split ()[0 ].lower ()
+        if command in {"/start","/menu","/back","/cancel","/events","/courses","/catalog"}:
+            return False
+    if context is not None and (
+    context .user_data .get (WAITING_CONTACT_PHONE_KEY )
+    or context .user_data .get (WAITING_CONTACT_EMAIL_KEY )
+    or context .user_data .get (CONTACT_FLOW_KEY )
+    ):
+        return True
+    return False
+
+async def ensure_user (update :Update ,source :str ="bot",ai_increment :int =0 ,notify_ui :bool =True ):
     """
     Р•РґРёРЅР°СЏ С‚РѕС‡РєР°: СЃРѕР·РґР°С‘Рј/РѕР±РЅРѕРІР»СЏРµРј РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ РІ Р‘Р” РїРѕ tg_id.
     Р’РѕР·РІСЂР°С‰Р°РµС‚ РѕР±СЉРµРєС‚ User (РёР· Р‘Р”).
@@ -498,8 +570,10 @@ async def ensure_user (update :Update ,source :str ="bot",ai_increment :int =0 )
             await session .commit ()
             return user 
     except Exception as e :
-        logger .exception ("РћС€РёР±РєР° Р‘Р” РІ ensure_user: %s",e )
-        await _notify_db_unavailable (update )
+        if notify_ui :
+            await _notify_db_unavailable (update ,e ,scope ="ensure_user")
+        else :
+            _log_db_issue ("ensure_user_silent",e )
         return None 
 
 
@@ -510,14 +584,14 @@ async def ensure_user_on_message (update :Update ,context :ContextTypes .DEFAULT
         return
     if context .user_data .get (WAITING_CONTACT_PHONE_KEY )or context .user_data .get (WAITING_CONTACT_EMAIL_KEY ):
         return
+    if not classify_update_need_db (update ,context ):
+        logger .debug ("DB guard skipped for navigation message update")
+        return
     await ensure_user (update ,source ="bot")
 
 
 async def start (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
 # РіР°СЂР°РЅС‚РёСЂСѓРµРј РЅР°Р»РёС‡РёРµ user РІ Р‘Р”
-    user_db =await ensure_user (update ,source ="bot")
-    if user_db is None :
-        return 
 
     screen_manager .clear_screen (context )
     _reset_states (context )
@@ -950,8 +1024,19 @@ async def _load_events_cache (update :Update ,context :ContextTypes .DEFAULT_TYP
             context .user_data [EVENTS_CACHE_KEY ]=events
             return events
     except Exception as e :
-        logger .exception ("Events cache load failed: %s",e )
-        await _notify_db_unavailable (update )
+        _log_db_issue ("events_cache_load",e )
+        cached =context .user_data .get (EVENTS_CACHE_KEY )
+        if isinstance (cached ,list )and cached :
+            return cached
+        await _show_screen (
+        update ,
+        context ,
+        "\u26a0\ufe0f \u0421\u043f\u0438\u0441\u043e\u043a \u043c\u0435\u0440\u043e\u043f\u0440\u0438\u044f\u0442\u0438\u0439 \u0432\u0440\u0435\u043c\u0435\u043d\u043d\u043e \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u0447\u0443\u0442\u044c \u043f\u043e\u0437\u0436\u0435.",
+        reply_markup =InlineKeyboardMarkup ([
+        [InlineKeyboardButton ("\u041e\u0431\u043d\u043e\u0432\u0438\u0442\u044c",callback_data ="event_list_refresh")],
+        [InlineKeyboardButton ("\u0412 \u043c\u0435\u043d\u044e",callback_data ="main_menu")],
+        ]),
+        )
         return None
 
 
@@ -1001,27 +1086,18 @@ async def show_event_detail_screen (update :Update ,context :ContextTypes .DEFAU
 async def events_list_callback (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     query =update .callback_query
     await _answer (query )
-    user_db =await ensure_user (update ,source ="bot")
-    if user_db is None :
-        return
     await show_events_list_screen (update ,context )
 
 
 async def event_list_refresh (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     query =update .callback_query
     await _answer (query )
-    user_db =await ensure_user (update ,source ="bot")
-    if user_db is None :
-        return
     await show_events_list_screen (update ,context ,force_refresh =True )
 
 
 async def event_list_next (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     query =update .callback_query
     await _answer (query )
-    user_db =await ensure_user (update ,source ="bot")
-    if user_db is None :
-        return
     page =int (context .user_data .get (EVENTS_LIST_PAGE_KEY )or 0 )+1
     await show_events_list_screen (update ,context ,page =page )
 
@@ -1029,9 +1105,6 @@ async def event_list_next (update :Update ,context :ContextTypes .DEFAULT_TYPE )
 async def event_list_prev (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     query =update .callback_query
     await _answer (query )
-    user_db =await ensure_user (update ,source ="bot")
-    if user_db is None :
-        return
     page =int (context .user_data .get (EVENTS_LIST_PAGE_KEY )or 0 )-1
     await show_events_list_screen (update ,context ,page =page )
 
@@ -1047,9 +1120,6 @@ async def event_open (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
         [InlineKeyboardButton ("\u0412 \u043c\u0435\u043d\u044e",callback_data ="main_menu")],
         ]))
         return
-    user_db =await ensure_user (update ,source ="bot")
-    if user_db is None :
-        return
     await show_event_detail_screen (update ,context ,event_id )
 
 
@@ -1060,9 +1130,6 @@ async def event_questions (update :Update ,context :ContextTypes .DEFAULT_TYPE )
         event_id =int ((query .data or "").split (":",1 )[1 ])
     except Exception :
         await _show_screen (update ,context ,"\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0442\u043a\u0440\u044b\u0442\u044c \u0447\u0430\u0442 \u043f\u043e \u043c\u0435\u0440\u043e\u043f\u0440\u0438\u044f\u0442\u0438\u044e.",reply_markup =get_back_to_menu_kb ())
-        return
-    user_db =await ensure_user (update ,source ="bot")
-    if user_db is None :
         return
     user_id =update .effective_user .id
     chat_histories [user_id ]=[]
@@ -1089,19 +1156,13 @@ async def show_events (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     await _answer (query )
     _reset_states (context )
 
-    user_db =await ensure_user (update ,source ="bot")
-    if user_db is None :
-        return 
 
-    await _send_events_list (update ,user_db ,context ,from_callback =True )
+    await _send_events_list (update ,None ,context ,from_callback =True )
 
 
 async def show_events_command (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     _reset_states (context )
-    user_db =await ensure_user (update ,source ="bot")
-    if user_db is None :
-        return 
-    await _send_events_list (update ,user_db ,context ,from_callback =False )
+    await _send_events_list (update ,None ,context ,from_callback =False )
 
 
 async def show_courses (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
@@ -1109,18 +1170,12 @@ async def show_courses (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     await _answer (query )
     _reset_states (context )
 
-    user_db =await ensure_user (update ,source ="bot")
-    if user_db is None :
-        return 
 
     await _send_courses_list (update ,context ,offset =0 ,from_callback =True )
 
 
 async def show_courses_command (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     _reset_states (context )
-    user_db =await ensure_user (update ,source ="bot")
-    if user_db is None :
-        return 
     await _send_courses_list (update ,context ,offset =0 ,from_callback =False )
 
 
@@ -1133,9 +1188,6 @@ async def show_courses_page (update :Update ,context :ContextTypes .DEFAULT_TYPE
     except Exception :
         offset =0 
 
-    user_db =await ensure_user (update ,source ="bot")
-    if user_db is None :
-        return 
 
     await _send_courses_list (update ,context ,offset =max (offset ,0 ),from_callback =True )
 
@@ -1145,9 +1197,6 @@ async def show_private_channel (update :Update ,context :ContextTypes .DEFAULT_T
     await _answer (query )
     _reset_states (context )
 
-    user_db =await ensure_user (update ,source ="bot")
-    if user_db is None :
-        return 
 
     await _show_screen (
     update ,
@@ -1173,9 +1222,6 @@ async def show_consultations (update :Update ,context :ContextTypes .DEFAULT_TYP
     await _answer (query )
     _reset_states (context )
 
-    user_db =await ensure_user (update ,source ="bot")
-    if user_db is None :
-        return 
 
     await _show_screen (update ,context ,
     GESTALT_SHORT_SCREEN_1 ,
@@ -1189,9 +1235,6 @@ async def show_formats_and_prices (update :Update ,context :ContextTypes .DEFAUL
     await _answer (query )
     _reset_states (context )
 
-    user_db =await ensure_user (update ,source ="bot")
-    if user_db is None :
-        return 
 
     await _show_screen (update ,context ,
     GESTALT_SHORT_SCREEN_2 ,
@@ -1206,9 +1249,6 @@ async def begin_booking_individual (update :Update ,context :ContextTypes .DEFAU
     context .user_data [AI_MODE_KEY ]=False 
     context .user_data [WAITING_LEAD_KEY ]="individual"
 
-    user_db =await ensure_user (update ,source ="bot")
-    if user_db is None :
-        return 
 
     await _show_screen (update ,context ,
     "📩 *Запись на индивидуальную терапию*\n\n"
@@ -1228,9 +1268,6 @@ async def begin_booking_group (update :Update ,context :ContextTypes .DEFAULT_TY
     context .user_data [AI_MODE_KEY ]=False 
     context .user_data [WAITING_LEAD_KEY ]="group"
 
-    user_db =await ensure_user (update ,source ="bot")
-    if user_db is None :
-        return 
 
     await _show_screen (update ,context ,
     "📩 *Запись в терапевтическую группу*\n\n"
@@ -1258,9 +1295,6 @@ async def handle_lead_message (update :Update ,context :ContextTypes .DEFAULT_TY
         await _reply (update .message ,"\u041d\u0430\u043f\u0438\u0448\u0438\u0442\u0435 \u0442\u0435\u043a\u0441\u0442\u043e\u043c, \u043f\u043e\u0436\u0430\u043b\u0443\u0439\u0441\u0442\u0430.")
         return 
 
-    user_db =await ensure_user (update ,source ="bot")
-    if user_db is None :
-        return 
 
     user =update .effective_user 
     if user is None :
@@ -1304,9 +1338,6 @@ async def show_ai_chat (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     query =update .callback_query 
     await _answer (query )
 
-    user_db =await ensure_user (update ,source ="bot")
-    if user_db is None :
-        return 
 
     user_id =update .effective_user .id 
     chat_histories [user_id ]=[]# СЃР±СЂР°СЃС‹РІР°РµРј РёСЃС‚РѕСЂРёСЋ РїСЂРё РІС…РѕРґРµ
@@ -1326,9 +1357,6 @@ async def show_course_questions (update :Update ,context :ContextTypes .DEFAULT_
     query =update .callback_query 
     await _answer (query )
 
-    user_db =await ensure_user (update ,source ="bot")
-    if user_db is None :
-        return 
 
     user_id =update .effective_user .id 
     chat_histories [user_id ]=[]
@@ -1350,9 +1378,6 @@ async def game10_questions (update :Update ,context :ContextTypes .DEFAULT_TYPE 
     query =update .callback_query
     await _answer (query )
 
-    user_db =await ensure_user (update ,source ="bot")
-    if user_db is None :
-        return
 
     user_id =update .effective_user .id
     chat_histories [user_id ]=[]
@@ -1373,165 +1398,226 @@ async def game10_questions (update :Update ,context :ContextTypes .DEFAULT_TYPE 
 
 async def _show_consultations_from_text (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     _reset_states (context )
-    user_db =await ensure_user (update ,source ="bot")
-    if user_db is None :
-        return 
     message =update .effective_message 
     if message is not None :
         await _show_screen (update ,context ,"Выберите формат консультации 👇",reply_markup =get_consultations_menu ())
 
 
-async def _route_detected_intent (update :Update ,context :ContextTypes .DEFAULT_TYPE ,intent :str )->bool :
-    if intent =="MENU":
-        await menu_command (update ,context )
-        return True 
-    if intent =="MANAGER":
-        await contact_manager (update ,context )
-        return True 
-    if intent =="EVENTS":
-        await show_events_command (update ,context )
-        return True 
-    if intent =="COURSES":
-        await show_courses_command (update ,context )
-        return True 
-    if intent =="CONSULT":
-        await _show_consultations_from_text (update ,context )
-        return True 
-    return False 
+def _auto_ai_rate_limited (context :ContextTypes .DEFAULT_TYPE )->bool :
+    now_ts =datetime .utcnow ().timestamp ()
+    raw =context .user_data .get (AUTO_AI_REPLY_TIMESTAMPS_KEY )or []
+    kept :list [float ]=[]
+    for item in raw :
+        try :
+            ts =float (item )
+        except Exception :
+            continue
+        if now_ts -ts <=AUTO_AI_RATE_LIMIT_WINDOW_SEC :
+            kept .append (ts )
+    if len (kept )>=AUTO_AI_RATE_LIMIT_MAX :
+        context .user_data [AUTO_AI_REPLY_TIMESTAMPS_KEY ]=kept [-AUTO_AI_RATE_LIMIT_MAX :]
+        return True
+    kept .append (now_ts )
+    context .user_data [AUTO_AI_REPLY_TIMESTAMPS_KEY ]=kept [-AUTO_AI_RATE_LIMIT_MAX :]
+    return False
 
 
-async def handle_ai_message (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
-    """
-    AI РѕС‚РІРµС‡Р°РµС‚ С‚РѕР»СЊРєРѕ РІ СЂРµР¶РёРјРµ AI_MODE.
-    Р”Р°РЅРЅС‹Рµ Рѕ РјРµСЂРѕРїСЂРёСЏС‚РёСЏС… РїРѕРґС‚СЏРіРёРІР°СЋС‚СЃСЏ РІ core.ai (PostgreSQL).
-    """
-    # 1) РµСЃР»Рё Р¶РґС‘Рј Р·Р°СЏРІРєСѓ вЂ” AI РЅРµ РЅСѓР¶РµРЅ
-    if context .user_data .get (WAITING_LEAD_KEY ):
-        return 
-    if context .user_data .get (WAITING_CONTACT_PHONE_KEY )or context .user_data .get (WAITING_CONTACT_EMAIL_KEY ):
-        return 
+def _build_ai_request_message (context :ContextTypes .DEFAULT_TYPE ,user_message :str )->str :
+    assistant_source =str (context .user_data .get (ASSISTANT_SOURCE_KEY )or "").strip ().lower ()
+    ai_message =user_message
+    if assistant_source =="course":
+        return f"\u041a\u043e\u043d\u0442\u0435\u043a\u0441\u0442: \u0432\u043e\u043f\u0440\u043e\u0441\u044b \u043e \u043a\u0443\u0440\u0441\u0435 GetCourse.\n{user_message }"
+    if assistant_source =="game10":
+        return f"[FOCUS:GAME10]\n{user_message }"
+    if assistant_source =="event":
+        event_context =""
+        try :
+            event_id =context .user_data .get (ASSISTANT_EVENT_ID_KEY )
+            if event_id is not None :
+                event_context =_event_ai_context_text (_find_cached_event (context ,int (event_id )))
+        except Exception :
+            event_context =""
+        if event_context :
+            ai_message =(
+            "\u041a\u043e\u043d\u0442\u0435\u043a\u0441\u0442: \u0432\u043e\u043f\u0440\u043e\u0441 \u043f\u043e \u043c\u0435\u0440\u043e\u043f\u0440\u0438\u044f\u0442\u0438\u044e.\n"
+            f"{event_context }\n\n"
+            f"\u0412\u043e\u043f\u0440\u043e\u0441 \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044f: {user_message }"
+            )
+    return ai_message
 
-        # 2) РµСЃР»Рё РїРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РІ AI-СЂРµР¶РёРјРµ вЂ” РЅРµ РїРµСЂРµС…РІР°С‚С‹РІР°РµРј С‚РµРєСЃС‚
-    if not context .user_data .get (AI_MODE_KEY ):
-        return 
 
-        # РіР°СЂР°РЅС‚РёСЂСѓРµРј user (С‡С‚РѕР±С‹ РїРѕС‚РѕРј СЃРѕС…СЂР°РЅСЏС‚СЊ РёСЃС‚РѕСЂРёСЋ/СЃРѕР±С‹С‚РёСЏ/РїР»Р°С‚РµР¶Рё РЅР° РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ)
-    user_db =await ensure_user (update ,source ="bot")
-    if user_db is None :
-        return 
+async def _send_ai_response (
+update :Update ,
+context :ContextTypes .DEFAULT_TYPE ,
+*,
+user_message :str ,
+response_mode :str ,
+reply_markup =None ,
+)->bool :
+    message =update .message
+    tg_user =update .effective_user
+    if message is None or tg_user is None :
+        return False
 
-    user_id =update .effective_user .id 
-    user_message =(update .message .text or "").strip ()
+    user_db =await ensure_user (update ,source ="bot",notify_ui =False )
+    user_id =tg_user .id
+    history =chat_histories .get (user_id ,[])
+    ai_message =_build_ai_request_message (context ,user_message )
 
-    if not user_message or user_message .startswith ("/"):
-        return 
-
-    intent =detect_intent (user_message )
-    if intent in {"MENU","MANAGER"}:
-        context .user_data [AI_MODE_KEY ]=False 
-        context .user_data [WAITING_LEAD_KEY ]=None 
-        context .user_data .pop (ASSISTANT_SOURCE_KEY ,None )
-        await _route_detected_intent (update ,context ,intent )
-        return 
-
-    typing_indicator =None 
-    if context .user_data .get (AI_MODE_KEY )and update .effective_chat is not None :
+    typing_indicator =None
+    if update .effective_chat is not None :
         typing_indicator =TypingIndicator (context .bot ,update .effective_chat .id )
         await typing_indicator .start ()
 
     try :
-        history =chat_histories .get (user_id ,[])
-        assistant_source =str (context .user_data .get (ASSISTANT_SOURCE_KEY )or "").strip ().lower ()
-        ai_message =user_message 
-        if assistant_source =="course":
-            ai_message =f"Контекст: вопросы о курсе GetCourse.\n{user_message }"
-        elif assistant_source =="game10":
-            ai_message =f"[FOCUS:GAME10]\n{user_message }"
-        elif assistant_source =="event":
-            event_context =""
-            try :
-                event_id =context .user_data .get (ASSISTANT_EVENT_ID_KEY )
-                if event_id is not None :
-                    event_context =_event_ai_context_text (_find_cached_event (context ,int (event_id )))
-            except Exception :
-                event_context =""
-            if event_context :
-                ai_message =(
-                "\u041a\u043e\u043d\u0442\u0435\u043a\u0441\u0442: \u0432\u043e\u043f\u0440\u043e\u0441 \u043f\u043e \u043c\u0435\u0440\u043e\u043f\u0440\u0438\u044f\u0442\u0438\u044e.\n"
-                f"{event_context }\n\n"
-                f"\u0412\u043e\u043f\u0440\u043e\u0441 \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044f: {user_message }"
-                )
         response ,new_history =await ai_service .chat (
         ai_message ,
         history ,
-        tg_id =update .effective_user .id ,
+        tg_id =tg_user .id ,
+        response_mode =response_mode ,
         )
-        chat_histories [user_id ]=new_history 
+        chat_histories [user_id ]=new_history
         if user_db is not None :
-            async with db .async_session ()as session :
-                activity_service =ActivityService (session )
-                await activity_service .upsert (
-                user_id =user_db .id ,
-                last_activity_at =datetime .utcnow (),
-                ai_increment =1 ,
-                )
-                await session .commit ()
-        await _reply (update .message ,response )
+            try :
+                async with db .async_session ()as session :
+                    activity_service =ActivityService (session )
+                    await activity_service .upsert (
+                    user_id =user_db .id ,
+                    last_activity_at =datetime .utcnow (),
+                    ai_increment =1 ,
+                    )
+                    await session .commit ()
+            except Exception as e :
+                _log_db_issue ("ai_activity",e )
+        await _reply (message ,response ,reply_markup =reply_markup )
+        return True
     except Exception as e :
         logger .exception ("Assistant error: %s",e )
-        await _reply (update .message ,"РЎРµР№С‡Р°СЃ РЅРµ РїРѕР»СѓС‡РёР»РѕСЃСЊ РѕС‚РІРµС‚РёС‚СЊ. РџРѕРїСЂРѕР±СѓР№ С‡СѓС‚СЊ РїРѕР·Р¶Рµ.")
-
-
+        await _reply (
+        message ,
+        "\u0421\u0435\u0439\u0447\u0430\u0441 \u043d\u0435 \u043f\u043e\u043b\u0443\u0447\u0438\u043b\u043e\u0441\u044c \u043e\u0442\u0432\u0435\u0442\u0438\u0442\u044c. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u0447\u0443\u0442\u044c \u043f\u043e\u0437\u0436\u0435.",
+        reply_markup =reply_markup ,
+        )
+        return False
     finally :
         if typing_indicator is not None :
             await typing_indicator .stop ()
 
 
+async def _route_detected_intent (update :Update ,context :ContextTypes .DEFAULT_TYPE ,intent :str )->bool :
+    if intent =="MENU":
+        await menu_command (update ,context )
+        return True
+    if intent =="HELP":
+        await show_help (update ,context )
+        return True
+    if intent =="MANAGER":
+        await contact_manager (update ,context )
+        return True
+    if intent =="EVENTS":
+        await show_events_command (update ,context )
+        return True
+    if intent =="COURSES":
+        await show_courses_command (update ,context )
+        return True
+    if intent =="CONSULT":
+        await _show_consultations_from_text (update ,context )
+        return True
+    if intent =="GAME10":
+        if update .callback_query :
+            await show_private_channel (update ,context )
+        else :
+            _reset_states (context )
+            await _show_screen (
+            update ,
+            context ,
+            GAME10_SCREEN_TEXT ,
+            parse_mode ="Markdown",
+            reply_markup =get_game10_kb (_private_channel_payment_url ()),
+            )
+        return True
+    return False
+
+async def handle_ai_message (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    if context .user_data .get (WAITING_LEAD_KEY ):
+        return
+    if context .user_data .get (WAITING_CONTACT_PHONE_KEY )or context .user_data .get (WAITING_CONTACT_EMAIL_KEY ):
+        return
+    if not context .user_data .get (AI_MODE_KEY ):
+        return
+
+    message =update .message
+    if message is None :
+        return
+    user_message =(message .text or "").strip ()
+    if not user_message or user_message .startswith ("/"):
+        return
+
+    intent =detect_intent (user_message )
+    if intent :
+        context .user_data [AI_MODE_KEY ]=False
+        context .user_data [WAITING_LEAD_KEY ]=None
+        context .user_data .pop (ASSISTANT_SOURCE_KEY ,None )
+        context .user_data .pop (ASSISTANT_EVENT_ID_KEY ,None )
+        routed =await _route_detected_intent (update ,context ,intent )
+        if routed :
+            return
+
+    await _send_ai_response (
+    update ,
+    context ,
+    user_message =user_message ,
+    response_mode ="assistant",
+    )
+
 async def handle_text_outside_assistant (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     if context .user_data .get (WAITING_LEAD_KEY ):
-        return 
+        return
     if context .user_data .get (WAITING_CONTACT_PHONE_KEY )or context .user_data .get (WAITING_CONTACT_EMAIL_KEY ):
-        return 
+        return
     if context .user_data .get (AI_MODE_KEY ):
-        return 
+        return
 
-    message =update .effective_message 
+    message =update .effective_message
     if message is None :
-        return 
+        return
     text =(message .text or "").strip ()
-    if not text :
-        return 
+    if not text or text .startswith ("/"):
+        return
 
     intent =detect_intent (text )
     if intent :
         routed =await _route_detected_intent (update ,context ,intent )
         if routed :
-            return 
+            return
 
-    await _show_screen (update ,context ,"Выберите раздел 👇",reply_markup =get_main_menu ())
+    if _auto_ai_rate_limited (context ):
+        logger .debug ("auto_ai rate limited: user=%s",getattr (update .effective_user ,"id",None ))
+        return
 
-
-        # --------- Help ---------
+    await _send_ai_response (
+    update ,
+    context ,
+    user_message =text ,
+    response_mode ="auto_lite",
+    reply_markup =get_ai_quick_actions_kb (),
+    )
 
 async def show_help (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
-    query =update .callback_query 
-    await _answer (query )
+    query =update .callback_query
+    if query is not None :
+        await _answer (query )
     _reset_states (context )
 
-    user_db =await ensure_user (update ,source ="bot")
-    if user_db is None :
-        return 
-
     text =(
-    "📚 *Помощь*\n\n"
-    "• /start — перезапуск\n"
-    "• 📅 Мероприятия — список ближайших\n"
-    "• 🎓 Консультации — гештальт + запись\n"
-    "• 🤝 Ассистент Ренаты — вопросы\n\n"
-    "Если не получается — напишите сюда, я помогу 🙂"
+    "\U0001f4da *\u041f\u043e\u043c\u043e\u0449\u044c*\n\n"
+    "\u2022 /start \u2014 \u043f\u0435\u0440\u0435\u0437\u0430\u043f\u0443\u0441\u043a\n"
+    "\u2022 \U0001f4c5 \u041c\u0435\u0440\u043e\u043f\u0440\u0438\u044f\u0442\u0438\u044f \u2014 \u0441\u043f\u0438\u0441\u043e\u043a \u0431\u043b\u0438\u0436\u0430\u0439\u0448\u0438\u0445\n"
+    "\u2022 \U0001f393 \u041a\u043e\u043d\u0441\u0443\u043b\u044c\u0442\u0430\u0446\u0438\u0438 \u2014 \u0433\u0435\u0448\u0442\u0430\u043b\u044c\u0442 + \u0437\u0430\u043f\u0438\u0441\u044c\n"
+    "\u2022 \U0001f91d \u0410\u0441\u0441\u0438\u0441\u0442\u0435\u043d\u0442 \u0420\u0435\u043d\u0430\u0442\u044b \u2014 \u0432\u043e\u043f\u0440\u043e\u0441\u044b\n\n"
+    "\u0415\u0441\u043b\u0438 \u043d\u0435 \u043f\u043e\u043b\u0443\u0447\u0430\u0435\u0442\u0441\u044f \u2014 \u043d\u0430\u043f\u0438\u0448\u0438\u0442\u0435 \u0441\u044e\u0434\u0430, \u044f \u043f\u043e\u043c\u043e\u0433\u0443 \U0001f642"
     )
     await _show_screen (update ,context ,text ,reply_markup =get_back_to_menu_kb (),parse_mode ="Markdown")
-
 
 async def course_link_unavailable (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     query =update .callback_query 
@@ -1539,6 +1625,54 @@ async def course_link_unavailable (update :Update ,context :ContextTypes .DEFAUL
 
 
     # --------- Errors / Retry ---------
+
+async def rag_debug_command (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    message =update .effective_message
+    user =update .effective_user
+    if message is None or user is None :
+        return
+    if ADMIN_CHAT_ID and str (user .id )!=str (ADMIN_CHAT_ID ):
+        await _reply (message ,"\u041a\u043e\u043c\u0430\u043d\u0434\u0430 \u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0430 \u0442\u043e\u043b\u044c\u043a\u043e \u0430\u0434\u043c\u0438\u043d\u0443.")
+        return
+
+    query =" ".join (context .args or []).strip ()or "\u0438\u0433\u0440\u0430 10:0"
+    snapshot =ai_service .rag_debug_snapshot (query )
+    collections =snapshot .get ("collections")or {}
+    trace =snapshot .get ("trace")or {}
+    last_trace =snapshot .get ("last_response_trace")or {}
+    discovered =snapshot .get ("discovered_collections")or list (collections .keys ())
+    lines =[
+    f"RAG enabled: {snapshot .get ('enabled')}",
+    f"Base dir: {snapshot .get ('base_dir')}",
+    f"Query: {query}",
+    f"Collections: {', '.join (map (str ,discovered )) if discovered else '-'}",
+    f"Trace: collection={trace .get ('rag_collection','-')} requested={trace .get ('rag_requested_collection','-')} hits={trace .get ('rag_hits',0)} used={trace .get ('rag_used',False)} fallback_default={trace .get ('rag_fallback_to_default',False)}",
+    f"Trace scores: {trace .get ('rag_top_scores') or []}",
+    f"Last response trace: events={last_trace .get ('used_events',False)}({last_trace .get ('used_events_count',0)}) rag={last_trace .get ('rag_used',False)}[{last_trace .get ('rag_collection','-')}] hits={last_trace .get ('rag_hits',0)} fallback_model={last_trace .get ('fallback_to_model',False)}",
+    "",
+    ]
+    for name in discovered :
+        data =collections .get (name )or {}
+        lines .append (f"[{name}] dir={data .get ('dir')}")
+        if data .get ("error"):
+            lines .append (f"  error: {data .get ('error')}")
+            lines .append ("")
+            continue
+        lines .append (f"  docs: {data .get ('docs',0)} | chunks: {data .get ('chunks',0)} | confidence: {data .get ('confidence','-')}")
+        hits =data .get ("hits")or []
+        if not hits :
+            lines .append ("  hits: none")
+        else :
+            for idx ,hit in enumerate (hits ,start =1 ):
+                title =str (hit .get ('title')or '-')
+                source =str (hit .get ('source')or '-')
+                score =hit .get ('score')
+                excerpt =str (hit .get ('text')or '').replace ('\n',' ')
+                lines .append (f"  {idx}. {title} ({source}) score={score}: {excerpt}")
+        lines .append ("")
+    payload ="\n".join (lines )[:3900]
+    await _reply (message ,payload )
+
 
 async def retry_db (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     query =update .callback_query 
@@ -1560,7 +1694,7 @@ async def retry_db (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
 async def on_error (update :object ,context :ContextTypes .DEFAULT_TYPE )->None :
     logger .exception ("Unhandled error: %s",context .error )
     if isinstance (update ,Update ):
-        await _notify_db_unavailable (update )
+        await _notify_db_unavailable (update ,context .error if isinstance (context .error ,Exception )else None ,scope ="on_error")
 
 
 async def _send_events_list (
@@ -1625,8 +1759,18 @@ async def event_register (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
                 )
             await _answer (query ,"Р’С‹ Р·Р°РїРёСЃР°РЅС‹!"if not result .get ("already")else "Р’С‹ СѓР¶Рµ Р±С‹Р»Рё Р·Р°РїРёСЃР°РЅС‹")
     except Exception as e :
-        logger .exception ("РћС€РёР±РєР° Р‘Р” РІ event_register: %s",e )
-        await _notify_db_unavailable (update )
+        _log_db_issue ("event_register",e )
+        _remember_pending_event_action (context ,update ,action ="event_register",event_id =event_id )
+        _set_screen_meta (context ,kind ="event_detail",event_id =event_id )
+        await _show_screen (
+        update ,
+        context ,
+        "\u26a0\ufe0f \u0421\u0435\u0439\u0447\u0430\u0441 \u0431\u0430\u0437\u0430 \u0432\u0440\u0435\u043c\u0435\u043d\u043d\u043e \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0430, \u043d\u043e \u043c\u044b \u043f\u0440\u0438\u043d\u044f\u043b\u0438 \u0437\u0430\u043f\u0440\u043e\u0441 \u043d\u0430 \u0437\u0430\u043f\u0438\u0441\u044c. \u041c\u044b \u0441\u0432\u044f\u0436\u0435\u043c\u0441\u044f \u0441 \u0432\u0430\u043c\u0438.",
+        reply_markup =InlineKeyboardMarkup ([
+        [InlineKeyboardButton ("\u041a \u0441\u043f\u0438\u0441\u043a\u0443",callback_data ="events_list")],
+        [InlineKeyboardButton ("\u0412 \u043c\u0435\u043d\u044e",callback_data ="main_menu")],
+        ]),
+        )
 
 
 async def event_cancel (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
@@ -1665,8 +1809,7 @@ async def event_cancel (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
                 )
             await _answer (query ,"Р—Р°РїРёСЃСЊ РѕС‚РјРµРЅРµРЅР°"if result .get ("removed")else "Р’С‹ РЅРµ Р±С‹Р»Рё Р·Р°РїРёСЃР°РЅС‹")
     except Exception as e :
-        logger .exception ("РћС€РёР±РєР° Р‘Р” РІ event_cancel: %s",e )
-        await _notify_db_unavailable (update )
+        await _notify_db_unavailable (update ,e ,scope ="event_cancel")
 
 
 async def event_pay (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
@@ -1733,14 +1876,10 @@ async def event_pay (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
             ),
             )
     except Exception as e :
-        logger .exception ("РћС€РёР±РєР° Р‘Р” РІ event_pay: %s",e )
-        await _notify_db_unavailable (update )
+        await _notify_db_unavailable (update ,e ,scope ="event_pay")
 
 
 async def menu_command (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
-    user_db =await ensure_user (update ,source ="bot")
-    if user_db is None :
-        return 
     _reset_states (context )
     if update .effective_message :
         await _show_screen (update ,context ,"\u0413\u043b\u0430\u0432\u043d\u043e\u0435 \u043c\u0435\u043d\u044e",reply_markup =get_main_menu ())
@@ -1843,6 +1982,7 @@ def build_app ()->Application :
     app .add_handler (CommandHandler ("courses",show_courses_command ))
     app .add_handler (CommandHandler ("catalog",show_courses_command ))
     app .add_handler (CommandHandler ("mark_paid",mark_paid_dev ))
+    app .add_handler (CommandHandler ("rag_debug",rag_debug_command ))
 
     # Menu callbacks
     app .add_handler (CallbackQueryHandler (main_menu ,pattern ="^main_menu$"))
@@ -1932,5 +2072,3 @@ def main ():
 
 if __name__ =="__main__":
     main ()
-
-

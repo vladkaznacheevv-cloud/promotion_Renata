@@ -30,7 +30,7 @@ _DEFAULT_SYSTEM_PROMPT = (
 )
 
 _MOJIBAKE_RE = re.compile(r"[РСЃ][\w\d]{0,3}")
-_RAG_FOCUS_PREFIX_RE = re.compile(r"^\s*\[FOCUS:(?P<name>[A-Z0-9_]+)\]\s*", re.IGNORECASE)
+_RAG_FOCUS_PREFIX_RE = re.compile(r"^\s*\[FOCUS:(?P<name>[A-Z0-9_/-]+)\]\s*", re.IGNORECASE)
 
 
 class AIService:
@@ -55,11 +55,13 @@ class AIService:
         self.reasoning_enabled = self._env_bool("OPENROUTER_REASONING", default=False)
 
         self.rag_enabled = self._env_bool("RAG_ENABLED", default=True)
-        self.rag_top_k = self._env_int("RAG_TOP_K", default=5, min_value=1, max_value=20)
+        self.rag_top_k = self._env_int("RAG_TOP_K", default=6, min_value=1, max_value=20)
         self.rag_min_score = self._env_float("RAG_MIN_SCORE", default=0.08)
+        self.rag_max_context_chars = self._env_int("RAG_MAX_CONTEXT_CHARS", default=3800, min_value=800, max_value=12000)
         rag_dir = (os.getenv("RAG_DATA_DIR") or "rag_data").strip() or "rag_data"
         self.rag_data_dir = rag_dir
         self.rag_retriever: RagRetriever | None = None
+        self._last_trace: dict[str, object] = {}
         if self.rag_enabled:
             self.rag_retriever = RagRetriever(store=RagStore(data_dir=rag_dir))
 
@@ -89,6 +91,65 @@ class AIService:
             )
         else:
             self.client = OpenAI(api_key=api_key, timeout=15.0)
+
+    @staticmethod
+    def _detect_need_themes(text: str | None) -> list[str]:
+        normalized = (text or "").lower().replace("ё", "е")
+        groups: list[tuple[str, tuple[str, ...]]] = [
+            ("relationships", ("отношен", "партнер", "муж", "жена", "развод", "конфликт", "семья")),
+            ("anxiety", ("тревог", "страх", "паник", "напряжен", "беспокой", "тревожно")),
+            ("self_esteem", ("самооцен", "уверенн", "неуверенн", "стыд", "вина", "ценност")),
+            ("career", ("карьер", "работ", "бизнес", "деньг", "доход", "професс", "реализац")),
+            ("burnout", ("выгоран", "устал", "нет сил", "апат", "истощ", "перегруз")),
+            ("crisis", ("кризис", "тупик", "не понимаю", "развал", "потеря", "сломал")),
+            ("psychologist_growth", ("психолог", "клиент", "супервиз", "практик", "терапевт", "кейс")),
+        ]
+        detected: list[str] = []
+        for name, keywords in groups:
+            if any(keyword in normalized for keyword in keywords):
+                detected.append(name)
+        return detected[:3]
+
+    @staticmethod
+    def _themes_hint_text(themes: list[str]) -> str:
+        if not themes:
+            return ""
+        labels = {
+            "relationships": "отношения",
+            "anxiety": "тревога/напряжение",
+            "self_esteem": "самооценка/уверенность",
+            "career": "карьера/бизнес/деньги",
+            "burnout": "выгорание/истощение",
+            "crisis": "кризис/тупик",
+            "psychologist_growth": "профрост психолога/супервизия",
+        }
+        return ", ".join(labels.get(item, item) for item in themes)
+
+    def _sales_guidance_prompt(self, *, user_message: str, response_mode: str) -> str:
+        themes = self._detect_need_themes(user_message)
+        themes_text = self._themes_hint_text(themes)
+        base = (
+            "Задача: помочь с выбором по потребности, не навязывать один продукт. "
+            "Если есть релевантные данные в CRM/RAG, предложи 1-3 варианта и кратко объясни, почему они подходят. "
+            "Обязательно укажи следующий шаг: перейти в раздел, записаться, задать уточняющий вопрос или оставить контакты менеджеру. "
+            "Если точных данных о ведущих/цене/расписании нет в контексте, прямо скажи, что не видишь данных, и не выдумывай."
+        )
+        if themes_text:
+            base += f" Определи это как вероятную потребность пользователя: {themes_text}."
+        if response_mode == "auto_lite":
+            base += (
+                " Формат ответа для свободного текста: 3-7 коротких предложений, "
+                "без длинных вводных. Можно использовать список из 1-3 пунктов."
+            )
+        return base
+
+    def _trim_rag_context(self, rag_context: str) -> str:
+        text = (rag_context or "").strip()
+        if not text:
+            return ""
+        if len(text) <= self.rag_max_context_chars:
+            return text
+        return text[: self.rag_max_context_chars].rstrip() + "..."
 
     @staticmethod
     def _env_bool(name: str, default: bool) -> bool:
@@ -409,16 +470,16 @@ class AIService:
                             f"- {event.title} | {self._event_schedule_summary(event)} | {event.location or 'online'} | {self._event_prices_summary(event)}"
                         )
 
-                    best_event = None
-                    best_score = 0
+                    scored_events: list[tuple[int, Event]] = []
                     for event in active_events:
                         score = self._event_match_score(event, query)
-                        if score > best_score:
-                            best_score = score
-                            best_event = event
-                    if best_event is not None and best_score > 0:
-                        lines.append("Relevant event (details):")
-                        lines.extend(self._event_detail_lines(best_event))
+                        if score > 0:
+                            scored_events.append((score, event))
+                    scored_events.sort(key=lambda item: item[0], reverse=True)
+                    if scored_events:
+                        lines.append("Relevant events (details):")
+                        for _, event in scored_events[:3]:
+                            lines.extend(self._event_detail_lines(event))
 
                 catalog_rows = await session.execute(
                     select(CatalogItem.title, CatalogItem.price, CatalogItem.currency, CatalogItem.link_getcourse)
@@ -470,18 +531,49 @@ class AIService:
         return cleaned, collection or "default"
 
     def _rag_collection_dir(self, collection_name: str | None) -> str:
-        name = (collection_name or "default").strip().lower()
-        if name in {"", "default"}:
-            return self.rag_data_dir
-        if name == "game10":
-            return os.path.join(self.rag_data_dir, "game10")
-        return self.rag_data_dir
+        registry = self._rag_collections_registry()
+        name = (collection_name or "default").strip().lower() or "default"
+        return registry.get(name) or registry.get("default") or self.rag_data_dir
+
+    def _rag_collections_registry(self) -> dict[str, str]:
+        if not self.rag_enabled or self.rag_retriever is None:
+            return {"default": self.rag_data_dir}
+        try:
+            return self.rag_retriever.store.list_collections(self.rag_data_dir)
+        except Exception as e:
+            logger.warning("RAG collections discovery failed: %s", e.__class__.__name__)
+            return {"default": self.rag_data_dir}
 
     def _rag_context(self, query: str) -> tuple[str, str, int]:
+        context, confidence, chunks_count, _trace = self._rag_context_with_trace(query)
+        return context, confidence, chunks_count
+
+    def _rag_context_with_trace(self, query: str) -> tuple[str, str, int, dict[str, object]]:
         if not self.rag_enabled or self.rag_retriever is None:
-            return "", "low", 0
+            return "", "low", 0, {
+                "rag_used": False,
+                "rag_collection": "default",
+                "rag_requested_collection": "default",
+                "rag_hits": 0,
+                "rag_top_scores": [],
+                "rag_confidence": "low",
+                "rag_fallback_to_default": False,
+            }
+
         rag_query, collection_name = self._parse_rag_focus(query)
-        collection_dir = self._rag_collection_dir(collection_name)
+        registry = self._rag_collections_registry()
+        requested_collection = (collection_name or "default").strip().lower() or "default"
+        resolved_collection = requested_collection if requested_collection in registry else "default"
+        collection_dir = registry.get(resolved_collection) or self.rag_data_dir
+        trace: dict[str, object] = {
+            "rag_used": False,
+            "rag_collection": resolved_collection,
+            "rag_requested_collection": requested_collection,
+            "rag_hits": 0,
+            "rag_top_scores": [],
+            "rag_confidence": "low",
+            "rag_fallback_to_default": requested_collection not in {"", "default"} and resolved_collection == "default",
+        }
 
         try:
             result = self.rag_retriever.retrieve(
@@ -492,29 +584,86 @@ class AIService:
             )
         except Exception as e:
             logger.warning("RAG retrieve failed: %s", e.__class__.__name__)
-            return "", "low", 0
+            return "", "low", 0, trace
 
-        if not result.top_chunks and collection_name == "game10":
+        if not result.top_chunks and resolved_collection != "default":
             try:
                 result = self.rag_retriever.retrieve(
                     query=rag_query,
                     k=self.rag_top_k,
                     min_score=self.rag_min_score,
-                    collection_dir=self.rag_data_dir,
+                    collection_dir=registry.get("default") or self.rag_data_dir,
                 )
+                trace["rag_collection"] = "default"
+                trace["rag_fallback_to_default"] = True
             except Exception as e:
                 logger.warning("RAG retrieve fallback failed: %s", e.__class__.__name__)
-                return "", "low", 0
+                return "", "low", 0, trace
 
+        trace["rag_confidence"] = result.confidence
         if not result.top_chunks:
-            return "", result.confidence, 0
+            return "", result.confidence, 0, trace
 
-        lines = ["Контекст базы знаний:"]
+        trace["rag_used"] = True
+        trace["rag_hits"] = len(result.top_chunks)
+        trace["rag_top_scores"] = [float(getattr(hit, "score", 0.0)) for hit in result.top_chunks[:3]]
+
+        lines = ["???????? ???? ??????:"]
         for idx, chunk in enumerate(result.top_chunks, start=1):
             lines.append(
                 f"{idx}. {chunk.title} ({chunk.source}): {self._short(chunk.text, limit=520)}"
             )
-        return "\n".join(lines), result.confidence, len(result.top_chunks)
+        return self._trim_rag_context("\n".join(lines)), result.confidence, len(result.top_chunks), trace
+
+    def get_last_trace(self) -> dict[str, object]:
+        return dict(self._last_trace or {})
+
+    def rag_debug_snapshot(self, query: str) -> dict:
+        payload: dict[str, object] = {
+            "enabled": bool(self.rag_enabled and self.rag_retriever is not None),
+            "base_dir": self.rag_data_dir,
+            "collections": {},
+        }
+        if not self.rag_enabled or self.rag_retriever is None:
+            return payload
+
+        store = self.rag_retriever.store
+        collections = self._rag_collections_registry()
+        payload["discovered_collections"] = sorted(collections.keys())
+        _, _, _, trace = self._rag_context_with_trace(query)
+        payload["trace"] = trace
+        payload["last_response_trace"] = self.get_last_trace()
+        for name, collection_dir in collections.items():
+            try:
+                docs = list(store._iter_files(collection_dir=collection_dir))
+                chunks = store.load_chunks(collection_dir=collection_dir)
+                result = self.rag_retriever.retrieve(
+                    query=query,
+                    k=min(3, self.rag_top_k),
+                    min_score=self.rag_min_score,
+                    collection_dir=collection_dir,
+                )
+                payload["collections"][name] = {
+                    "dir": collection_dir,
+                    "docs": len(docs),
+                    "chunks": len(chunks),
+                    "confidence": result.confidence,
+                    "hits": [
+                        {
+                            "title": hit.title,
+                            "source": hit.source,
+                            "score": hit.score,
+                            "text": self._short(hit.text, limit=280),
+                        }
+                        for hit in result.top_chunks[:3]
+                    ],
+                }
+            except Exception as e:
+                payload["collections"][name] = {
+                    "dir": collection_dir,
+                    "error": e.__class__.__name__,
+                }
+        return payload
 
     def _build_request_kwargs(
         self,
@@ -542,6 +691,7 @@ class AIService:
         temperature: float = 0.3,
         include_events: bool = True,
         tg_id: int | None = None,
+        response_mode: str = "default",
     ) -> str:
         if not self.client:
             return self.UNAVAILABLE_MESSAGE
@@ -559,18 +709,29 @@ class AIService:
         messages: list[dict] = [
             {"role": "system", "content": self.system_prompt},
             {"role": "system", "content": developer_prompt},
+            {"role": "system", "content": self._sales_guidance_prompt(user_message=user_message, response_mode=response_mode)},
         ]
 
         rag_confidence = "low"
         rag_chunks_count = 0
         event_context = ""
         rag_context = ""
+        event_counts = {"user_events": 0, "consultations": 0, "active_events": 0, "catalog": 0, "webhooks": 0}
+        rag_trace: dict[str, object] = {
+            "rag_used": False,
+            "rag_collection": "default",
+            "rag_requested_collection": "default",
+            "rag_hits": 0,
+            "rag_top_scores": [],
+            "rag_confidence": "low",
+            "rag_fallback_to_default": False,
+        }
 
         if include_events:
             event_context, event_counts = await self._event_context(tg_id=tg_id, limit=10, query=user_message)
             if event_context:
                 messages.append({"role": "system", "content": f"CRM and events context:\\n{event_context}"})
-            rag_context, rag_confidence, rag_chunks_count = self._rag_context(user_message)
+            rag_context, rag_confidence, rag_chunks_count, rag_trace = self._rag_context_with_trace(user_message)
             if rag_context:
                 messages.append({"role": "system", "content": rag_context})
 
@@ -593,6 +754,20 @@ class AIService:
                 event_counts,
             )
 
+        self._last_trace = {
+            "used_events": bool(event_context),
+            "used_events_count": int(event_counts.get("active_events", 0) if isinstance(event_counts, dict) else 0),
+            "event_counts": event_counts,
+            "rag_used": bool(rag_trace.get("rag_used")),
+            "rag_collection": str(rag_trace.get("rag_collection") or "default"),
+            "rag_requested_collection": str(rag_trace.get("rag_requested_collection") or "default"),
+            "rag_hits": int(rag_trace.get("rag_hits", 0) or 0),
+            "rag_top_scores": list(rag_trace.get("rag_top_scores") or []),
+            "fallback_to_model": (not rag_context) or rag_confidence == "low",
+            "rag_fallback_to_default": bool(rag_trace.get("rag_fallback_to_default")),
+            "response_mode": response_mode,
+        }
+
         if history:
             messages.extend(history[-10:])
 
@@ -611,9 +786,11 @@ class AIService:
             content = (response.choices[0].message.content or "").strip()
             if not content:
                 return "Не получилось сформировать ответ. Попробуйте, пожалуйста, еще раз."
+            self._last_trace["model_reply"] = True
             return content
         except Exception as e:
             logger.warning("AI request failed: %s", e.__class__.__name__)
+            self._last_trace["model_error"] = e.__class__.__name__
             return "Извините, сейчас не получилось ответить. Попробуйте чуть позже."
 
     async def chat(
@@ -621,12 +798,14 @@ class AIService:
         user_message: str,
         chat_history: List[dict] | None = None,
         tg_id: int | None = None,
+        response_mode: str = "default",
     ) -> Tuple[str, List[dict]]:
         response = await self.get_response(
             user_message=user_message,
             history=chat_history,
             include_events=True,
             tg_id=tg_id,
+            response_mode=response_mode,
         )
         new_history = chat_history or []
         new_history.extend(

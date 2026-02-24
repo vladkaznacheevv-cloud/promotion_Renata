@@ -135,3 +135,19 @@ def get_game10_kb(payment_url: str | None = None):
     rows.append([InlineKeyboardButton("Вопросы к ассистенту", callback_data="game10_questions")])
     rows.append([InlineKeyboardButton("В меню", callback_data="menu")])
     return InlineKeyboardMarkup(rows)
+
+
+def get_ai_quick_actions_kb():
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("\u041c\u0435\u0440\u043e\u043f\u0440\u0438\u044f\u0442\u0438\u044f", callback_data="events"),
+                InlineKeyboardButton("\u041a\u043e\u043d\u0441\u0443\u043b\u044c\u0442\u0430\u0446\u0438\u0438", callback_data="consultations"),
+            ],
+            [
+                InlineKeyboardButton("\u00ab\u0418\u0433\u0440\u0430 10:0\u00bb", callback_data="private_channel"),
+                InlineKeyboardButton("\u0421\u0432\u044f\u0437\u0430\u0442\u044c\u0441\u044f", callback_data="contact_manager"),
+            ],
+            [InlineKeyboardButton("\u0412 \u043c\u0435\u043d\u044e", callback_data="main_menu")],
+        ]
+    )

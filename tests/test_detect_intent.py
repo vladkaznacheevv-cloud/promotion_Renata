@@ -17,6 +17,10 @@ def test_detect_intent_sections():
     assert detect_intent("мероприятия на этой неделе") == "EVENTS"
     assert detect_intent("хочу курсы") == "COURSES"
     assert detect_intent("консультация") == "CONSULT"
+    assert detect_intent("помощь") == "HELP"
+    assert detect_intent("что умеешь") == "HELP"
+    assert detect_intent("игра 10:0") == "GAME10"
+    assert detect_intent("хочу в закрытый канал") == "GAME10"
 
 
 def test_detect_intent_unknown():

@@ -104,7 +104,7 @@ class RagRetriever:
                 self.refresh(collection_dir=collection_dir)
             chunks, idf, tf_by_chunk = self._index_cache.get(cache_key, ([], {}, []))
 
-        top_k = k if k is not None else _env_int("RAG_TOP_K", 5)
+        top_k = k if k is not None else _env_int("RAG_TOP_K", 6)
         top_k = max(1, min(top_k, 20))
         threshold = min_score if min_score is not None else _env_float("RAG_MIN_SCORE", 0.08)
 

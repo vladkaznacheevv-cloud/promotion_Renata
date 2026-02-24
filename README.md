@@ -372,25 +372,41 @@ python scripts/smoke_openrouter.py
 
 ## Локальный RAG (MVP)
 
-Локальная база знаний читается из `rag_data/*.md` и `rag_data/*.txt`:
-- `rag_data/getcourse.md`
-- `rag_data/gestalt.md`
-- `rag_data/faq.md`
-- `rag_data/offers.md`
+RAG читает:
+- `default` коллекцию из корня `rag_data/*.md|*.txt`
+- дополнительные коллекции из любых подпапок `rag_data/<collection_name>/...`
+- вложенные коллекции тоже поддерживаются (пример: `rag_data/programs/supervision/*.md` -> коллекция `programs/supervision`)
+
+Примеры:
+- `rag_data/getcourse.md` (default)
+- `rag_data/gestalt.md` (default)
+- `rag_data/game10/overview.md` (collection `game10`)
+- `rag_data/programs/<name>/intro.md` (collection `programs/<name>`)
 
 Эти файлы нужно заполнить вручную актуальным контентом проекта.
 
 Env:
 - `RAG_ENABLED=true`
-- `RAG_TOP_K=5`
+- `RAG_TOP_K=6`
 - `RAG_MIN_SCORE=0.08`
 - `RAG_DATA_DIR=rag_data`
+- `RAG_MAX_CONTEXT_CHARS=5000`
 
 Smoke:
 
 ```bash
 python scripts/rag_smoke.py
 python scripts/rag_smoke.py "как записаться на консультацию"
+python scripts/rag_doctor.py --list
+python scripts/rag_doctor.py --query "игра 10:0"
+python scripts/rag_doctor.py --query "супервизорская группа" --collection programs/supervision
+```
+
+Проверка в Docker (web/bot образ должен содержать `rag_data`):
+
+```bash
+docker compose exec web python scripts/rag_doctor.py --list
+docker compose exec bot python scripts/rag_doctor.py --list
 ```
 
 ## Ключевые скрипты и legacy
@@ -399,6 +415,7 @@ python scripts/rag_smoke.py "как записаться на консульта
 - `scripts/run_migrations.py`
 - `scripts/smoke_openrouter.py`
 - `scripts/rag_smoke.py`
+- `scripts/rag_doctor.py`
 - `scripts/create_admin_user.py`
 - `scripts/seed_crm.py`
 - `scripts/db_ping.py`
