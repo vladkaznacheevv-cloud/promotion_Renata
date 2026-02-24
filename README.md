@@ -370,49 +370,65 @@ python scripts/smoke_openrouter.py
 
 Ожидаемый результат: `OK <длина_ответа>`.
 
-## Локальный RAG (MVP)
+## RAG диагностика (production)
 
 RAG читает:
 - `default` коллекцию из корня `rag_data/*.md|*.txt`
-- дополнительные коллекции из любых подпапок `rag_data/<collection_name>/...`
+- дополнительные коллекции из подпапок `rag_data/<collection_name>/...`
 - вложенные коллекции тоже поддерживаются (пример: `rag_data/programs/supervision/*.md` -> коллекция `programs/supervision`)
 
-Примеры:
+Примеры файлов:
 - `rag_data/getcourse.md` (default)
-- `rag_data/gestalt.md` (default)
+- `rag_data/gestalt/overview.md` (collection `gestalt`)
 - `rag_data/game10/overview.md` (collection `game10`)
 - `rag_data/programs/<name>/intro.md` (collection `programs/<name>`)
 
-Эти файлы нужно заполнить вручную актуальным контентом проекта.
-
-Env:
+Env (web/bot):
 - `RAG_ENABLED=true`
 - `RAG_TOP_K=6`
 - `RAG_MIN_SCORE=0.08`
-- `RAG_DATA_DIR=rag_data`
+- `RAG_DATA_DIR=/app/rag_data` (в Docker) / `rag_data` (локально)
 - `RAG_MAX_CONTEXT_CHARS=5000`
 
-Smoke:
+### (а) Проверка файлов на хосте
 
 ```bash
-python scripts/rag_smoke.py
-python scripts/rag_smoke.py "как записаться на консультацию"
+ls -la rag_data
+find rag_data -maxdepth 3 -type f -name "*.md" -print
+```
+
+### (б) Проверка файлов внутри bot/web контейнеров
+
+```bash
+docker compose -f compose.prod.yml exec -T bot ls -la /app/rag_data
+docker compose -f compose.prod.yml exec -T bot find /app/rag_data -maxdepth 3 -type f -name "*.md" -print
+docker compose -f compose.prod.yml exec -T web ls -la /app/rag_data
+```
+
+### (в) `rag_doctor --list`
+
+```bash
+python scripts/rag_doctor.py --help
 python scripts/rag_doctor.py --list
-python scripts/rag_doctor.py --query "игра 10:0"
-python scripts/rag_doctor.py --query "супервизорская группа" --collection programs/supervision
+docker compose -f compose.prod.yml exec -T web python scripts/rag_doctor.py --list
+```
+
+### (г) `rag_doctor --query` (default / game10 / gestalt)
+
+```bash
+python scripts/rag_doctor.py --query "что такое игра 10:0" --collection game10
+python scripts/rag_doctor.py --query "гештальт 1 ступень" --collection gestalt
 python scripts/rag_doctor.py --query "игра 10:0" --collections all
 python scripts/rag_doctor.py --query "игра 10:0" --collections game10,gestalt
+docker compose -f compose.prod.yml exec -T web python scripts/rag_doctor.py --query "что такое игра 10:0" --collection game10
 ```
 
-Проверка в Docker (web/bot образ должен содержать `rag_data`):
+### (д) `/rag_debug` в боте
 
-```bash
-docker compose exec web python scripts/rag_doctor.py --list
-docker compose exec bot python scripts/rag_doctor.py --list
-docker compose -f compose.prod.yml exec bot ls -la /app/rag_data
-docker compose -f compose.prod.yml exec bot find /app/rag_data -maxdepth 3 -type f -name "*.md" -print
-docker compose -f compose.prod.yml exec web python scripts/rag_doctor.py --list
-```
+- Команда: `/rag_debug <query>`
+- Если `ADMIN_CHAT_ID` задан, команда доступна только админу.
+- Если `ADMIN_CHAT_ID` не задан, бот явно показывает предупреждение, что команда открыта.
+- В выводе отображаются: обнаруженные коллекции, trace по query, trace последнего ответа (`rag_used_collection`, `rag_hits`, `fallback_to_default`, `fallback_to_model`).
 
 ## Ключевые скрипты и legacy
 

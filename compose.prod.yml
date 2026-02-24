@@ -17,6 +17,8 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:8000:8000"
+    volumes:
+      - ./rag_data:/app/rag_data:ro
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=5)\""]
       interval: 15s

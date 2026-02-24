@@ -64,6 +64,7 @@ class AIService:
         self._last_trace: dict[str, object] = {}
         if self.rag_enabled:
             self.rag_retriever = RagRetriever(store=RagStore(data_dir=rag_dir))
+            self._log_rag_startup_summary()
 
         self.client: OpenAI | None = None
         if not api_key:
@@ -91,6 +92,25 @@ class AIService:
             )
         else:
             self.client = OpenAI(api_key=api_key, timeout=15.0)
+
+    def _log_rag_startup_summary(self) -> None:
+        if not self.rag_enabled or self.rag_retriever is None:
+            logger.info("RAG startup: enabled=%s collections=0 docs=0", False)
+            return
+        try:
+            store = self.rag_retriever.store
+            collections = store.list_collections(self.rag_data_dir)
+            docs_total = 0
+            for collection_dir in collections.values():
+                docs_total += len(list(store._iter_files(collection_dir=collection_dir)))
+            logger.info(
+                "RAG startup: enabled=%s collections=%s docs=%s",
+                True,
+                len(collections),
+                docs_total,
+            )
+        except Exception as e:
+            logger.warning("RAG startup summary failed: %s", e.__class__.__name__)
 
     @staticmethod
     def _detect_need_themes(text: str | None) -> list[str]:
@@ -769,6 +789,7 @@ class AIService:
 
         self._last_trace = {
             "used_events": bool(event_context),
+            "events_used": bool(event_context),
             "used_events_count": int(event_counts.get("active_events", 0) if isinstance(event_counts, dict) else 0),
             "events_count": int(event_counts.get("active_events", 0) if isinstance(event_counts, dict) else 0),
             "event_counts": event_counts,

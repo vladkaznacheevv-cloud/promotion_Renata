@@ -23,6 +23,11 @@ def test_rag_doctor_list_exit_zero():
     assert res.returncode == 0
 
 
+def test_rag_doctor_help_exit_zero():
+    res = _run("--help")
+    assert res.returncode == 0
+
+
 def test_rag_doctor_query_single_collection_exit_zero():
     res = _run("--query", "игра 10:0", "--collections", "game10")
     assert res.returncode == 0

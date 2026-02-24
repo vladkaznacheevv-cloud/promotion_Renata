@@ -1700,7 +1700,7 @@ async def rag_debug_command (update :Update ,context :ContextTypes .DEFAULT_TYPE
     f"Collections: {', '.join (map (str ,discovered )) if discovered else '-'}",
     f"Trace: collection={trace .get ('rag_collection','-')} requested={trace .get ('rag_requested_collection','-')} hits={trace .get ('rag_hits',0)} used={trace .get ('rag_used',False)} fallback_default={trace .get ('rag_fallback_to_default',False)}",
     f"Trace scores: {trace .get ('rag_top_scores') or []}",
-    f"Last response trace: events={last_trace .get ('used_events',False)}({last_trace .get ('used_events_count',0)}) rag={last_trace .get ('rag_used',False)}[{last_trace .get ('rag_collection','-')}] hits={last_trace .get ('rag_hits',0)} fallback_model={last_trace .get ('fallback_to_model',False)}",
+    f"Last response trace: events={last_trace .get ('events_used',last_trace .get ('used_events',False))}({last_trace .get ('events_count',last_trace .get ('used_events_count',0))}) rag={last_trace .get ('rag_used',False)}[{last_trace .get ('rag_used_collection',last_trace .get ('rag_collection','-'))}] hits={last_trace .get ('rag_hits',0)} fallback_model={last_trace .get ('fallback_to_model',False)}",
     "",
     ]
     for name in discovered :
