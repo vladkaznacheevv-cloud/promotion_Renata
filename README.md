@@ -408,6 +408,9 @@ python scripts/rag_doctor.py --query "игра 10:0" --collections all
 ```bash
 docker compose exec web python scripts/rag_doctor.py --list
 docker compose exec bot python scripts/rag_doctor.py --list
+docker compose -f compose.prod.yml exec bot ls -la /app/rag_data
+docker compose -f compose.prod.yml exec bot find /app/rag_data -maxdepth 3 -type f -name "*.md" -print
+docker compose -f compose.prod.yml exec web python scripts/rag_doctor.py --list
 ```
 
 ## Ключевые скрипты и legacy
