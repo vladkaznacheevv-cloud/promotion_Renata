@@ -47,6 +47,27 @@ def _iter_target_collections(store: RagStore, selected: str | None = None) -> li
     return sorted(collections.items(), key=lambda item: (item[0] != "default", item[0]))
 
 
+def _resolve_collection_names(store: RagStore, *, collection: str, collections_arg: str) -> list[str]:
+    registry = store.list_collections(store.data_dir)
+    if collections_arg.strip():
+        if collection.strip():
+            _safe_print("warning: both --collection and --collections provided; using --collections")
+        raw = collections_arg.strip()
+        if raw.lower() == "all":
+            return sorted(registry.keys(), key=lambda name: (name != "default", name))
+        names: list[str] = []
+        for item in raw.split(","):
+            key = item.strip().lower()
+            if not key:
+                continue
+            if key not in names:
+                names.append(key)
+        return names
+    if collection.strip():
+        return [collection.strip().lower()]
+    return []
+
+
 def _print_list(store: RagStore) -> None:
     _safe_print(f"base_dir={store.data_dir}")
     for name, collection_dir in _iter_target_collections(store):
@@ -64,16 +85,28 @@ def _print_list(store: RagStore) -> None:
 
 def _print_query(store: RagStore, query: str, top_k: int, selected: str | None = None) -> None:
     retriever = RagRetriever(store=store)
+    registry = store.list_collections(store.data_dir)
     _safe_print(f"query={query}")
+    if selected and selected.strip().lower() not in registry:
+        name = selected.strip().lower()
+        _safe_print(f"==== {name} ====")
+        _safe_print(f"base_dir={store.data_dir}")
+        _safe_print(f"collection not found: {name} (skipped)")
+        return
     for name, collection_dir in _iter_target_collections(store, selected):
+        _safe_print(f"==== {name} ====")
+        _safe_print(f"base_dir={store.data_dir}")
+        _safe_print(f"collection={name} dir={collection_dir}")
         result = retriever.retrieve(query=query, k=max(1, min(top_k, 10)), collection_dir=collection_dir)
         _safe_print(
-            f"[{name}] dir={collection_dir} confidence={result.confidence} top_chunks_count={len(result.top_chunks)}"
+            f"confidence={result.confidence} top_chunks_count={len(result.top_chunks)}"
         )
         for idx, hit in enumerate(result.top_chunks[: max(1, min(top_k, 10))], start=1):
             excerpt = (hit.text or "").replace("\n", " ").strip()
-            excerpt = excerpt[:280] + ("..." if len(excerpt) > 280 else "")
+            excerpt = excerpt[:220] + ("..." if len(excerpt) > 220 else "")
             _safe_print(f"  {idx}. {hit.title} ({hit.source}) score={hit.score} | {excerpt}")
+        if not result.top_chunks:
+            _safe_print("  top chunks: none")
 
 
 def main() -> int:
@@ -91,10 +124,18 @@ def main() -> int:
             _safe_print("")
 
     if args.query:
-        selected = (args.collection or "").strip() or (args.collections or "").strip()
-        if selected.lower() == "all":
-            selected = ""
-        _print_query(store, args.query.strip(), args.top_k, selected or None)
+        selected_names = _resolve_collection_names(
+            store,
+            collection=(args.collection or ""),
+            collections_arg=(args.collections or ""),
+        )
+        if not selected_names:
+            _print_query(store, args.query.strip(), args.top_k, None)
+        else:
+            for idx, name in enumerate(selected_names):
+                if idx:
+                    _safe_print("")
+                _print_query(store, args.query.strip(), args.top_k, name)
 
     return 0
 

@@ -401,6 +401,7 @@ python scripts/rag_doctor.py --list
 python scripts/rag_doctor.py --query "игра 10:0"
 python scripts/rag_doctor.py --query "супервизорская группа" --collection programs/supervision
 python scripts/rag_doctor.py --query "игра 10:0" --collections all
+python scripts/rag_doctor.py --query "игра 10:0" --collections game10,gestalt
 ```
 
 Проверка в Docker (web/bot образ должен содержать `rag_data`):
