@@ -2051,7 +2051,7 @@ def main ():
     app =build_app ()
     heartbeat_stop =_start_lock_heartbeat (LOCK_FILE_PATH )
     logger .info ("Renata Bot Р·Р°РїСѓС‰РµРЅ. PID=%s",os .getpid ())
-    logger .warning ("Polling mode: Р·Р°РїСѓСЃРєР°Р№С‚Рµ С‚РѕР»СЊРєРѕ РѕРґРёРЅ СЌРєР·РµРјРїР»СЏСЂ Р±РѕС‚Р°, РёРЅР°С‡Рµ Р±СѓРґРµС‚ Telegram Conflict.")
+    logger .warning ("Polling mode: run only ONE bot instance, otherwise Telegram getUpdates conflict may occur.")
     try :
         db .init_db ()
     except Exception as e :
