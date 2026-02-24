@@ -67,7 +67,9 @@ def _print_query(store: RagStore, query: str, top_k: int, selected: str | None =
     _safe_print(f"query={query}")
     for name, collection_dir in _iter_target_collections(store, selected):
         result = retriever.retrieve(query=query, k=max(1, min(top_k, 10)), collection_dir=collection_dir)
-        _safe_print(f"[{name}] dir={collection_dir} confidence={result.confidence} hits={len(result.top_chunks)}")
+        _safe_print(
+            f"[{name}] dir={collection_dir} confidence={result.confidence} top_chunks_count={len(result.top_chunks)}"
+        )
         for idx, hit in enumerate(result.top_chunks[: max(1, min(top_k, 10))], start=1):
             excerpt = (hit.text or "").replace("\n", " ").strip()
             excerpt = excerpt[:280] + ("..." if len(excerpt) > 280 else "")

@@ -620,7 +620,7 @@ class AIService:
         lines = ["???????? ???? ??????:"]
         for idx, chunk in enumerate(result.top_chunks, start=1):
             lines.append(
-                f"{idx}. {chunk.title} ({chunk.source}): {self._short(chunk.text, limit=520)}"
+                f"{idx}. {chunk.title} ({chunk.source}, score={getattr(chunk, 'score', 0)}): {self._short(chunk.text, limit=520)}"
             )
         return self._trim_rag_context("\n".join(lines)), result.confidence, len(result.top_chunks), trace
 
