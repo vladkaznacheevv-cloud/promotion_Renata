@@ -24,6 +24,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--query", type=str, default="", help="Run retrieval query and print top hits")
     parser.add_argument("--top-k", type=int, default=3, help="Top hits per collection for --query")
     parser.add_argument("--collection", type=str, default="", help="Optional collection name (default: all)")
+    parser.add_argument(
+        "--collections",
+        type=str,
+        default="",
+        help="Collection selector: 'all' (default behavior) or collection name (alias for --collection)",
+    )
     return parser
 
 
@@ -83,7 +89,10 @@ def main() -> int:
             _safe_print("")
 
     if args.query:
-        _print_query(store, args.query.strip(), args.top_k, args.collection or None)
+        selected = (args.collection or "").strip() or (args.collections or "").strip()
+        if selected.lower() == "all":
+            selected = ""
+        _print_query(store, args.query.strip(), args.top_k, selected or None)
 
     return 0
 

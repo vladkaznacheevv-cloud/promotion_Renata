@@ -126,7 +126,9 @@ class AIService:
         return ", ".join(labels.get(item, item) for item in themes)
 
     def _sales_guidance_prompt(self, *, user_message: str, response_mode: str) -> str:
-        themes = self._detect_need_themes(user_message)
+        sales_mode = response_mode == "sales" or "[SALES_MODE]" in (user_message or "")
+        clean_message = (user_message or "").replace("[SALES_MODE]", " ").strip()
+        themes = self._detect_need_themes(clean_message)
         themes_text = self._themes_hint_text(themes)
         base = (
             "Задача: помочь с выбором по потребности, не навязывать один продукт. "
@@ -136,7 +138,14 @@ class AIService:
         )
         if themes_text:
             base += f" Определи это как вероятную потребность пользователя: {themes_text}."
-        if response_mode == "auto_lite":
+        if sales_mode:
+            base += (
+                " SALES MODE: ask at most one clarifying question about the need, "
+                "then suggest one primary option (focused product if present) and one alternative only if relevant. "
+                "Use CRM/RAG facts for format, price, schedule/start, and what is included. "
+                "End with a clear CTA: sign up / leave contacts / open a relevant section."
+            )
+        elif response_mode == "auto_lite":
             base += (
                 " Формат ответа для свободного текста: 3-7 коротких предложений, "
                 "без длинных вводных. Можно использовать список из 1-3 пунктов."
@@ -696,6 +705,10 @@ class AIService:
         if not self.client:
             return self.UNAVAILABLE_MESSAGE
 
+        clean_user_message = (user_message or "").replace("[SALES_MODE]", " ").strip()
+        if not clean_user_message:
+            clean_user_message = (user_message or "").strip()
+
         developer_prompt = (
             "Приоритет источников ответа: "
             "1) контекст CRM и событий, "
@@ -728,10 +741,10 @@ class AIService:
         }
 
         if include_events:
-            event_context, event_counts = await self._event_context(tg_id=tg_id, limit=10, query=user_message)
+            event_context, event_counts = await self._event_context(tg_id=tg_id, limit=10, query=clean_user_message)
             if event_context:
                 messages.append({"role": "system", "content": f"CRM and events context:\\n{event_context}"})
-            rag_context, rag_confidence, rag_chunks_count, rag_trace = self._rag_context_with_trace(user_message)
+            rag_context, rag_confidence, rag_chunks_count, rag_trace = self._rag_context_with_trace(clean_user_message)
             if rag_context:
                 messages.append({"role": "system", "content": rag_context})
 
@@ -757,9 +770,11 @@ class AIService:
         self._last_trace = {
             "used_events": bool(event_context),
             "used_events_count": int(event_counts.get("active_events", 0) if isinstance(event_counts, dict) else 0),
+            "events_count": int(event_counts.get("active_events", 0) if isinstance(event_counts, dict) else 0),
             "event_counts": event_counts,
             "rag_used": bool(rag_trace.get("rag_used")),
             "rag_collection": str(rag_trace.get("rag_collection") or "default"),
+            "rag_used_collection": str(rag_trace.get("rag_collection") or "default"),
             "rag_requested_collection": str(rag_trace.get("rag_requested_collection") or "default"),
             "rag_hits": int(rag_trace.get("rag_hits", 0) or 0),
             "rag_top_scores": list(rag_trace.get("rag_top_scores") or []),
@@ -771,7 +786,7 @@ class AIService:
         if history:
             messages.extend(history[-10:])
 
-        messages.append({"role": "user", "content": user_message})
+        messages.append({"role": "user", "content": clean_user_message})
         request_kwargs = self._build_request_kwargs(
             messages=messages,
             max_tokens=max_tokens,

@@ -400,6 +400,7 @@ python scripts/rag_smoke.py "как записаться на консульта
 python scripts/rag_doctor.py --list
 python scripts/rag_doctor.py --query "игра 10:0"
 python scripts/rag_doctor.py --query "супервизорская группа" --collection programs/supervision
+python scripts/rag_doctor.py --query "игра 10:0" --collections all
 ```
 
 Проверка в Docker (web/bot образ должен содержать `rag_data`):

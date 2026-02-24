@@ -1,4 +1,4 @@
-from telegram_bot.utils import detect_intent
+from telegram_bot.utils import detect_intent, detect_product_focus, detect_buy_intent
 
 
 def test_detect_intent_menu_variants():
@@ -25,3 +25,16 @@ def test_detect_intent_sections():
 
 def test_detect_intent_unknown():
     assert detect_intent("как справиться с тревогой") is None
+
+
+def test_detect_product_focus_variants():
+    assert detect_product_focus("расскажи про игру 10:0") == "game10"
+    assert detect_product_focus("а что по гештальту 1 ступень?") == "gestalt"
+    assert detect_product_focus("как зайти в личный кабинет getcourse") == "getcourse"
+    assert detect_product_focus("привет, как дела") is None
+
+
+def test_detect_buy_intent_markers():
+    assert detect_buy_intent("сколько стоит и когда старт?")
+    assert detect_buy_intent("хочу записаться, как купить?")
+    assert not detect_buy_intent("расскажи подробнее про метод")
