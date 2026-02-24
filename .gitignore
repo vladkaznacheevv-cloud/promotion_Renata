@@ -13,7 +13,9 @@ setings.py
 dist/
 build/
 *.bak_encoding
+# RAG data
 rag_data/*
-!rag_data/*.md
-!rag_data/*.txt
+!rag_data/**/*.md
+!rag_data/**/*.txt
+!rag_data/**/
 Send
