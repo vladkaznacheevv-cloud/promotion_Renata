@@ -7,6 +7,7 @@ import socket
 import hashlib 
 import atexit 
 import threading 
+import time
 from datetime import datetime
 import httpx 
 from dotenv import load_dotenv 
@@ -56,7 +57,7 @@ from telegram_bot .text_formatting import format_event_card
 from telegram_bot .lock_utils import get_lock_path ,touch_lock_heartbeat 
 from telegram_bot .typing_indicator import TypingIndicator 
 from telegram_bot .screen_manager import ScreenManager
-from telegram_bot .utils import detect_intent
+from telegram_bot .utils import detect_intent ,detect_product_focus ,detect_buy_intent ,apply_focus_timeout_state
 
 try :
     import fcntl # Linux/WSL containers
@@ -101,9 +102,12 @@ CONTACT_FLOW_KEY ="contact_flow"
 PENDING_CONTACTS_KEY ="pending_contacts"
 PENDING_EVENT_ACTIONS_KEY ="pending_event_actions"
 SKIP_NEXT_EMAIL_KEY ="skip_next_email"
+PRODUCT_FOCUS_KEY ="product_focus"
+LAST_USER_ACTIVITY_TS_KEY ="last_user_activity_ts"
 LOCK_FILE_PATH =get_lock_path ()
 _BOT_LOCK_FD =None 
 LOCK_HEARTBEAT_SECONDS =30 
+PRODUCT_FOCUS_TIMEOUT_SEC =30 *60
 
 EMAIL_RE =re .compile (r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")
 COURSES_PAGE_SIZE =5 
@@ -202,6 +206,7 @@ async def _send (bot ,chat_id :int ,text :str |None =None ,**kwargs ):
 
 
 async def _show_screen (update :Update ,context :ContextTypes .DEFAULT_TYPE ,text :str |None ,**kwargs ):
+    _apply_focus_timeout (context )
     return await screen_manager .show_screen (update ,context ,text ,**kwargs )
 
 
@@ -383,6 +388,21 @@ def _reset_states (context :ContextTypes .DEFAULT_TYPE ):
     context .user_data .pop (CONTACT_FLOW_KEY ,None )
     context .user_data .pop (CONTACT_PHONE_KEY ,None )
     context .user_data .pop (SKIP_NEXT_EMAIL_KEY ,None )
+    context .user_data .pop (PRODUCT_FOCUS_KEY ,None )
+
+
+def _apply_focus_timeout (context :ContextTypes .DEFAULT_TYPE )->bool :
+    return apply_focus_timeout_state (
+    context .user_data ,
+    now_ts =time .time (),
+    timeout_sec =PRODUCT_FOCUS_TIMEOUT_SEC ,
+    focus_key =PRODUCT_FOCUS_KEY ,
+    last_activity_key =LAST_USER_ACTIVITY_TS_KEY ,
+    )
+
+
+def _clear_product_focus (context :ContextTypes .DEFAULT_TYPE )->None :
+    context .user_data .pop (PRODUCT_FOCUS_KEY ,None )
 
 
 def _err_name (exc :Exception |None )->str :
@@ -1422,13 +1442,19 @@ def _auto_ai_rate_limited (context :ContextTypes .DEFAULT_TYPE )->bool :
     return False
 
 
-def _build_ai_request_message (context :ContextTypes .DEFAULT_TYPE ,user_message :str )->str :
+def _build_ai_request_message (context :ContextTypes .DEFAULT_TYPE ,user_message :str ,*,response_mode :str ="default")->str :
     assistant_source =str (context .user_data .get (ASSISTANT_SOURCE_KEY )or "").strip ().lower ()
     ai_message =user_message
     if assistant_source =="course":
-        return f"\u041a\u043e\u043d\u0442\u0435\u043a\u0441\u0442: \u0432\u043e\u043f\u0440\u043e\u0441\u044b \u043e \u043a\u0443\u0440\u0441\u0435 GetCourse.\n{user_message }"
+        ai_message =f"\u041a\u043e\u043d\u0442\u0435\u043a\u0441\u0442: \u0432\u043e\u043f\u0440\u043e\u0441\u044b \u043e \u043a\u0443\u0440\u0441\u0435 GetCourse.\n{user_message }"
+        if response_mode =="sales":
+            ai_message =f"[SALES_MODE]\n{ai_message }"
+        return ai_message
     if assistant_source =="game10":
-        return f"[FOCUS:GAME10]\n{user_message }"
+        ai_message =f"[FOCUS:GAME10]\n{user_message }"
+        if response_mode =="sales":
+            ai_message =f"[FOCUS:GAME10]\n[SALES_MODE]\n{user_message }"
+        return ai_message
     if assistant_source =="event":
         event_context =""
         try :
@@ -1443,6 +1469,17 @@ def _build_ai_request_message (context :ContextTypes .DEFAULT_TYPE ,user_message
             f"{event_context }\n\n"
             f"\u0412\u043e\u043f\u0440\u043e\u0441 \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044f: {user_message }"
             )
+    product_focus =str (context .user_data .get (PRODUCT_FOCUS_KEY )or "").strip ().lower ()
+    if product_focus and not assistant_source :
+        ai_message =f"[FOCUS:{product_focus .upper ()}]\n{ai_message }"
+    if response_mode =="sales":
+        if ai_message .startswith ("[FOCUS:"):
+            lines =ai_message .split ("\n",1 )
+            head =lines [0 ]
+            tail =lines [1 ] if len (lines )>1 else ""
+            ai_message =f"{head }\n[SALES_MODE]\n{tail }".rstrip ()
+        else :
+            ai_message =f"[SALES_MODE]\n{ai_message }"
     return ai_message
 
 
@@ -1462,7 +1499,7 @@ reply_markup =None ,
     user_db =await ensure_user (update ,source ="bot",notify_ui =False )
     user_id =tg_user .id
     history =chat_histories .get (user_id ,[])
-    ai_message =_build_ai_request_message (context ,user_message )
+    ai_message =_build_ai_request_message (context ,user_message ,response_mode =response_mode )
 
     typing_indicator =None
     if update .effective_chat is not None :
@@ -1505,6 +1542,7 @@ reply_markup =None ,
 
 
 async def _route_detected_intent (update :Update ,context :ContextTypes .DEFAULT_TYPE ,intent :str )->bool :
+    _clear_product_focus (context )
     if intent =="MENU":
         await menu_command (update ,context )
         return True
@@ -1539,6 +1577,7 @@ async def _route_detected_intent (update :Update ,context :ContextTypes .DEFAULT
     return False
 
 async def handle_ai_message (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    _apply_focus_timeout (context )
     if context .user_data .get (WAITING_LEAD_KEY ):
         return
     if context .user_data .get (WAITING_CONTACT_PHONE_KEY )or context .user_data .get (WAITING_CONTACT_EMAIL_KEY ):
@@ -1563,6 +1602,11 @@ async def handle_ai_message (update :Update ,context :ContextTypes .DEFAULT_TYPE
         if routed :
             return
 
+    if not context .user_data .get (ASSISTANT_SOURCE_KEY ):
+        focus_candidate =detect_product_focus (user_message )
+        if focus_candidate :
+            context .user_data [PRODUCT_FOCUS_KEY ]=focus_candidate
+
     await _send_ai_response (
     update ,
     context ,
@@ -1571,6 +1615,7 @@ async def handle_ai_message (update :Update ,context :ContextTypes .DEFAULT_TYPE
     )
 
 async def handle_text_outside_assistant (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    _apply_focus_timeout (context )
     if context .user_data .get (WAITING_LEAD_KEY ):
         return
     if context .user_data .get (WAITING_CONTACT_PHONE_KEY )or context .user_data .get (WAITING_CONTACT_EMAIL_KEY ):
@@ -1591,6 +1636,12 @@ async def handle_text_outside_assistant (update :Update ,context :ContextTypes .
         if routed :
             return
 
+    focus_candidate =detect_product_focus (text )
+    if focus_candidate :
+        context .user_data [PRODUCT_FOCUS_KEY ]=focus_candidate
+    product_focus =str (context .user_data .get (PRODUCT_FOCUS_KEY )or "").strip ().lower ()
+    buy_intent =detect_buy_intent (text )
+
     if _auto_ai_rate_limited (context ):
         logger .debug ("auto_ai rate limited: user=%s",getattr (update .effective_user ,"id",None ))
         return
@@ -1599,7 +1650,7 @@ async def handle_text_outside_assistant (update :Update ,context :ContextTypes .
     update ,
     context ,
     user_message =text ,
-    response_mode ="auto_lite",
+    response_mode ="sales" if (buy_intent and product_focus )else "auto_lite",
     reply_markup =get_ai_quick_actions_kb (),
     )
 
@@ -1645,6 +1696,7 @@ async def rag_debug_command (update :Update ,context :ContextTypes .DEFAULT_TYPE
     f"RAG enabled: {snapshot .get ('enabled')}",
     f"Base dir: {snapshot .get ('base_dir')}",
     f"Query: {query}",
+    f"Access: {'admin-only' if ADMIN_CHAT_ID else 'ADMIN_CHAT_ID not set (open command)'}",
     f"Collections: {', '.join (map (str ,discovered )) if discovered else '-'}",
     f"Trace: collection={trace .get ('rag_collection','-')} requested={trace .get ('rag_requested_collection','-')} hits={trace .get ('rag_hits',0)} used={trace .get ('rag_used',False)} fallback_default={trace .get ('rag_fallback_to_default',False)}",
     f"Trace scores: {trace .get ('rag_top_scores') or []}",

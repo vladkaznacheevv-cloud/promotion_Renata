@@ -35,3 +35,5 @@ crm_web/admin-panel/.cache
 !rag_data/**
 !rag_data/**/*.md
 !rag_data/**/*.txt
+!*.md
+!*.txt
