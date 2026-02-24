@@ -30,6 +30,8 @@ services:
       web:
         condition: service_started
     restart: unless-stopped
+    volumes:
+      - ./rag_data:/app/rag_data:ro
     healthcheck:
       test: ["CMD-SHELL", "python -m telegram_bot.health"]
       interval: 30s
