@@ -29,3 +29,9 @@ crm_web/admin-panel/node_modules
 crm_web/admin-panel/dist
 crm_web/admin-panel/.vite
 crm_web/admin-panel/.cache
+
+# Keep local RAG knowledge base in web/bot images (COPY . . in root Dockerfile).
+!rag_data/
+!rag_data/**
+!rag_data/**/*.md
+!rag_data/**/*.txt

@@ -29,6 +29,31 @@ class RagStore:
     max_chars: int = 600
     overlap: int = 100
 
+    def list_collections(self, base_dir: str | None = None) -> dict[str, str]:
+        root = Path(base_dir or self.data_dir)
+        collections: dict[str, str] = {}
+        if not root.exists() or not root.is_dir():
+            return {"default": str(root)}
+
+        collections["default"] = str(root)
+        # Any nested directory with *.md/*.txt becomes a collection, e.g. game10 or programs/foo.
+        for path in sorted(root.rglob("*")):
+            if not path.is_dir():
+                continue
+            if path.name.startswith("."):
+                continue
+            has_docs = any(path.glob("*.md")) or any(path.glob("*.txt"))
+            if not has_docs:
+                continue
+            try:
+                name = path.relative_to(root).as_posix().strip()
+            except Exception:
+                name = path.name.strip()
+            if not name:
+                continue
+            collections[name.lower()] = str(path)
+        return collections
+
     def load_chunks(self, collection_dir: str | None = None) -> list[RagChunk]:
         files = list(self._iter_files(collection_dir=collection_dir))
         chunks: list[RagChunk] = []
