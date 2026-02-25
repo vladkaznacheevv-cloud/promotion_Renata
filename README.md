@@ -7,6 +7,7 @@
 ```bash
 docker compose -f compose.prod.yml up -d --build
 docker compose -f compose.prod.yml ps
+python scripts/compose_doctor.py
 ```
 
 Runtime entrypoints:
@@ -14,6 +15,25 @@ Runtime entrypoints:
 - `web`: `uvicorn core.main:app --host 0.0.0.0 --port 8000`
 - `bot`: `python -m telegram_bot.main`
 - `frontend`: `nginx` (из `crm_web/admin-panel/Dockerfile`)
+
+Порты в production compose (для подготовки HTTPS на хосте):
+- `web`: `127.0.0.1:8000:8000`
+- `frontend`: `127.0.0.1:8080:80`
+- `bot`: без публичных портов
+
+Проверка после `up`:
+
+```bash
+docker compose -f compose.prod.yml config | grep -n "ports\\|published"
+docker ps --format "table {{.Names}}\t{{.Ports}}"
+ss -lntp | egrep ":80|:443|:8000|:8080"
+```
+
+Ожидаемо:
+- нет `0.0.0.0:80->...` у compose `frontend`
+- `127.0.0.1:8000->8000/tcp` (web)
+- `127.0.0.1:8080->80/tcp` (frontend)
+- порт `80` свободен для nginx/certbot на хосте
 
 ### Development (локально)
 
@@ -498,8 +518,49 @@ cp .env.example .env
 
 # 4) Запуск
 docker compose -f compose.prod.yml up -d --build
+python scripts/compose_doctor.py
 
 # 5) Проверка
-curl -i http://localhost:8000/healthz
-curl -i http://localhost:8000/readyz
+curl -i http://127.0.0.1:8000/healthz
+curl -i http://127.0.0.1:8000/readyz
+curl -i http://127.0.0.1:8080/
+docker ps --format "table {{.Names}}\t{{.Ports}}"
+ss -lntp | egrep ":80|:443|:8000|:8080"
 ```
+
+## Домены и HTTPS (runbook, подготовка)
+
+Текущий `compose.prod.yml` специально не занимает внешний `:80`:
+- `frontend` слушает `127.0.0.1:8080`
+- `web` слушает `127.0.0.1:8000`
+
+Это позволяет поднять reverse proxy на хосте (nginx + certbot) для доменов без изменения внутренних API-контрактов.
+
+Шаги:
+
+1. DNS:
+- создайте `A`-записи `crm.<DOMAIN>` -> `<SERVER_IP>`
+- создайте `A`-записи `api.<DOMAIN>` -> `<SERVER_IP>`
+
+2. Проверьте, что порт `80` свободен на хосте:
+
+```bash
+ss -lntp | egrep ":80|:443|:8000|:8080"
+docker ps --format "table {{.Names}}\t{{.Ports}}"
+```
+
+3. Поднимите reverse proxy на хосте (рекомендуемый вариант):
+- `nginx` на хосте
+- `certbot` (HTTP-01) на `:80`
+- прокси:
+  - `crm.<DOMAIN>` -> `http://127.0.0.1:8080`
+  - `api.<DOMAIN>` -> `http://127.0.0.1:8000`
+
+4. Обновите `.env` (не коммитьте):
+- `PUBLIC_BASE_URL=https://api.<DOMAIN>`
+- `YOOKASSA_WEBHOOK_TOKEN=<secret>`
+- укажите webhook YooKassa на `https://api.<DOMAIN>/api/webhooks/yookassa/<YOOKASSA_WEBHOOK_TOKEN>`
+
+Примечания:
+- фронт уже собран с `VITE_API_BASE_URL=/api`, поэтому CRM продолжит работать через `crm.<DOMAIN>/api/*` при проксировании на backend;
+- HTTPS в compose сейчас не включается намеренно (TLS завершается на хостовом reverse proxy).
