@@ -1629,7 +1629,7 @@ class CRMService:
         await self.db.flush()
         return placeholder
 
-    async def mark_private_channel_paid(self, user_id: int) -> dict[str, Any] | None:
+    async def mark_private_channel_paid(self, user_id: int, *, ensure_invite: bool = True) -> dict[str, Any] | None:
         subscription = await self._get_or_create_private_channel_subscription(user_id)
         if subscription is None:
             return None
@@ -1640,14 +1640,18 @@ class CRMService:
             subscription.paid_at = now
         subscription.updated_at = now
 
-        invite = await self._get_or_create_channel_invite(subscription.id)
-        invite_url = await self._ensure_invite_url(invite)
+        invite_url: str | None = None
+        token: str | None = None
+        if ensure_invite:
+            invite = await self._get_or_create_channel_invite(subscription.id)
+            token = invite.token
+            invite_url = await self._ensure_invite_url(invite)
         return {
             "ok": True,
             "user_id": int(subscription.user_id),
             "product": "private_channel",
             "status": subscription.status,
-            "token": invite.token,
+            "token": token,
             "invite_url": invite_url,
             "payment_url": self._private_channel_payment_url(),
             "paid_at": subscription.paid_at,
@@ -1676,6 +1680,21 @@ class CRMService:
         payload["token"] = invite.token
         payload["invite_url"] = await self._ensure_invite_url(invite)
         return payload
+
+    async def is_private_channel_paid(self, user_id: int) -> bool | None:
+        user = await self._get_user_by_any_id(user_id)
+        if user is None:
+            return None
+        row = await self.db.execute(
+            select(UserSubscription)
+            .where(UserSubscription.user_id == user.id)
+            .where(UserSubscription.product == "private_channel")
+            .limit(1)
+        )
+        subscription = row.scalar_one_or_none()
+        if subscription is None:
+            return False
+        return str(subscription.status or "").strip().lower() == "paid"
 
     def get_getcourse_integration(self) -> GetCourseService:
         return GetCourseService(self.db)

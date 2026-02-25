@@ -8,6 +8,7 @@ import hashlib
 import atexit 
 import threading 
 import time
+from io import BytesIO
 from datetime import datetime
 import httpx 
 from dotenv import load_dotenv 
@@ -19,6 +20,7 @@ from telegram .ext import (
 Application ,
 CommandHandler ,
 CallbackQueryHandler ,
+ChatJoinRequestHandler,
 MessageHandler ,
 ContextTypes ,
 filters ,
@@ -58,6 +60,10 @@ from telegram_bot .lock_utils import get_lock_path ,touch_lock_heartbeat
 from telegram_bot .typing_indicator import TypingIndicator 
 from telegram_bot .screen_manager import ScreenManager
 from telegram_bot .utils import detect_intent ,detect_product_focus ,detect_buy_intent ,apply_focus_timeout_state
+try:
+    import qrcode
+except Exception:  # pragma: no cover - optional runtime dependency
+    qrcode = None
 
 try :
     import fcntl # Linux/WSL containers
@@ -79,7 +85,9 @@ ADMIN_CHAT_ID =os .getenv ("ADMIN_CHAT_ID")# опционально
 TG_PRIVATE_CHANNEL_INVITE_LINK =os .getenv ("TG_PRIVATE_CHANNEL_INVITE_LINK")
 CRM_API_BASE_URL =(os .getenv ("CRM_API_BASE_URL")or "http://web:8000").rstrip ("/")
 CRM_API_TOKEN =(os .getenv ("CRM_API_TOKEN")or "").strip ()
+BOT_API_TOKEN =(os .getenv ("BOT_API_TOKEN")or "").strip ()
 YOOMONEY_PAY_URL_PLACEHOLDER =(os .getenv ("YOOMONEY_PAY_URL_PLACEHOLDER")or "").strip ()
+TELEGRAM_PRIVATE_CHANNEL_ID =(os .getenv ("TELEGRAM_PRIVATE_CHANNEL_ID")or "").strip ()
 
 # Services
 ai_service =AIService (api_key =AI_API_KEY )
@@ -205,6 +213,15 @@ async def _send (bot ,chat_id :int ,text :str |None =None ,**kwargs ):
     return await bot .send_message (chat_id =chat_id ,text =_t (payload ,label ="send")or "",**kwargs )
 
 
+async def _send_photo (bot ,chat_id :int ,photo ,caption :str |None =None ,**kwargs ):
+    return await bot .send_photo (
+    chat_id =chat_id ,
+    photo =photo ,
+    caption =_t (caption ,label ="send_photo")or None ,
+    **kwargs ,
+    )
+
+
 async def _show_screen (update :Update ,context :ContextTypes .DEFAULT_TYPE ,text :str |None ,**kwargs ):
     _apply_focus_timeout (context )
     return await screen_manager .show_screen (update ,context ,text ,**kwargs )
@@ -220,6 +237,56 @@ async def _safe_edit_reply_markup (query :CallbackQuery |None ,*,reply_markup =N
         if "message is not modified" in message :
             return None
         raise
+
+
+def _bot_api_auth_headers ()->dict [str ,str ]:
+    token =(BOT_API_TOKEN or "").strip ()
+    if not token :
+        return {}
+    return {"X-Bot-Api-Token":token }
+
+
+async def _create_game10_payment_backend (tg_id :int )->dict |None :
+    if not CRM_API_BASE_URL :
+        return None
+    headers =_bot_api_auth_headers ()
+    if not headers :
+        logger .warning ("Game10 payment backend token missing")
+        return None
+    try :
+        async with httpx .AsyncClient (timeout =20.0 )as client :
+            response =await client .post (
+            f"{CRM_API_BASE_URL }/api/payments/game10/create",
+            headers =headers ,
+            json ={"tg_id":int (tg_id )},
+            )
+        if response .status_code !=200 :
+            return {"ok":False ,"status_code":response .status_code ,"detail":response .text [:240 ]}
+        payload =response .json ()
+        if not isinstance (payload ,dict ):
+            return {"ok":False ,"detail":"invalid backend payload"}
+        payload ["ok"]=True
+        return payload
+    except Exception as e :
+        logger .warning ("Game10 payment create request failed: %s",e .__class__ .__name__ )
+        return {"ok":False ,"detail":e .__class__ .__name__ }
+
+
+def _build_qr_png (value :str )->BytesIO |None :
+    if not value :
+        return None
+    if qrcode is None :
+        return None
+    try :
+        img =qrcode .make (value )
+        buf =BytesIO ()
+        img .save (buf ,format ="PNG")
+        buf .seek (0 )
+        buf .name ="game10_payment_qr.png"
+        return buf
+    except Exception as e :
+        logger .warning ("QR generation failed: %s",e .__class__ .__name__ )
+        return None
 
 
 async def _answer (query :CallbackQuery ,text :str |None =None ,**kwargs ):
@@ -283,6 +350,19 @@ async def _get_private_channel_payload (tg_id :int )->dict |None :
     if payload is not None :
         return payload
     return await _fetch_private_channel_local (tg_id )
+
+
+async def _is_private_channel_paid_local (tg_id :int )->bool :
+    try :
+        db .init_db ()
+        async with db .async_session ()as session :
+            crm_service =CRMService (session )
+            result =await crm_service .is_private_channel_paid (tg_id )
+            await session .commit ()
+            return bool (result )
+    except Exception as e :
+        logger .warning ("Private channel paid check failed: %s",e .__class__ .__name__ )
+        return False
 
 
 def _short_text (value :str |None ,limit :int =420 )->str :
@@ -1228,11 +1308,53 @@ async def show_private_channel (update :Update ,context :ContextTypes .DEFAULT_T
 
 
 async def private_channel_payment_info (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
-    _ =context 
     query =update .callback_query 
     if query is None :
         return 
-    await _answer (query ,"Ссылка на оплату временно недоступна. Нажмите «Связаться с менеджером».",show_alert =True )
+    await _answer (query )
+    user =update .effective_user 
+    chat =update .effective_chat 
+    if user is None or chat is None :
+        return 
+    result =await _create_game10_payment_backend (user .id )
+    if not isinstance (result ,dict )or not result .get ("ok"):
+        await _show_screen (
+        update ,
+        context ,
+        "Сейчас не удалось создать платёж. Попробуйте ещё раз через минуту или нажмите «Связаться с менеджером».",
+        reply_markup =get_game10_kb (_private_channel_payment_url ()),
+        )
+        return 
+    confirmation_url =str (result .get ("confirmation_url")or "").strip ()
+    payment_id =str (result .get ("payment_id")or "").strip ()
+    amount_rub =int (result .get ("amount_rub")or 5000 )
+    if not confirmation_url :
+        await _show_screen (
+        update ,
+        context ,
+        "Платёж создан, но ссылка оплаты не получена. Нажмите «Связаться с менеджером».",
+        reply_markup =get_game10_kb (_private_channel_payment_url ()),
+        )
+        return 
+    pay_kb =InlineKeyboardMarkup ([
+    [InlineKeyboardButton ("Открыть оплату",url =confirmation_url )],
+    [InlineKeyboardButton ("В меню",callback_data ="menu")],
+    ])
+    caption =(
+    f"Оплатите {amount_rub } ₽. После оплаты доступ откроется автоматически.\n"
+    "После оплаты бот пришлёт кнопку для вступления в закрытый канал."
+    )
+    qr =_build_qr_png (confirmation_url )
+    if qr is not None :
+        await _send_photo (context .bot ,chat .id ,qr ,caption =caption ,reply_markup =pay_kb )
+    else :
+        await _send (context .bot ,chat_id =chat .id ,text =caption ,reply_markup =pay_kb )
+    await _show_screen (
+    update ,
+    context ,
+    f"Платёж создан. ID: {payment_id}\nПроверьте сообщение ниже с QR и кнопкой оплаты.",
+    reply_markup =get_game10_kb (_private_channel_payment_url ()),
+    )
 
 
     # --------- Consultations / Gestalt ---------
@@ -2020,6 +2142,35 @@ async def mark_paid_dev (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
         await _reply (message ,"РќРµ СѓРґР°Р»РѕСЃСЊ РѕС‚РјРµС‚РёС‚СЊ РѕРїР»Р°С‚Сѓ. РџСЂРѕРІРµСЂСЊС‚Рµ Р»РѕРіРё.")
 
 
+async def handle_chat_join_request (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    join_request =getattr (update ,"chat_join_request",None )
+    if join_request is None :
+        return 
+    if TELEGRAM_PRIVATE_CHANNEL_ID and str (join_request .chat .id )!=str (TELEGRAM_PRIVATE_CHANNEL_ID ):
+        return 
+    user =getattr (join_request ,"from_user",None )
+    if user is None :
+        return 
+    is_paid =await _is_private_channel_paid_local (user .id )
+    if is_paid :
+        try :
+            await context .bot .approve_chat_join_request (chat_id =join_request .chat .id ,user_id =user .id )
+        except Exception as e :
+            logger .warning ("Approve chat join request failed: %s",e .__class__ .__name__ )
+        return 
+    try :
+        await context .bot .decline_chat_join_request (chat_id =join_request .chat .id ,user_id =user .id )
+    except Exception as e :
+        logger .warning ("Decline chat join request failed: %s",e .__class__ .__name__ )
+    try :
+        await _send (context .bot ,chat_id =user .id ,
+        text ="Доступ к закрытому каналу открывается после оплаты 5 000 ₽. Нажмите «Оплатить 5 000 ₽».",
+        reply_markup =get_game10_kb (_private_channel_payment_url ()),
+        )
+    except Exception as e :
+        logger .warning ("Join request notify failed: %s",e .__class__ .__name__ )
+
+
         # ============ App ============
 
 def build_app ()->Application :
@@ -2078,6 +2229,7 @@ def build_app ()->Application :
     app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,handle_lead_message ),group =3 )
     app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,handle_ai_message ),group =4 )
     app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,handle_text_outside_assistant ),group =5 )
+    app .add_handler (ChatJoinRequestHandler (handle_chat_join_request ),group =6 )
 
     app .add_error_handler (on_error )
 

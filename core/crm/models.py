@@ -108,3 +108,35 @@ class ChannelInvite(Base):
     used_at = Column(DateTime(timezone=True), nullable=True)
 
     subscription = relationship("UserSubscription", back_populates="invites")
+
+
+class YooKassaPayment(Base):
+    __tablename__ = "yookassa_payments"
+    __table_args__ = (
+        UniqueConstraint("payment_id", name="ux_yookassa_payments_payment_id"),
+        UniqueConstraint("idempotence_key", name="ux_yookassa_payments_idempotence_key"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    tg_id = Column(BigInteger, nullable=False, index=True)
+    product = Column(String(64), nullable=False, server_default="game10", index=True)
+    amount_rub = Column(Integer, nullable=False)
+    payment_id = Column(String(128), nullable=True, index=True)
+    idempotence_key = Column(String(128), nullable=False, index=True)
+    status = Column(String(32), nullable=False, server_default="pending", index=True)
+    confirmation_url = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    paid_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class YooKassaWebhookEvent(Base):
+    __tablename__ = "yookassa_webhook_events"
+    __table_args__ = (
+        UniqueConstraint("event_type", "payment_id", name="ux_yookassa_webhook_event_payment"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    event_type = Column(String(100), nullable=False, index=True)
+    payment_id = Column(String(128), nullable=False, index=True)
+    raw_json = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())

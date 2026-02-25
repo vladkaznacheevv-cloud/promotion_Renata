@@ -192,6 +192,41 @@ MIGRATIONS = [
         "CREATE INDEX IF NOT EXISTS ix_channel_invites_subscription_id ON channel_invites (subscription_id)",
         "CREATE UNIQUE INDEX IF NOT EXISTS ux_channel_invites_token ON channel_invites (token)",
     ]),
+    ("yookassa_payments", [
+        """
+        CREATE TABLE IF NOT EXISTS yookassa_payments (
+            id SERIAL PRIMARY KEY,
+            tg_id BIGINT NOT NULL,
+            product VARCHAR(64) NOT NULL DEFAULT 'game10',
+            amount_rub INTEGER NOT NULL,
+            payment_id VARCHAR(128) NULL,
+            idempotence_key VARCHAR(128) NOT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'pending',
+            confirmation_url TEXT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            paid_at TIMESTAMPTZ NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_yookassa_payments_tg_id ON yookassa_payments (tg_id)",
+        "CREATE INDEX IF NOT EXISTS ix_yookassa_payments_product ON yookassa_payments (product)",
+        "CREATE INDEX IF NOT EXISTS ix_yookassa_payments_status ON yookassa_payments (status)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_yookassa_payments_payment_id ON yookassa_payments (payment_id) WHERE payment_id IS NOT NULL",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_yookassa_payments_idempotence_key ON yookassa_payments (idempotence_key)",
+    ]),
+    ("yookassa_webhook_events", [
+        """
+        CREATE TABLE IF NOT EXISTS yookassa_webhook_events (
+            id SERIAL PRIMARY KEY,
+            event_type VARCHAR(100) NOT NULL,
+            payment_id VARCHAR(128) NOT NULL,
+            raw_json TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_yookassa_webhook_events_event_type ON yookassa_webhook_events (event_type)",
+        "CREATE INDEX IF NOT EXISTS ix_yookassa_webhook_events_payment_id ON yookassa_webhook_events (payment_id)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_yookassa_webhook_event_payment ON yookassa_webhook_events (event_type, payment_id)",
+    ]),
 ]
 
 
