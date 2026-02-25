@@ -31,6 +31,14 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml ps
 - `backend`: `http://localhost:8000/docs`
 - `crm ping`: `http://localhost/api/crm/ping`
 
+## YooKassa (game10) — receipt / чек
+
+Если YooKassa возвращает `400 Receipt is missing or illegal` при создании платежа:
+- убедитесь, что в запросе передаётся `receipt`
+- в `receipt.customer` есть хотя бы `email` или `phone` пользователя
+- `vat_code=1` (без НДС)
+- для УСН используйте `YOOKASSA_TAX_SYSTEM_CODE=2` (по умолчанию)
+
 ## Bot Polling: только один экземпляр
 
 Бот работает в polling (`getUpdates`) и должен быть запущен только в одном экземпляре.

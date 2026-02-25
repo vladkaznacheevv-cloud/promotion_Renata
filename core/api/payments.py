@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from uuid import uuid4
 from typing import List, Optional
@@ -15,8 +16,10 @@ from core.crm.models import YooKassaPayment
 from core.payments.models import Payment
 from core.payments.schemas import PaymentCreate, PaymentResponse
 from core.payments.service import PaymentService
+from core.users.models import User
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 GAME10_PRICE_RUB = 5000
 
@@ -57,7 +60,60 @@ def _public_return_url() -> str:
     return "https://example.com/"
 
 
-async def _create_yookassa_payment(*, tg_id: int) -> dict:
+def _int_env(name: str, default: int) -> int:
+    raw = (os.getenv(name) or "").strip()
+    try:
+        return int(raw) if raw else default
+    except Exception:
+        return default
+
+
+def _normalize_phone_for_receipt(value: str | None) -> str | None:
+    if not value:
+        return None
+    phone = "".join(ch for ch in str(value).strip() if ch.isdigit() or ch == "+")
+    return phone or None
+
+
+def _build_yookassa_receipt(*, email: str | None, phone: str | None, amount_rub: int) -> dict:
+    customer: dict[str, str] = {}
+    email_value = (str(email).strip() if email else "") or None
+    phone_value = _normalize_phone_for_receipt(phone)
+    if email_value:
+        customer["email"] = email_value
+    if phone_value:
+        customer["phone"] = phone_value
+    return {
+        "customer": customer,
+        "tax_system_code": _int_env("YOOKASSA_TAX_SYSTEM_CODE", 2),
+        "items": [
+            {
+                "description": "Игра 10:0 — доступ в закрытое сообщество",
+                "quantity": "1.00",
+                "amount": {"value": f"{amount_rub:.2f}", "currency": "RUB"},
+                "vat_code": _int_env("YOOKASSA_VAT_CODE", 1),
+                "payment_subject": "service",
+                "payment_mode": "full_payment",
+            }
+        ],
+    }
+
+
+async def _get_receipt_customer_contact(db: AsyncSession, *, tg_id: int) -> tuple[str | None, str | None]:
+    row = await db.execute(
+        select(User.email, User.phone)
+        .where(User.tg_id == tg_id)
+        .limit(1)
+    )
+    mapping = row.mappings().first()
+    if not mapping:
+        return None, None
+    email = str(mapping.get("email") or "").strip() or None
+    phone = str(mapping.get("phone") or "").strip() or None
+    return email, phone
+
+
+async def _create_yookassa_payment(*, tg_id: int, customer_email: str | None, customer_phone: str | None) -> dict:
     shop_id = (os.getenv("YOOKASSA_SHOP_ID") or "").strip()
     secret_key = (os.getenv("YOOKASSA_SECRET_KEY") or "").strip()
     if not shop_id or not secret_key:
@@ -70,6 +126,11 @@ async def _create_yookassa_payment(*, tg_id: int) -> dict:
         "confirmation": {"type": "redirect", "return_url": _public_return_url()},
         "description": "Игра 10:0 (доступ в закрытый канал)",
         "metadata": {"tg_id": str(tg_id), "product": "game10"},
+        "receipt": _build_yookassa_receipt(
+            email=customer_email,
+            phone=customer_phone,
+            amount_rub=GAME10_PRICE_RUB,
+        ),
     }
     headers = {"Idempotence-Key": idempotence_key}
     try:
@@ -134,7 +195,23 @@ async def create_game10_payment(
             amount_rub=int(existing.amount_rub or GAME10_PRICE_RUB),
         )
 
-    created = await _create_yookassa_payment(tg_id=target_tg_id)
+    email, phone = await _get_receipt_customer_contact(db, tg_id=target_tg_id)
+    logger.info(
+        "Game10 YooKassa receipt contacts: has_email=%s has_phone=%s",
+        bool(email),
+        bool(phone),
+    )
+    if not email and not phone:
+        raise HTTPException(
+            status_code=400,
+            detail="Для оплаты нужен телефон или email (для отправки чека). Запросите контакты у клиента.",
+        )
+
+    created = await _create_yookassa_payment(
+        tg_id=target_tg_id,
+        customer_email=email,
+        customer_phone=phone,
+    )
     record = YooKassaPayment(
         tg_id=target_tg_id,
         product="game10",
