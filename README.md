@@ -536,17 +536,30 @@ ss -lntp | egrep ":80|:443|:8000|:8080"
 
 Это позволяет поднять reverse proxy на хосте (nginx + certbot) для доменов без изменения внутренних API-контрактов.
 
+Шаблоны в репозитории:
+- `deploy/nginx/renatapromotion.conf` — host nginx для `crm.<domain>` и `api.<domain>`
+- `deploy/nginx/limits.conf` — `limit_req_zone` (кладётся в `/etc/nginx/conf.d/`, не в `server {}`)
+- `scripts/nginx_doctor.py` — безопасная диагностика (checks + copy-paste команды, без `systemctl`)
+
 Шаги:
 
 1. DNS:
 - создайте `A`-записи `crm.<DOMAIN>` -> `<SERVER_IP>`
 - создайте `A`-записи `api.<DOMAIN>` -> `<SERVER_IP>`
 
-2. Проверьте, что порт `80` свободен на хосте:
+2. Проверьте, какие порты должны быть заняты/свободны:
+- `80` / `443` — должен занимать хостовый nginx (после его установки)
+- `127.0.0.1:8000` — контейнер `web`
+- `127.0.0.1:8080` — контейнер `frontend`
+
+До установки хостового nginx внешний `:80` и `:443` должны быть свободны.
+
+Проверка:
 
 ```bash
 ss -lntp | egrep ":80|:443|:8000|:8080"
 docker ps --format "table {{.Names}}\t{{.Ports}}"
+python scripts/nginx_doctor.py
 ```
 
 3. Поднимите reverse proxy на хосте (рекомендуемый вариант):
@@ -555,12 +568,43 @@ docker ps --format "table {{.Names}}\t{{.Ports}}"
 - прокси:
   - `crm.<DOMAIN>` -> `http://127.0.0.1:8080`
   - `api.<DOMAIN>` -> `http://127.0.0.1:8000`
+- используйте шаблон `deploy/nginx/renatapromotion.conf` как стартовую точку
+- `limit_req_zone` вынесите в `deploy/nginx/limits.conf` (http-context)
 
 4. Обновите `.env` (не коммитьте):
 - `PUBLIC_BASE_URL=https://api.<DOMAIN>`
 - `YOOKASSA_WEBHOOK_TOKEN=<secret>`
+- `BOT_API_TOKEN=<internal bot->web token>`
+- `YOOKASSA_SHOP_ID=<shop/account id>`
+- `YOOKASSA_SECRET_KEY=<secret>`
+- `YOOKASSA_TAX_SYSTEM_CODE=2` (УСН доходы, по умолчанию)
+- `YOOKASSA_VAT_CODE=1` (без НДС, по умолчанию)
 - укажите webhook YooKassa на `https://api.<DOMAIN>/api/webhooks/yookassa/<YOOKASSA_WEBHOOK_TOKEN>`
 
 Примечания:
 - фронт уже собран с `VITE_API_BASE_URL=/api`, поэтому CRM продолжит работать через `crm.<DOMAIN>/api/*` при проксировании на backend;
 - HTTPS в compose сейчас не включается намеренно (TLS завершается на хостовом reverse proxy).
+
+### Почему `curl /api/healthz` может быть `404` и как правильно тестировать
+
+Базовые health endpoints FastAPI существуют на:
+- `/healthz`
+- `/readyz`
+
+На `api.<DOMAIN>` можно тестировать напрямую:
+
+```bash
+curl -i -H "Host: api.<DOMAIN>" http://127.0.0.1/healthz
+curl -i -H "Host: api.<DOMAIN>" http://127.0.0.1/readyz
+```
+
+Пути `/api/healthz` и `/api/readyz` работают только если в host nginx добавлены алиасы
+(`/api/healthz -> /healthz`, `/api/readyz -> /readyz`). Шаблон `deploy/nginx/renatapromotion.conf`
+их уже содержит.
+
+Дополнительно (через CRM vhost):
+
+```bash
+curl -i -H "Host: crm.<DOMAIN>" http://127.0.0.1/api/healthz
+curl -i -H "Host: crm.<DOMAIN>" http://127.0.0.1/api/readyz
+```

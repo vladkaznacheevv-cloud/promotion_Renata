@@ -77,6 +77,37 @@ def test_create_yookassa_payment_payload_contains_receipt(monkeypatch):
     assert payload["receipt"]["customer"]["email"] == "test@example.com"
 
 
+def test_create_yookassa_payment_payload_contains_notification_url(monkeypatch):
+    monkeypatch.setenv("YOOKASSA_SHOP_ID", "shop")
+    monkeypatch.setenv("YOOKASSA_SECRET_KEY", "secret")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://api.example.com")
+    monkeypatch.setenv("YOOKASSA_WEBHOOK_TOKEN", "whsec_test")
+
+    capture: dict = {}
+    response = _DummyResponse(
+        {
+            "id": "yk_test_2",
+            "status": "pending",
+            "confirmation": {"confirmation_url": "https://pay.example/2"},
+        }
+    )
+    monkeypatch.setattr(
+        payments_api.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: _DummyAsyncClient(response=response, capture=capture),
+    )
+
+    asyncio.run(
+        payments_api._create_yookassa_payment(
+            tg_id=123456,
+            customer_email="test@example.com",
+            customer_phone=None,
+        )
+    )
+    payload = capture["json"]
+    assert payload["notification_url"] == "https://api.example.com/api/webhooks/yookassa/whsec_test"
+
+
 def test_game10_create_returns_400_when_no_receipt_contacts(monkeypatch):
     monkeypatch.setenv("BOT_API_TOKEN", "bot-token")
     monkeypatch.setattr(

@@ -60,6 +60,14 @@ def _public_return_url() -> str:
     return "https://example.com/"
 
 
+def _yookassa_notification_url() -> str | None:
+    base = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    token = (os.getenv("YOOKASSA_WEBHOOK_TOKEN") or "").strip()
+    if not base or not token:
+        return None
+    return f"{base}/api/webhooks/yookassa/{token}"
+
+
 def _int_env(name: str, default: int) -> int:
     raw = (os.getenv(name) or "").strip()
     try:
@@ -132,6 +140,9 @@ async def _create_yookassa_payment(*, tg_id: int, customer_email: str | None, cu
             amount_rub=GAME10_PRICE_RUB,
         ),
     }
+    notification_url = _yookassa_notification_url()
+    if notification_url:
+        request_body["notification_url"] = notification_url
     headers = {"Idempotence-Key": idempotence_key}
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
