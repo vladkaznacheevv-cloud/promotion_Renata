@@ -132,9 +132,16 @@ def get_game10_kb(payment_url: str | None = None):
         rows.append([InlineKeyboardButton("Оплатить 5 000 ₽", url=payment_url)])
     else:
         rows.append([InlineKeyboardButton("Оплатить 5 000 ₽", callback_data="private_channel_payment_info")])
+    rows.append([InlineKeyboardButton("Описание программы", callback_data="game10_description")])
     rows.append([InlineKeyboardButton("Вопросы к ассистенту", callback_data="game10_questions")])
     rows.append([InlineKeyboardButton("В меню", callback_data="menu")])
     return InlineKeyboardMarkup(rows)
+
+
+def get_game10_description_kb():
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("Обратно", callback_data="private_channel")]]
+    )
 
 
 def get_payment_contact_choice_kb():
