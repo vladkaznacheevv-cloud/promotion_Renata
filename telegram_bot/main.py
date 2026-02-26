@@ -29,6 +29,7 @@ from core .users .service import UserService
 from core .users .models import User 
 from core .events .service import EventService 
 from core .crm .service import CRMService 
+from core .crm .models import YooKassaPayment
 from core .ai .ai_service import AIService 
 from core .crm .activity_service import ActivityService 
 from core .payments .models import Payment 
@@ -60,6 +61,7 @@ from telegram_bot .lock_utils import get_lock_path ,touch_lock_heartbeat
 from telegram_bot .typing_indicator import TypingIndicator 
 from telegram_bot .screen_manager import ScreenManager
 from telegram_bot .utils import detect_intent ,detect_product_focus ,detect_buy_intent ,apply_focus_timeout_state
+from telegram_bot .private_channel_gate import decide_private_channel_join_action
 try:
     import qrcode
 except Exception:  # pragma: no cover - optional runtime dependency
@@ -363,6 +365,32 @@ async def _is_private_channel_paid_local (tg_id :int )->bool :
     except Exception as e :
         logger .warning ("Private channel paid check failed: %s",e .__class__ .__name__ )
         return False
+
+
+async def _get_last_game10_payment_local (tg_id :int )->dict |None :
+    try :
+        db .init_db ()
+        async with db .async_session ()as session :
+            row =await session .execute (
+            select (YooKassaPayment )
+            .where (YooKassaPayment .tg_id ==tg_id )
+            .where (YooKassaPayment .product =="game10")
+            .order_by (YooKassaPayment .created_at .desc ())
+            .limit (1 )
+            )
+            item =row .scalar_one_or_none ()
+            await session .commit ()
+            if item is None :
+                return None
+            return {
+            "payment_id":str (item .payment_id or ""),
+            "status":str (item .status or ""),
+            "created_at":item .created_at ,
+            "paid_at":item .paid_at ,
+            }
+    except Exception as e :
+        logger .warning ("Game10 payment debug lookup failed: %s",e .__class__ .__name__ )
+        return None
 
 
 def _short_text (value :str |None ,limit :int =420 )->str :
@@ -1316,6 +1344,12 @@ async def private_channel_payment_info (update :Update ,context :ContextTypes .D
     chat =update .effective_chat 
     if user is None or chat is None :
         return 
+    await _show_screen (
+    update ,
+    context ,
+    "Создаю платёж…",
+    reply_markup =get_game10_kb (_private_channel_payment_url ()),
+    )
     result =await _create_game10_payment_backend (user .id )
     if not isinstance (result ,dict )or not result .get ("ok"):
         await _show_screen (
@@ -2142,6 +2176,37 @@ async def mark_paid_dev (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
         await _reply (message ,"РќРµ СѓРґР°Р»РѕСЃСЊ РѕС‚РјРµС‚РёС‚СЊ РѕРїР»Р°С‚Сѓ. РџСЂРѕРІРµСЂСЊС‚Рµ Р»РѕРіРё.")
 
 
+async def pay_debug (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    message =update .effective_message 
+    user =update .effective_user 
+    if message is None or user is None :
+        return 
+    if not ADMIN_CHAT_ID or str (user .id )!=str (ADMIN_CHAT_ID ):
+        await _reply (message ,"Команда доступна только админу.")
+        return 
+    args =context .args or []
+    try :
+        tg_id =int (args [0 ])if args else int (user .id )
+    except Exception :
+        await _reply (message ,"Формат: /pay_debug [tg_id]")
+        return 
+    is_paid =await _is_private_channel_paid_local (tg_id )
+    last_payment =await _get_last_game10_payment_local (tg_id )
+    if not last_payment :
+        await _reply (message ,f"tg_id={tg_id}\nprivate_channel_paid={is_paid}\nlast_payment: not found")
+        return 
+    await _reply (
+    message ,
+    (
+    f"tg_id={tg_id}\n"
+    f"private_channel_paid={is_paid}\n"
+    f"last_payment_id={last_payment .get ('payment_id')or '-'}\n"
+    f"last_payment_status={last_payment .get ('status')or '-'}\n"
+    f"paid_at={last_payment .get ('paid_at')or '-'}"
+    ),
+    )
+
+
 async def handle_chat_join_request (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     join_request =getattr (update ,"chat_join_request",None )
     if join_request is None :
@@ -2152,7 +2217,14 @@ async def handle_chat_join_request (update :Update ,context :ContextTypes .DEFAU
     if user is None :
         return 
     is_paid =await _is_private_channel_paid_local (user .id )
-    if is_paid :
+    action =decide_private_channel_join_action (
+    request_chat_id =join_request .chat .id ,
+    configured_channel_id =TELEGRAM_PRIVATE_CHANNEL_ID ,
+    is_paid =is_paid ,
+    )
+    if action =="ignore":
+        return 
+    if action =="approve":
         try :
             await context .bot .approve_chat_join_request (chat_id =join_request .chat .id ,user_id =user .id )
         except Exception as e :
@@ -2185,6 +2257,7 @@ def build_app ()->Application :
     app .add_handler (CommandHandler ("courses",show_courses_command ))
     app .add_handler (CommandHandler ("catalog",show_courses_command ))
     app .add_handler (CommandHandler ("mark_paid",mark_paid_dev ))
+    app .add_handler (CommandHandler ("pay_debug",pay_debug ))
     app .add_handler (CommandHandler ("rag_debug",rag_debug_command ))
 
     # Menu callbacks

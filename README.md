@@ -585,6 +585,79 @@ python scripts/nginx_doctor.py
 - фронт уже собран с `VITE_API_BASE_URL=/api`, поэтому CRM продолжит работать через `crm.<DOMAIN>/api/*` при проксировании на backend;
 - HTTPS в compose сейчас не включается намеренно (TLS завершается на хостовом reverse proxy).
 
+## PROD CHECKLIST (today)
+
+1. Docker compose сервисы и health:
+
+```bash
+docker compose -f compose.prod.yml up -d --build
+docker compose -f compose.prod.yml ps
+docker ps --format "table {{.Names}}\t{{.Ports}}"
+ss -lntp | egrep ":80|:443|:8000|:8080"
+```
+
+Ожидаемо:
+- `web` -> `127.0.0.1:8000`
+- `frontend` -> `127.0.0.1:8080`
+- `80/443` свободны для host nginx (до его запуска)
+
+2. Host nginx routing check:
+
+```bash
+sudo cp deploy/nginx/renatapromotion.conf /etc/nginx/sites-available/renatapromotion.conf
+sudo cp deploy/nginx/limits.conf /etc/nginx/conf.d/limits.conf
+sudo ln -sfn /etc/nginx/sites-available/renatapromotion.conf /etc/nginx/sites-enabled/renatapromotion.conf
+sudo nginx -t && sudo systemctl reload nginx
+sh scripts/nginx_header_check.sh
+python scripts/nginx_doctor.py
+```
+
+3. HTTPS / certbot (пример):
+
+```bash
+sudo certbot --nginx -d crm.renatapromotion.ru -d api.renatapromotion.ru
+```
+
+4. YooKassa env checklist (`.env`, не коммитить):
+- `PUBLIC_BASE_URL=https://api.renatapromotion.ru`
+- `YOOKASSA_WEBHOOK_TOKEN=<secret>`
+- `BOT_API_TOKEN=<internal token bot->web>`
+- `YOOKASSA_SHOP_ID=<shop/account id>`
+- `YOOKASSA_SECRET_KEY=<secret>`
+- `YOOKASSA_TAX_SYSTEM_CODE=2`
+- `YOOKASSA_VAT_CODE=1`
+- `TELEGRAM_PRIVATE_CHANNEL_ID=-100...` (канал, где бот админ)
+
+Проверка env + create-payment smoke:
+
+```bash
+python scripts/yookassa_smoke.py
+python scripts/yookassa_smoke.py --tg-id <TG_ID>
+```
+
+5. Smoke тест оплаты (цепочка):
+- create payment (`/api/payments/game10/create`) -> получен `payment_id` + `confirmation_url`
+- webhook endpoint:
+  - `GET /api/webhooks/yookassa/<token>` -> `405` (это нормально, endpoint только POST)
+  - `POST /api/webhooks/yookassa/<token>` -> обновляет статус и отправляет TG кнопку вступления
+- join request flow:
+  - оплаченный пользователь -> approve
+  - неоплаченный пользователь -> decline + предложение оплатить
+
+Примеры:
+
+```bash
+curl -i -H "Host: api.renatapromotion.ru" http://127.0.0.1/healthz
+curl -i -H "Host: api.renatapromotion.ru" http://127.0.0.1/api/healthz
+curl -i -X GET "https://api.renatapromotion.ru/api/webhooks/yookassa/<TOKEN>"
+```
+
+6. Troubleshooting:
+- `nginx returns default page` -> проверьте `sites-enabled` symlink и `server_name`
+- `/api/* gives 404 html` -> неправильный `location /api/` / `proxy_pass` в host nginx
+- `YooKassa Receipt is missing` -> проверьте `receipt`, `receipt.customer`, `vat_code=1`
+- бот не approve join request -> проверьте `TELEGRAM_PRIVATE_CHANNEL_ID`, права бота в канале (admin), и paid-flag в БД (`/pay_debug`, `/rag_debug` тут не поможет)
+
 ### Почему `curl /api/healthz` может быть `404` и как правильно тестировать
 
 Базовые health endpoints FastAPI существуют на:

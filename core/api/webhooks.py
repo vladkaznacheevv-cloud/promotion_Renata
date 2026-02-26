@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import json
+import logging
 import os
 from typing import Any
 
@@ -18,6 +19,7 @@ from core.integrations.getcourse import GetCourseService
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _get_webhook_token(request: Request) -> str:
@@ -110,16 +112,19 @@ async def _create_game10_join_request_link(*, tg_id: int, payment_id: str) -> st
 
 
 async def _send_game10_paid_message(*, tg_id: int, invite_link: str | None) -> None:
-    if not invite_link:
-        return
-    reply_markup = {
-        "inline_keyboard": [[{"text": "Вступить в канал", "url": invite_link}]],
-    }
+    reply_markup = None
+    text = "✅ Оплата прошла. Доступ к закрытому каналу открыт."
+    if invite_link:
+        reply_markup = {
+            "inline_keyboard": [[{"text": "Вступить в канал", "url": invite_link}]],
+        }
+        text = "✅ Оплата прошла. Нажмите «Вступить в канал»."
     payload = {
         "chat_id": tg_id,
-        "text": "Оплата получена. Нажмите кнопку ниже и отправьте заявку на вступление в закрытый канал.",
-        "reply_markup": reply_markup,
+        "text": text,
     }
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
     await _telegram_api_post("sendMessage", payload)
 
 
@@ -169,6 +174,7 @@ async def yookassa_webhook(
         await db.flush()
     except IntegrityError:
         await db.rollback()
+        logger.info("YooKassa webhook duplicate: event=%s payment_id=%s", event_type, payment_id)
         return {"ok": True, "duplicate": True}
 
     payment_row = await db.execute(
@@ -217,6 +223,7 @@ async def yookassa_webhook(
     if event_type == "payment.succeeded":
         target_tg_id = int(payment.tg_id) if payment is not None else (tg_id_value or 0)
         if target_tg_id > 0:
+            logger.info("YooKassa payment succeeded: payment_id=%s tg_id=%s", payment_id, target_tg_id)
             service = CRMService(db)
             await service.mark_private_channel_paid(target_tg_id, ensure_invite=False)
             invite_link = await _create_game10_join_request_link(

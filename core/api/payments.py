@@ -223,6 +223,14 @@ async def create_game10_payment(
         customer_email=email,
         customer_phone=phone,
     )
+    logger.info(
+        "Game10 YooKassa payment created: tg_id=%s payment_id=%s status=%s has_email=%s has_phone=%s",
+        target_tg_id,
+        created.get("payment_id"),
+        created.get("status"),
+        bool(email),
+        bool(phone),
+    )
     record = YooKassaPayment(
         tg_id=target_tg_id,
         product="game10",

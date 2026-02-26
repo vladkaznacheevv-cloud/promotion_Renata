@@ -80,6 +80,18 @@ def _print_compose_commands() -> None:
     )
 
 
+def _print_nginx_install_commands() -> None:
+    _print_header("host nginx install/update (copy-paste)")
+    print("sudo cp deploy/nginx/renatapromotion.conf /etc/nginx/sites-available/renatapromotion.conf")
+    print("sudo cp deploy/nginx/limits.conf /etc/nginx/conf.d/limits.conf")
+    print(
+        "sudo ln -sfn /etc/nginx/sites-available/renatapromotion.conf "
+        "/etc/nginx/sites-enabled/renatapromotion.conf"
+    )
+    print("sudo nginx -t && sudo systemctl reload nginx")
+    print("sh scripts/nginx_header_check.sh")
+
+
 def _print_curl_commands() -> None:
     _print_header("curl checks via host nginx (copy-paste)")
     print("# CRM vhost (frontend + /api proxy)")
@@ -109,6 +121,7 @@ def main() -> int:
     _check_ports_with_docker_ps()
     _check_ports_with_ss()
     _print_compose_commands()
+    _print_nginx_install_commands()
     _print_curl_commands()
     _print_health_note()
     return 0
