@@ -144,14 +144,14 @@ AUTO_AI_REPLY_TIMESTAMPS_KEY ="auto_ai_reply_timestamps"
 AUTO_AI_RATE_LIMIT_WINDOW_SEC =12
 AUTO_AI_RATE_LIMIT_MAX =3
 
-PAYMENT_CREATING_SCREEN ="?????? ??????..."
-PAYMENT_NEED_CONTACT_SCREEN ="??? ?????? ????? ??????? ??? email (??? ???????? ????). ???????? ???????."
-PAYMENT_ASK_PHONE_SCREEN ="?????????? ??????? ????????.\n??? ????? ??? ???????? ????."
-PAYMENT_ASK_EMAIL_SCREEN ="???????? email ????? ??????????.\n??? ????? ??? ???????? ????."
-PAYMENT_CONTACT_SAVED_SCREEN ="??????? ???????. ???????? ??????..."
-PAYMENT_CANCELLED_SCREEN ="??. ?????? ???????."
-PAYMENT_LINK_READY_SCREEN ="?????? ?? ?????? ??????.\n???????? ?????? ??? ???????????? QR."
-PAYMENT_EXPIRED_HINT ="?????? ????????. ?????? ?????..."
+PAYMENT_CREATING_SCREEN ="Создаю оплату..."
+PAYMENT_NEED_CONTACT_SCREEN ="Для оплаты нужен телефон или email (для отправки чека). Выберите вариант."
+PAYMENT_ASK_PHONE_SCREEN ="Поделитесь номером телефона.\nЭто нужно для отправки чека."
+PAYMENT_ASK_EMAIL_SCREEN ="Напишите email одним сообщением.\nЭто нужно для отправки чека."
+PAYMENT_CONTACT_SAVED_SCREEN ="Контакт получен. Формирую оплату..."
+PAYMENT_CANCELLED_SCREEN ="Ок. Оплату отменил."
+PAYMENT_LINK_READY_SCREEN ="Ссылка на оплату готова.\nОткройте оплату или отсканируйте QR."
+PAYMENT_EXPIRED_HINT ="Ссылка устарела. Создаю новую..."
 PAYMENT_CHECKING_SCREEN ="Проверяю оплату..."
 PAYMENT_STATUS_PENDING_SCREEN ="Оплата пока не подтверждена. Попробуйте позже."
 PAYMENT_STATUS_CANCELED_SCREEN ="Платеж отменен или истек. Нажмите «Обновить ссылку»."
@@ -406,7 +406,7 @@ async def _create_game10_payment_backend (tg_id :int ,*,variant :str =PAYMENT_VA
         return {"ok":False ,"detail":e .__class__ .__name__ }
 
 
-async def _check_game10_payment_status_backend (payment_id :str )->dict |None :
+async def _check_game10_payment_status_backend (payment_id :str ,*,tg_id :int |None =None )->dict |None :
     payment_id =str (payment_id or "").strip ()
     if not payment_id or not CRM_API_BASE_URL :
         return None
@@ -419,7 +419,7 @@ async def _check_game10_payment_status_backend (payment_id :str )->dict |None :
             response =await client .post (
             f"{CRM_API_BASE_URL }/api/payments/yookassa/status",
             headers =headers ,
-            json ={"payment_id":payment_id },
+            json ={"payment_id":payment_id ,"tg_id":int (tg_id )}if tg_id else {"payment_id":payment_id },
             )
         if response .status_code !=200:
             detail =response .text [:240 ]
@@ -1807,7 +1807,8 @@ async def game10_pay_check (update :Update ,context :ContextTypes .DEFAULT_TYPE 
         await _show_screen (update ,context ,"Не удалось определить платеж.",reply_markup =_game10_kb_for_update (update ))
         return
     await _show_screen (update ,context ,PAYMENT_CHECKING_SCREEN ,reply_markup =_get_last_game10_payment_ui_kb (context ,payment_id )or _game10_kb_for_update (update ))
-    result =await _check_game10_payment_status_backend (payment_id )
+    user =update .effective_user
+    result =await _check_game10_payment_status_backend (payment_id ,tg_id =user .id if user else None )
     if not isinstance (result ,dict )or not result .get ("ok"):
         await _show_screen (update ,context ,"Не удалось проверить оплату. Попробуйте позже.",reply_markup =_get_last_game10_payment_ui_kb (context ,payment_id )or _game10_kb_for_update (update ))
         return

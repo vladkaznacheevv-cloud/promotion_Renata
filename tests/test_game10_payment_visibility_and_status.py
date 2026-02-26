@@ -25,8 +25,25 @@ def test_game10_keyboard_hides_or_shows_test_button():
     assert isinstance(kb_hidden, InlineKeyboardMarkup)
     hidden_texts = [btn.text for row in kb_hidden.inline_keyboard for btn in row]
     shown_texts = [btn.text for row in kb_shown.inline_keyboard for btn in row]
-    assert "Тестовая оплата 50 ₽" not in hidden_texts
-    assert "Тестовая оплата 50 ₽" in shown_texts
+    test_btn = "\u0422\u0435\u0441\u0442\u043e\u0432\u0430\u044f \u043e\u043f\u043b\u0430\u0442\u0430 50 \u20bd"
+    assert test_btn not in hidden_texts
+    assert test_btn in shown_texts
+
+
+def test_payment_ui_strings_do_not_contain_question_garbage():
+    strings = [
+        bot_main.PAYMENT_CREATING_SCREEN,
+        bot_main.PAYMENT_NEED_CONTACT_SCREEN,
+        bot_main.PAYMENT_ASK_PHONE_SCREEN,
+        bot_main.PAYMENT_ASK_EMAIL_SCREEN,
+        bot_main.PAYMENT_CONTACT_SAVED_SCREEN,
+        bot_main.PAYMENT_CANCELLED_SCREEN,
+        bot_main.PAYMENT_LINK_READY_SCREEN,
+        bot_main.PAYMENT_EXPIRED_HINT,
+    ]
+    for value in strings:
+        assert "????" not in value
+        assert value.strip() and any(ch != "?" for ch in value)
 
 
 def test_process_game10_payment_success_returns_already_member(monkeypatch):
@@ -75,4 +92,3 @@ def test_process_game10_payment_success_returns_already_member(monkeypatch):
     assert calls["already_msg"] == 1
     assert calls["invite"] == 0
     assert calls["paid_msg"] == 0
-

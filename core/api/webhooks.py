@@ -240,6 +240,12 @@ async def yookassa_webhook(
             tg_id_value = int(str(tg_id_raw).strip())
     except Exception:
         tg_id_value = None
+    logger.info(
+        "YooKassa webhook received: event=%s payment_id=%s tg_id=%s",
+        event_type,
+        payment_id,
+        tg_id_value or "-",
+    )
 
     amount_obj = obj.get("amount") if isinstance(obj, dict) else {}
     amount_rub = None
@@ -279,5 +285,7 @@ async def yookassa_webhook(
                 target_tg_id,
                 result.get("result"),
             )
+        else:
+            logger.info("YooKassa payment succeeded without tg_id: payment_id=%s", payment_id)
 
     return {"ok": True}

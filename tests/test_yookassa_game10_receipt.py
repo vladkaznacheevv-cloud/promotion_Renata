@@ -392,7 +392,9 @@ def test_yookassa_status_endpoint_checks_remote_status_and_processes_success(mon
     )
     assert response.status_code == 200, response.text
     payload = response.json()
+    assert payload["ok"] is True
     assert payload["payment_id"] == "yk_status_1"
     assert payload["status"] == "succeeded"
+    assert payload["updated"] is True
     assert payload["processed_success"] is True
     assert payload["result"] == "invite_sent"

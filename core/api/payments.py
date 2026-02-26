@@ -43,11 +43,14 @@ class Game10PaymentCreateOut(BaseModel):
 
 class YooKassaStatusCheckIn(BaseModel):
     payment_id: str = Field(..., min_length=1, max_length=128)
+    tg_id: int | None = Field(default=None, ge=1)
 
 
 class YooKassaStatusCheckOut(BaseModel):
+    ok: bool = True
     payment_id: str
     status: str
+    updated: bool = False
     processed_success: bool = False
     already_in_channel: bool | None = None
     result: str | None = None
@@ -73,18 +76,27 @@ def _require_bot_api_token(request: Request) -> None:
 
 
 def _public_return_url() -> str:
-    base = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    base = _normalized_public_base_url()
     if base:
         return f"{base}/"
     return "https://example.com/"
 
 
 def _yookassa_notification_url() -> str | None:
-    base = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    base = _normalized_public_base_url()
     token = (os.getenv("YOOKASSA_WEBHOOK_TOKEN") or "").strip()
     if not base or not token:
         return None
     return f"{base}/api/webhooks/yookassa/{token}"
+
+
+def _normalized_public_base_url() -> str:
+    base = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    if not base:
+        return ""
+    if not base.lower().startswith(("http://", "https://")):
+        base = f"https://{base}"
+    return base
 
 
 def _int_env(name: str, default: int) -> int:
@@ -348,7 +360,7 @@ async def _create_game10_payment_common(
         receipt_item_description=receipt_item_description,
     )
     logger.info(
-        "Game10 YooKassa payment created: tg_id=%s payment_id=%s status=%s has_email=%s has_phone=%s amount_rub=%s product=%s",
+        "Game10 YooKassa payment created: tg_id=%s payment_id=%s status=%s has_email=%s has_phone=%s amount_rub=%s product=%s notification_url_present=%s",
         target_tg_id,
         created.get("payment_id"),
         created.get("status"),
@@ -356,6 +368,7 @@ async def _create_game10_payment_common(
         bool(phone),
         amount_rub,
         product_code,
+        bool(_yookassa_notification_url()),
     )
     record = YooKassaPayment(
         tg_id=target_tg_id,
@@ -432,13 +445,17 @@ async def check_yookassa_payment_status(
     payment = row.scalar_one_or_none()
     if payment is None:
         raise HTTPException(status_code=404, detail="payment not found")
+    if body.tg_id is not None and int(payment.tg_id or 0) != int(body.tg_id):
+        raise HTTPException(status_code=409, detail="payment_id does not belong to tg_id")
 
     remote_status = await _get_yookassa_payment_status(payment_id)
     status = str(remote_status or payment.status or "unknown").strip().lower() or "unknown"
+    previous_status = str(payment.status or "").strip().lower()
     payment.status = status
     if status == "succeeded" and payment.paid_at is None:
         payment.paid_at = _utcnow()
     await db.flush()
+    updated = status != previous_status or (status == "succeeded" and payment.paid_at is not None)
 
     processed_success = False
     already_in_channel: bool | None = None
@@ -467,8 +484,10 @@ async def check_yookassa_payment_status(
         )
 
     return YooKassaStatusCheckOut(
+        ok=True,
         payment_id=payment_id,
         status=status,
+        updated=bool(updated),
         processed_success=processed_success,
         already_in_channel=already_in_channel,
         result=result_label,

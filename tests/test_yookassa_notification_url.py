@@ -69,3 +69,12 @@ def test_yookassa_payload_contains_notification_url_and_receipt(monkeypatch):
     assert payload["notification_url"] == "https://api.example.com/api/webhooks/yookassa/whsec_test"
     assert payload["receipt"]["tax_system_code"] == 2
     assert payload["receipt"]["items"][0]["vat_code"] == 1
+
+
+def test_yookassa_notification_url_adds_https_scheme_when_missing(monkeypatch):
+    monkeypatch.setenv("PUBLIC_BASE_URL", "api.example.com")
+    monkeypatch.setenv("YOOKASSA_WEBHOOK_TOKEN", "whsec_test")
+    assert (
+        payments_api._yookassa_notification_url()
+        == "https://api.example.com/api/webhooks/yookassa/whsec_test"
+    )
