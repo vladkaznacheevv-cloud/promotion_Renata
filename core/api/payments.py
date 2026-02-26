@@ -24,9 +24,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 GAME10_PRICE_RUB = 5000
-GAME10_TEST_PRICE_RUB = 50
 GAME10_PRODUCT = "game10"
-GAME10_TEST_PRODUCT = "game10_test"
 
 
 class Game10PaymentCreateIn(BaseModel):
@@ -76,6 +74,11 @@ def _require_bot_api_token(request: Request) -> None:
 
 
 def _public_return_url() -> str:
+    bot_return = (os.getenv("TELEGRAM_BOT_RETURN_URL") or "").strip()
+    if bot_return:
+        if not bot_return.lower().startswith(("http://", "https://")):
+            bot_return = f"https://{bot_return}"
+        return bot_return
     base = _normalized_public_base_url()
     if base:
         return f"{base}/"
@@ -408,24 +411,6 @@ async def create_game10_payment(
         receipt_item_description="Игра 10:0 — доступ в закрытое сообщество",
     )
 
-
-@router.post("/game10/test/create", response_model=Game10PaymentCreateOut)
-async def create_game10_test_payment(
-    request: Request,
-    body: Optional[Game10PaymentCreateIn] = Body(default=None),
-    tg_id: Optional[int] = Query(default=None, ge=1),
-    db: AsyncSession = Depends(get_db),
-):
-    return await _create_game10_payment_common(
-        request=request,
-        body=body,
-        tg_id=tg_id,
-        db=db,
-        product_code=GAME10_TEST_PRODUCT,
-        amount_rub=GAME10_TEST_PRICE_RUB,
-        payment_description="Игра 10:0 (тестовый платеж)",
-        receipt_item_description="Игра 10:0 — тестовый платеж",
-    )
 
 
 @router.post("/yookassa/status", response_model=YooKassaStatusCheckOut)

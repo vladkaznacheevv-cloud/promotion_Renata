@@ -78,3 +78,9 @@ def test_yookassa_notification_url_adds_https_scheme_when_missing(monkeypatch):
         payments_api._yookassa_notification_url()
         == "https://api.example.com/api/webhooks/yookassa/whsec_test"
     )
+
+
+def test_public_return_url_prefers_telegram_bot_return_url(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_RETURN_URL", "t.me/example_bot?start=paid_game10")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://api.example.com")
+    assert payments_api._public_return_url() == "https://t.me/example_bot?start=paid_game10"

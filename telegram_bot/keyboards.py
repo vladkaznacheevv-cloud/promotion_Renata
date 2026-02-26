@@ -11,12 +11,12 @@ GETCOURSE_CABINET_URL = "https://renataminakova.getcourse.ru"
 
 def get_main_menu():
     keyboard = [
-        [InlineKeyboardButton("\u00ab\u0418\u0433\u0440\u0430 10:0\u00bb", callback_data="private_channel")],
-        [InlineKeyboardButton("\u041c\u0435\u0440\u043e\u043f\u0440\u0438\u044f\u0442\u0438\u044f", callback_data="events")],
-        [InlineKeyboardButton("\u041e\u043d\u043b\u0430\u0439\u043d-\u043a\u0443\u0440\u0441\u044b", callback_data="courses")],
-        [InlineKeyboardButton("\u041a\u043e\u043d\u0441\u0443\u043b\u044c\u0442\u0430\u0446\u0438\u0438", callback_data="consultations")],
-        [InlineKeyboardButton("\u0421\u0432\u044f\u0437\u0430\u0442\u044c\u0441\u044f \u0441 \u043c\u0435\u043d\u0435\u0434\u0436\u0435\u0440\u043e\u043c", callback_data="contact_manager")],
-        [InlineKeyboardButton("\u041f\u043e\u043c\u043e\u0449\u044c", callback_data="help")],
+        [InlineKeyboardButton("«Игра 10:0»", callback_data="private_channel")],
+        [InlineKeyboardButton("Мероприятия", callback_data="events")],
+        [InlineKeyboardButton("Онлайн-курсы", callback_data="courses")],
+        [InlineKeyboardButton("Консультации", callback_data="consultations")],
+        [InlineKeyboardButton("Связаться с менеджером", callback_data="contact_manager")],
+        [InlineKeyboardButton("Помощь", callback_data="help")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -132,8 +132,7 @@ def get_game10_kb(payment_url: str | None = None, *, show_test_payment: bool = F
         rows.append([InlineKeyboardButton("Оплатить 5 000 ₽", url=payment_url)])
     else:
         rows.append([InlineKeyboardButton("Оплатить 5 000 ₽", callback_data="private_channel_payment_info")])
-    if show_test_payment:
-        rows.append([InlineKeyboardButton("Тестовая оплата 50 ₽", callback_data="game10_pay_test")])
+    _ = show_test_payment  # legacy arg, button removed
     rows.append([InlineKeyboardButton("Описание программы", callback_data="game10_description")])
     rows.append([InlineKeyboardButton("Вопросы к ассистенту", callback_data="game10_questions")])
     rows.append([InlineKeyboardButton("В меню", callback_data="menu")])
@@ -174,13 +173,13 @@ def get_ai_quick_actions_kb():
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("\u041c\u0435\u0440\u043e\u043f\u0440\u0438\u044f\u0442\u0438\u044f", callback_data="events"),
-                InlineKeyboardButton("\u041a\u043e\u043d\u0441\u0443\u043b\u044c\u0442\u0430\u0446\u0438\u0438", callback_data="consultations"),
+                InlineKeyboardButton("Мероприятия", callback_data="events"),
+                InlineKeyboardButton("Консультации", callback_data="consultations"),
             ],
             [
-                InlineKeyboardButton("\u00ab\u0418\u0433\u0440\u0430 10:0\u00bb", callback_data="private_channel"),
-                InlineKeyboardButton("\u0421\u0432\u044f\u0437\u0430\u0442\u044c\u0441\u044f", callback_data="contact_manager"),
+                InlineKeyboardButton("«Игра 10:0»", callback_data="private_channel"),
+                InlineKeyboardButton("Связаться", callback_data="contact_manager"),
             ],
-            [InlineKeyboardButton("\u0412 \u043c\u0435\u043d\u044e", callback_data="main_menu")],
+            [InlineKeyboardButton("В меню", callback_data="main_menu")],
         ]
     )

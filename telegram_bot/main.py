@@ -98,7 +98,6 @@ CRM_API_TOKEN =(os .getenv ("CRM_API_TOKEN")or "").strip ()
 BOT_API_TOKEN =(os .getenv ("BOT_API_TOKEN")or "").strip ()
 YOOMONEY_PAY_URL_PLACEHOLDER =(os .getenv ("YOOMONEY_PAY_URL_PLACEHOLDER")or "").strip ()
 TELEGRAM_PRIVATE_CHANNEL_ID =(os .getenv ("TELEGRAM_PRIVATE_CHANNEL_ID")or "").strip ()
-GAME10_TEST_PAYMENT_ENABLED =_env_flag_enabled_default_true ("GAME10_TEST_PAYMENT_ENABLED")
 
 # Services
 ai_service =AIService (api_key =AI_API_KEY )
@@ -158,7 +157,6 @@ PAYMENT_STATUS_CANCELED_SCREEN ="Платеж отменен или истек. 
 PAYMENT_STATUS_CONFIRMED_SCREEN ="Оплата подтверждена. Нажмите «Вступить в канал»."
 PAYMENT_ALREADY_IN_CHANNEL_SCREEN ="Вы уже состоите в закрытом канале."
 PAYMENT_VARIANT_MAIN ="game10_main"
-PAYMENT_VARIANT_TEST ="game10_test"
 
 
 def _instance_meta ()->dict [str ,str ]:
@@ -259,6 +257,13 @@ async def _show_screen (update :Update ,context :ContextTypes .DEFAULT_TYPE ,tex
     return await screen_manager .show_screen (update ,context ,text ,**kwargs )
 
 
+async def _show_main_menu_bottom (update :Update ,context :ContextTypes .DEFAULT_TYPE ,text :str |None =None ):
+    if text is None :
+        text ="Главное меню"
+    screen_manager .clear_screen (context )
+    await _show_screen (update ,context ,text ,reply_markup =get_main_menu ())
+
+
 async def _safe_edit_reply_markup (query :CallbackQuery |None ,*,reply_markup =None ):
     if query is None :
         return None
@@ -293,22 +298,23 @@ def _start_payment_contact_flow_state (context :ContextTypes .DEFAULT_TYPE ,*,va
 
 
 def _payment_variant_normalized (variant :str |None )->str :
-    value =str (variant or "").strip ().lower ()
-    if value in {"test",PAYMENT_VARIANT_TEST }:
-        return PAYMENT_VARIANT_TEST
+    _ =variant
     return PAYMENT_VARIANT_MAIN
 
 
 def _payment_variant_amount_rub (variant :str |None )->int :
-    return 50 if _payment_variant_normalized (variant )==PAYMENT_VARIANT_TEST else 5000
+    _ =variant
+    return 5000
 
 
 def _payment_variant_refresh_callback (variant :str |None )->str :
-    return "game10_pay_test_refresh"if _payment_variant_normalized (variant )==PAYMENT_VARIANT_TEST else "game10_pay_refresh"
+    _ =variant
+    return "game10_pay_refresh"
 
 
 def _payment_variant_endpoint_path (variant :str |None )->str :
-    return "/api/payments/game10/test/create"if _payment_variant_normalized (variant )==PAYMENT_VARIANT_TEST else "/api/payments/game10/create"
+    _ =variant
+    return "/api/payments/game10/create"
 
 
 def _is_admin_user_id (user_id :int |None )->bool :
@@ -317,15 +323,9 @@ def _is_admin_user_id (user_id :int |None )->bool :
     return str (user_id )==str (ADMIN_CHAT_ID )
 
 
-def _show_game10_test_payment_for_update (update :Update |None )->bool :
-    return bool (GAME10_TEST_PAYMENT_ENABLED )
-
-
 def _game10_kb_for_update (update :Update )->InlineKeyboardMarkup :
-    return get_game10_kb (
-    _private_channel_payment_url (),
-    show_test_payment =_show_game10_test_payment_for_update (update ),
-    )
+    _ =update
+    return get_game10_kb (_private_channel_payment_url ())
 
 
 def _payment_check_callback_data (payment_id :str )->str |None :
@@ -338,12 +338,29 @@ def _payment_check_callback_data (payment_id :str )->str |None :
     return callback
 
 
-def _store_last_game10_payment_ui_state (context :ContextTypes .DEFAULT_TYPE ,*,payment_id :str ,confirmation_url :str ,variant :str )->None :
+def _store_last_game10_payment_ui_state (context :ContextTypes .DEFAULT_TYPE ,*,payment_id :str ,confirmation_url :str ,variant :str ,message_id :int |None =None )->None :
     context .user_data [LAST_GAME10_PAYMENT_UI_KEY ]={
     "payment_id":str (payment_id or ""),
     "confirmation_url":str (confirmation_url or ""),
     "variant":_payment_variant_normalized (variant ),
+    "message_id":int (message_id )if message_id is not None else None,
     }
+
+
+async def _delete_last_game10_payment_ui_message (update :Update ,context :ContextTypes .DEFAULT_TYPE )->None :
+    chat =update .effective_chat
+    if chat is None :
+        return
+    data =context .user_data .get (LAST_GAME10_PAYMENT_UI_KEY )
+    if not isinstance (data ,dict ):
+        return
+    message_id =data .get ("message_id")
+    if not message_id :
+        return
+    try :
+        await context .bot .delete_message (chat_id =chat .id ,message_id =int (message_id ))
+    except Exception :
+        pass
 
 
 def _get_last_game10_payment_ui_kb (context :ContextTypes .DEFAULT_TYPE ,payment_id :str |None )->InlineKeyboardMarkup |None :
@@ -371,7 +388,6 @@ def _payment_backend_need_contact (result :dict |None )->bool :
         return False
     detail =str (result .get ("detail")or "").lower ()
     return ("email" in detail and "телефон" in detail )or ("phone" in detail and "email" in detail)or ("receipt" in detail and "email" in detail)
-
 
 async def _create_game10_payment_backend (tg_id :int ,*,variant :str =PAYMENT_VARIANT_MAIN )->dict |None :
     if not CRM_API_BASE_URL :
@@ -462,31 +478,27 @@ variant :str =PAYMENT_VARIANT_MAIN ,
     chat =update .effective_chat
     if chat is None :
         return
-    _store_last_game10_payment_ui_state (
-    context ,
-    payment_id =payment_id ,
-    confirmation_url =confirmation_url ,
-    variant =variant ,
-    )
     pay_kb =get_game10_payment_link_kb (
     confirmation_url ,
     refresh_callback_data =_payment_variant_refresh_callback (variant ),
     check_callback_data =_payment_check_callback_data (payment_id ),
     )
     caption =(
-    f"Оплатите {amount_rub} ₽. После оплаты доступ откроется автоматически.\n"
-    "После оплаты бот пришлёт кнопку для вступления в закрытый канал."
+    f"Оплатите {amount_rub} ?. После оплаты доступ откроется автоматически.\n"
+    "После оплаты бот пришлет кнопку для вступления в закрытый канал."
     )
+    await _delete_last_game10_payment_ui_message (update ,context )
     qr =_build_qr_png (confirmation_url )
     if qr is not None :
-        await _send_photo (context .bot ,chat .id ,qr ,caption =caption ,reply_markup =pay_kb )
+        sent =await _send_photo (context .bot ,chat .id ,qr ,caption =caption ,reply_markup =pay_kb )
     else :
-        await _send (context .bot ,chat_id =chat .id ,text =caption ,reply_markup =pay_kb )
-    await _show_screen (
-    update ,
+        sent =await _send (context .bot ,chat_id =chat .id ,text =caption ,reply_markup =pay_kb )
+    _store_last_game10_payment_ui_state (
     context ,
-    f"{PAYMENT_LINK_READY_SCREEN }\n\nID: {payment_id }",
-    reply_markup =pay_kb ,
+    payment_id =payment_id ,
+    confirmation_url =confirmation_url ,
+    variant =variant ,
+    message_id =getattr (sent ,"message_id",None ),
     )
 
 
@@ -654,7 +666,7 @@ async def _get_last_game10_payment_local (tg_id :int )->dict |None :
             row =await session .execute (
             select (YooKassaPayment )
             .where (YooKassaPayment .tg_id ==tg_id )
-            .where (YooKassaPayment .product .in_ (["game10","game10_test"]))
+            .where (YooKassaPayment .product =="game10")
             .order_by (YooKassaPayment .created_at .desc ())
             .limit (1 )
             )
@@ -1082,7 +1094,7 @@ async def main_menu (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     query =update .callback_query 
     await _answer (query )
     _reset_states (context )
-    await _show_screen (update ,context ,"рџ“‹ Р“Р»Р°РІРЅРѕРµ РјРµРЅСЋ",reply_markup =get_main_menu ())
+    await _show_main_menu_bottom (update ,context )
 
 
 async def show_contacts_request (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
@@ -1275,7 +1287,7 @@ async def handle_contact_phone_text (update :Update ,context :ContextTypes .DEFA
                 await _send_reply_keyboard_remove (update ,context )
                 _clear_payment_contact_flow (context )
                 await _show_screen (update ,context ,PAYMENT_CANCELLED_SCREEN ,reply_markup =get_back_to_menu_kb ())
-                await _show_screen (update ,context ,"Главное меню",reply_markup =get_main_menu ())
+                await _show_main_menu_bottom (update ,context )
             else :
                 await _request_payment_contact_screen (update ,context ,variant =_payment_variant_normalized (context .user_data .get (PAYMENT_VARIANT_KEY )))
             return
@@ -1287,7 +1299,7 @@ async def handle_contact_phone_text (update :Update ,context :ContextTypes .DEFA
             await _send_reply_keyboard_remove (update ,context )
             _clear_payment_contact_flow (context )
             await _show_screen (update ,context ,PAYMENT_CANCELLED_SCREEN ,reply_markup =get_back_to_menu_kb ())
-            await _show_screen (update ,context ,"Главное меню",reply_markup =get_main_menu ())
+            await _show_main_menu_bottom (update ,context )
             return
         normalized =re .sub (r"[^\\d+]","",text )
         if len (re .sub (r"\\D","",normalized ))<10 :
@@ -1333,7 +1345,7 @@ async def handle_contact_email_text (update :Update ,context :ContextTypes .DEFA
             await _send_reply_keyboard_remove (update ,context )
             _clear_payment_contact_flow (context )
             await _show_screen (update ,context ,PAYMENT_CANCELLED_SCREEN ,reply_markup =get_back_to_menu_kb ())
-            await _show_screen (update ,context ,"Главное меню",reply_markup =get_main_menu ())
+            await _show_main_menu_bottom (update ,context )
             return
         if not EMAIL_RE .match (email ):
             await _show_screen (update ,context ,"Некорректный email. Введите ещё раз или нажмите «Отмена».",reply_markup =get_payment_contact_choice_kb ())
@@ -1772,13 +1784,6 @@ async def private_channel_payment_info (update :Update ,context :ContextTypes .D
     await _run_game10_payment_create_flow (update ,context ,variant =PAYMENT_VARIANT_MAIN )
 
 
-async def game10_pay_test (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
-    query =update .callback_query
-    if query is None :
-        return
-    await _answer (query )
-    await _run_game10_payment_create_flow (update ,context ,variant =PAYMENT_VARIANT_TEST )
-
 
 async def game10_pay_refresh (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     query =update .callback_query
@@ -1787,13 +1792,6 @@ async def game10_pay_refresh (update :Update ,context :ContextTypes .DEFAULT_TYP
     await _answer (query )
     await _run_game10_payment_create_flow (update ,context ,variant =PAYMENT_VARIANT_MAIN ,refresh_hint =True )
 
-
-async def game10_pay_test_refresh (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
-    query =update .callback_query
-    if query is None :
-        return
-    await _answer (query )
-    await _run_game10_payment_create_flow (update ,context ,variant =PAYMENT_VARIANT_TEST ,refresh_hint =True )
 
 
 async def game10_pay_check (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
@@ -1864,7 +1862,7 @@ async def pay_contact_cancel (update :Update ,context :ContextTypes .DEFAULT_TYP
     await _send_reply_keyboard_remove (update ,context )
     _clear_payment_contact_flow (context )
     await _show_screen (update ,context ,PAYMENT_CANCELLED_SCREEN ,reply_markup =get_back_to_menu_kb ())
-    await _show_screen (update ,context ,"Главное меню",reply_markup =get_main_menu ())
+    await _show_main_menu_bottom (update ,context )
 
 
     # --------- Consultations / Gestalt ---------
@@ -2566,7 +2564,7 @@ async def event_pay (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
 async def menu_command (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     _reset_states (context )
     if update .effective_message :
-        await _show_screen (update ,context ,"\u0413\u043b\u0430\u0432\u043d\u043e\u0435 \u043c\u0435\u043d\u044e",reply_markup =get_main_menu ())
+        await _show_main_menu_bottom (update ,context )
 
 
 async def mark_paid_dev (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
@@ -2756,9 +2754,7 @@ def build_app ()->Application :
     app .add_handler (CallbackQueryHandler (show_private_channel ,pattern ="^private_channel$"))
     app .add_handler (CallbackQueryHandler (show_game10_description ,pattern ="^game10_description$"))
     app .add_handler (CallbackQueryHandler (private_channel_payment_info ,pattern ="^private_channel_payment_info$"))
-    app .add_handler (CallbackQueryHandler (game10_pay_test ,pattern ="^game10_pay_test$"))
     app .add_handler (CallbackQueryHandler (game10_pay_refresh ,pattern ="^game10_pay_refresh$"))
-    app .add_handler (CallbackQueryHandler (game10_pay_test_refresh ,pattern ="^game10_pay_test_refresh$"))
     app .add_handler (CallbackQueryHandler (game10_pay_check ,pattern ="^game10_pay_check:"))
     app .add_handler (CallbackQueryHandler (pay_contact_phone ,pattern ="^pay_contact_phone$"))
     app .add_handler (CallbackQueryHandler (pay_contact_email ,pattern ="^pay_contact_email$"))

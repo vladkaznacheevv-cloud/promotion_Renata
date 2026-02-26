@@ -16,6 +16,8 @@ from core.api.deps import get_db
 from core.crm.models import YooKassaPayment, YooKassaWebhookEvent
 from core.crm.service import CRMService
 from core.integrations.getcourse import GetCourseService
+from core.payments.models import Payment
+from core.users.models import User
 
 
 router = APIRouter()
@@ -150,9 +152,71 @@ async def _send_game10_already_member_message(*, tg_id: int) -> None:
     )
 
 
+async def _upsert_crm_game10_payment(*, db: AsyncSession, tg_id: int, payment_id: str) -> str:
+    """Mirror succeeded YooKassa payment into CRM payments table for revenue screens."""
+    payment_id = str(payment_id or "").strip()
+    if not payment_id:
+        return "no_payment_id"
+
+    yk_row = await db.execute(
+        select(YooKassaPayment)
+        .where(YooKassaPayment.payment_id == payment_id)
+        .limit(1)
+    )
+    yk_payment = yk_row.scalar_one_or_none()
+
+    user_row = await db.execute(
+        select(User).where(User.tg_id == int(tg_id)).limit(1)
+    )
+    user = user_row.scalar_one_or_none()
+    if user is None:
+        return "user_not_found"
+
+    amount_rub = int(getattr(yk_payment, "amount_rub", 0) or 5000)
+    status = str(getattr(yk_payment, "status", "succeeded") or "succeeded").strip().lower()
+
+    row = await db.execute(
+        select(Payment)
+        .where(Payment.external_id == payment_id)
+        .limit(1)
+    )
+    crm_payment = row.scalar_one_or_none()
+    now = datetime.now(timezone.utc)
+    if crm_payment is None:
+        crm_payment = Payment(
+            user_id=int(user.id),
+            amount=amount_rub,
+            status="paid",
+            provider="yookassa",
+            external_id=payment_id,
+            currency="RUB",
+            source="game10",
+            paid_at=now,
+            updated_at=now,
+        )
+        db.add(crm_payment)
+        await db.flush()
+        return "created"
+
+    crm_payment.user_id = int(user.id)
+    if amount_rub > 0:
+        crm_payment.amount = amount_rub
+    crm_payment.provider = crm_payment.provider or "yookassa"
+    crm_payment.external_id = payment_id
+    crm_payment.currency = crm_payment.currency or "RUB"
+    crm_payment.source = crm_payment.source or "game10"
+    crm_payment.status = "paid" if status in {"succeeded", "paid"} else (crm_payment.status or "paid")
+    crm_payment.updated_at = now
+    if crm_payment.paid_at is None:
+        crm_payment.paid_at = now
+    await db.flush()
+    return "updated"
+
+
 async def process_game10_payment_success(*, db: AsyncSession, payment_id: str, tg_id: int) -> dict[str, Any]:
     service = CRMService(db)
     await service.mark_private_channel_paid(int(tg_id), ensure_invite=False)
+    crm_payment_result = await _upsert_crm_game10_payment(db=db, tg_id=int(tg_id), payment_id=str(payment_id))
 
     channel_id = (os.getenv("TELEGRAM_PRIVATE_CHANNEL_ID") or "").strip()
     member_status = None
@@ -165,6 +229,7 @@ async def process_game10_payment_success(*, db: AsyncSession, payment_id: str, t
             "already_in_channel": True,
             "invite_sent": False,
             "member_status": member_status or "",
+            "crm_payment": crm_payment_result,
         }
 
     invite_link = await _create_game10_join_request_link(tg_id=int(tg_id), payment_id=str(payment_id))
@@ -174,6 +239,7 @@ async def process_game10_payment_success(*, db: AsyncSession, payment_id: str, t
         "already_in_channel": False,
         "invite_sent": bool(invite_link),
         "member_status": member_status or "",
+        "crm_payment": crm_payment_result,
     }
 
 
