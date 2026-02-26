@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from core.api.deps import get_db
+from core.api.webhooks import process_game10_payment_success
 from core.crm.models import YooKassaPayment
 from core.payments.models import Payment
 from core.payments.schemas import PaymentCreate, PaymentResponse
@@ -38,6 +39,18 @@ class Game10PaymentCreateOut(BaseModel):
     amount_rub: int
     is_reused: bool | None = None
     reuse_reason: str | None = None
+
+
+class YooKassaStatusCheckIn(BaseModel):
+    payment_id: str = Field(..., min_length=1, max_length=128)
+
+
+class YooKassaStatusCheckOut(BaseModel):
+    payment_id: str
+    status: str
+    processed_success: bool = False
+    already_in_channel: bool | None = None
+    result: str | None = None
 
 
 def _extract_internal_token(request: Request) -> str:
@@ -399,6 +412,66 @@ async def create_game10_test_payment(
         amount_rub=GAME10_TEST_PRICE_RUB,
         payment_description="Игра 10:0 (тестовый платеж)",
         receipt_item_description="Игра 10:0 — тестовый платеж",
+    )
+
+
+@router.post("/yookassa/status", response_model=YooKassaStatusCheckOut)
+async def check_yookassa_payment_status(
+    request: Request,
+    body: YooKassaStatusCheckIn,
+    db: AsyncSession = Depends(get_db),
+):
+    _require_bot_api_token(request)
+    payment_id = str(body.payment_id or "").strip()
+    if not payment_id:
+        raise HTTPException(status_code=422, detail="payment_id is required")
+
+    row = await db.execute(
+        select(YooKassaPayment).where(YooKassaPayment.payment_id == payment_id).limit(1)
+    )
+    payment = row.scalar_one_or_none()
+    if payment is None:
+        raise HTTPException(status_code=404, detail="payment not found")
+
+    remote_status = await _get_yookassa_payment_status(payment_id)
+    status = str(remote_status or payment.status or "unknown").strip().lower() or "unknown"
+    payment.status = status
+    if status == "succeeded" and payment.paid_at is None:
+        payment.paid_at = _utcnow()
+    await db.flush()
+
+    processed_success = False
+    already_in_channel: bool | None = None
+    result_label: str | None = None
+    if status == "succeeded" and int(payment.tg_id or 0) > 0:
+        success_result = await process_game10_payment_success(
+            db=db,
+            payment_id=payment_id,
+            tg_id=int(payment.tg_id),
+        )
+        processed_success = True
+        already_in_channel = bool(success_result.get("already_in_channel"))
+        result_label = str(success_result.get("result") or "")
+        logger.info(
+            "YooKassa status check processed: payment_id=%s tg_id=%s status=%s result=%s",
+            payment_id,
+            int(payment.tg_id),
+            status,
+            result_label or "-",
+        )
+    else:
+        logger.info(
+            "YooKassa status check: payment_id=%s status=%s",
+            payment_id,
+            status,
+        )
+
+    return YooKassaStatusCheckOut(
+        payment_id=payment_id,
+        status=status,
+        processed_success=processed_success,
+        already_in_channel=already_in_channel,
+        result=result_label,
     )
 
 

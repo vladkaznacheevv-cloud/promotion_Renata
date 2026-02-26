@@ -347,3 +347,52 @@ def test_reuse_lookup_is_separated_for_main_and_test_endpoints(monkeypatch):
     assert r_test.status_code == 200
     assert ("game10", 5000) in calls
     assert ("game10_test", 50) in calls
+
+
+def test_yookassa_status_endpoint_checks_remote_status_and_processes_success(monkeypatch):
+    monkeypatch.setenv("BOT_API_TOKEN", "bot-token")
+    payment_obj = SimpleNamespace(
+        payment_id="yk_status_1",
+        tg_id=123456,
+        status="pending",
+        paid_at=None,
+    )
+
+    class _ScalarPaymentResult:
+        def scalar_one_or_none(self):
+            return payment_obj
+
+    class _FakeDB:
+        async def execute(self, *args, **kwargs):
+            return _ScalarPaymentResult()
+
+        async def flush(self):
+            return None
+
+    fake_db = _FakeDB()
+    monkeypatch.setattr(payments_api, "_get_yookassa_payment_status", AsyncMock(return_value="succeeded"))
+    monkeypatch.setattr(
+        payments_api,
+        "process_game10_payment_success",
+        AsyncMock(return_value={"result": "invite_sent", "already_in_channel": False}),
+    )
+
+    async def _override_db():
+        yield fake_db
+
+    app = FastAPI()
+    app.include_router(payments_router, prefix="/api/payments")
+    app.dependency_overrides[get_db] = _override_db
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/payments/yookassa/status",
+        headers={"X-Bot-Api-Token": "bot-token"},
+        json={"payment_id": "yk_status_1"},
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["payment_id"] == "yk_status_1"
+    assert payload["status"] == "succeeded"
+    assert payload["processed_success"] is True
+    assert payload["result"] == "invite_sent"

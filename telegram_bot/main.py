@@ -84,6 +84,11 @@ logging .getLogger ("httpx").setLevel (logging .WARNING )
 logging .getLogger ("telegram").setLevel (logging .WARNING )
 logging .getLogger ("telegram.ext").setLevel (logging .WARNING )
 
+def _env_flag_enabled_default_true (name :str )->bool :
+    raw =str (os .getenv (name ,"true")or "").strip ().lower ()
+    return raw in {"1","true","yes","y","on"}
+
+
 BOT_TOKEN =os .getenv ("BOT_TOKEN")
 AI_API_KEY =os .getenv ("OPENROUTER_API_KEY")or os .getenv ("AI_API_KEY")
 ADMIN_CHAT_ID =os .getenv ("ADMIN_CHAT_ID")# опционально
@@ -93,7 +98,7 @@ CRM_API_TOKEN =(os .getenv ("CRM_API_TOKEN")or "").strip ()
 BOT_API_TOKEN =(os .getenv ("BOT_API_TOKEN")or "").strip ()
 YOOMONEY_PAY_URL_PLACEHOLDER =(os .getenv ("YOOMONEY_PAY_URL_PLACEHOLDER")or "").strip ()
 TELEGRAM_PRIVATE_CHANNEL_ID =(os .getenv ("TELEGRAM_PRIVATE_CHANNEL_ID")or "").strip ()
-GAME10_TEST_PAYMENT_ENABLED =str (os .getenv ("GAME10_TEST_PAYMENT_ENABLED")or "").strip ().lower ()in {"1","true","yes","on"}
+GAME10_TEST_PAYMENT_ENABLED =_env_flag_enabled_default_true ("GAME10_TEST_PAYMENT_ENABLED")
 
 # Services
 ai_service =AIService (api_key =AI_API_KEY )
@@ -120,6 +125,7 @@ PAYMENT_CONTACT_FLOW_KEY ="payment_contact_flow"
 PAYMENT_PENDING_ACTION_KEY ="payment_pending_action"
 PAYMENT_CONTACT_MODE_KEY ="payment_contact_mode"
 PAYMENT_VARIANT_KEY ="payment_variant"
+LAST_GAME10_PAYMENT_UI_KEY ="last_game10_payment_ui"
 PRODUCT_FOCUS_KEY ="product_focus"
 LAST_USER_ACTIVITY_TS_KEY ="last_user_activity_ts"
 LOCK_FILE_PATH =get_lock_path ()
@@ -138,14 +144,19 @@ AUTO_AI_REPLY_TIMESTAMPS_KEY ="auto_ai_reply_timestamps"
 AUTO_AI_RATE_LIMIT_WINDOW_SEC =12
 AUTO_AI_RATE_LIMIT_MAX =3
 
-PAYMENT_CREATING_SCREEN ="Создаю оплату..."
-PAYMENT_NEED_CONTACT_SCREEN ="Для оплаты нужен телефон или email (для чека).\n\nВыберите вариант:"
-PAYMENT_ASK_PHONE_SCREEN ="Поделитесь номером телефона.\nЭто нужно для отправки чека."
-PAYMENT_ASK_EMAIL_SCREEN ="Напишите email одним сообщением.\nЭто нужно для отправки чека."
-PAYMENT_CONTACT_SAVED_SCREEN ="Контакт получен. Формирую оплату..."
-PAYMENT_CANCELLED_SCREEN ="Ок. Оплату отменил."
-PAYMENT_LINK_READY_SCREEN ="Ссылка на оплату готова.\nОткройте оплату или отсканируйте QR."
-PAYMENT_EXPIRED_HINT ="Ссылка устарела. Создаю новую..."
+PAYMENT_CREATING_SCREEN ="?????? ??????..."
+PAYMENT_NEED_CONTACT_SCREEN ="??? ?????? ????? ??????? ??? email (??? ???????? ????). ???????? ???????."
+PAYMENT_ASK_PHONE_SCREEN ="?????????? ??????? ????????.\n??? ????? ??? ???????? ????."
+PAYMENT_ASK_EMAIL_SCREEN ="???????? email ????? ??????????.\n??? ????? ??? ???????? ????."
+PAYMENT_CONTACT_SAVED_SCREEN ="??????? ???????. ???????? ??????..."
+PAYMENT_CANCELLED_SCREEN ="??. ?????? ???????."
+PAYMENT_LINK_READY_SCREEN ="?????? ?? ?????? ??????.\n???????? ?????? ??? ???????????? QR."
+PAYMENT_EXPIRED_HINT ="?????? ????????. ?????? ?????..."
+PAYMENT_CHECKING_SCREEN ="Проверяю оплату..."
+PAYMENT_STATUS_PENDING_SCREEN ="Оплата пока не подтверждена. Попробуйте позже."
+PAYMENT_STATUS_CANCELED_SCREEN ="Платеж отменен или истек. Нажмите «Обновить ссылку»."
+PAYMENT_STATUS_CONFIRMED_SCREEN ="Оплата подтверждена. Нажмите «Вступить в канал»."
+PAYMENT_ALREADY_IN_CHANNEL_SCREEN ="Вы уже состоите в закрытом канале."
 PAYMENT_VARIANT_MAIN ="game10_main"
 PAYMENT_VARIANT_TEST ="game10_test"
 
@@ -307,16 +318,49 @@ def _is_admin_user_id (user_id :int |None )->bool :
 
 
 def _show_game10_test_payment_for_update (update :Update |None )->bool :
-    if GAME10_TEST_PAYMENT_ENABLED :
-        return True
-    user_id =update .effective_user .id if isinstance (update ,Update )and update .effective_user else None
-    return _is_admin_user_id (user_id )
+    return bool (GAME10_TEST_PAYMENT_ENABLED )
 
 
 def _game10_kb_for_update (update :Update )->InlineKeyboardMarkup :
     return get_game10_kb (
     _private_channel_payment_url (),
     show_test_payment =_show_game10_test_payment_for_update (update ),
+    )
+
+
+def _payment_check_callback_data (payment_id :str )->str |None :
+    value =str (payment_id or "").strip ()
+    if not value :
+        return None
+    callback =f"game10_pay_check:{value }"
+    if len (callback )>64:
+        return None
+    return callback
+
+
+def _store_last_game10_payment_ui_state (context :ContextTypes .DEFAULT_TYPE ,*,payment_id :str ,confirmation_url :str ,variant :str )->None :
+    context .user_data [LAST_GAME10_PAYMENT_UI_KEY ]={
+    "payment_id":str (payment_id or ""),
+    "confirmation_url":str (confirmation_url or ""),
+    "variant":_payment_variant_normalized (variant ),
+    }
+
+
+def _get_last_game10_payment_ui_kb (context :ContextTypes .DEFAULT_TYPE ,payment_id :str |None )->InlineKeyboardMarkup |None :
+    data =context .user_data .get (LAST_GAME10_PAYMENT_UI_KEY )
+    if not isinstance (data ,dict ):
+        return None
+    saved_payment_id =str (data .get ("payment_id")or "").strip ()
+    if payment_id and saved_payment_id and saved_payment_id !=str (payment_id ).strip ():
+        return None
+    confirmation_url =str (data .get ("confirmation_url")or "").strip ()
+    if not confirmation_url :
+        return None
+    variant =_payment_variant_normalized (str (data .get ("variant")or ""))
+    return get_game10_payment_link_kb (
+    confirmation_url ,
+    refresh_callback_data =_payment_variant_refresh_callback (variant ),
+    check_callback_data =_payment_check_callback_data (saved_payment_id ),
     )
 
 
@@ -362,6 +406,40 @@ async def _create_game10_payment_backend (tg_id :int ,*,variant :str =PAYMENT_VA
         return {"ok":False ,"detail":e .__class__ .__name__ }
 
 
+async def _check_game10_payment_status_backend (payment_id :str )->dict |None :
+    payment_id =str (payment_id or "").strip ()
+    if not payment_id or not CRM_API_BASE_URL :
+        return None
+    headers =_bot_api_auth_headers ()
+    if not headers :
+        logger .warning ("Game10 payment status backend token missing")
+        return None
+    try :
+        async with httpx .AsyncClient (timeout =20.0 )as client :
+            response =await client .post (
+            f"{CRM_API_BASE_URL }/api/payments/yookassa/status",
+            headers =headers ,
+            json ={"payment_id":payment_id },
+            )
+        if response .status_code !=200:
+            detail =response .text [:240 ]
+            try :
+                payload =response .json ()
+                if isinstance (payload ,dict )and payload .get ("detail")is not None :
+                    detail =str (payload .get ("detail"))
+            except Exception :
+                pass
+            return {"ok":False ,"status_code":response .status_code ,"detail":detail [:240 ]}
+        payload =response .json ()
+        if not isinstance (payload ,dict ):
+            return {"ok":False ,"detail":"invalid backend payload"}
+        payload ["ok"]=True
+        return payload
+    except Exception as e :
+        logger .warning ("Game10 payment status request failed: %s",e .__class__ .__name__ )
+        return {"ok":False ,"detail":e .__class__ .__name__ }
+
+
 async def _send_reply_keyboard_remove (update :Update ,context :ContextTypes .DEFAULT_TYPE )->None :
     chat =update .effective_chat
     if chat is None :
@@ -384,9 +462,16 @@ variant :str =PAYMENT_VARIANT_MAIN ,
     chat =update .effective_chat
     if chat is None :
         return
+    _store_last_game10_payment_ui_state (
+    context ,
+    payment_id =payment_id ,
+    confirmation_url =confirmation_url ,
+    variant =variant ,
+    )
     pay_kb =get_game10_payment_link_kb (
     confirmation_url ,
     refresh_callback_data =_payment_variant_refresh_callback (variant ),
+    check_callback_data =_payment_check_callback_data (payment_id ),
     )
     caption =(
     f"Оплатите {amount_rub} ₽. После оплаты доступ откроется автоматически.\n"
@@ -569,19 +654,28 @@ async def _get_last_game10_payment_local (tg_id :int )->dict |None :
             row =await session .execute (
             select (YooKassaPayment )
             .where (YooKassaPayment .tg_id ==tg_id )
-            .where (YooKassaPayment .product =="game10")
+            .where (YooKassaPayment .product .in_ (["game10","game10_test"]))
             .order_by (YooKassaPayment .created_at .desc ())
             .limit (1 )
             )
             item =row .scalar_one_or_none ()
+            user_row =await session .execute (
+            select (User .email ,User .phone )
+            .where (User .tg_id ==tg_id )
+            .limit (1 )
+            )
+            user_map =user_row .mappings ().first ()
             await session .commit ()
             if item is None :
                 return None
             return {
             "payment_id":str (item .payment_id or ""),
+            "product":str (item .product or ""),
             "status":str (item .status or ""),
             "created_at":item .created_at ,
             "paid_at":item .paid_at ,
+            "has_email":bool ((user_map or {}).get ("email")),
+            "has_phone":bool ((user_map or {}).get ("phone")),
             }
     except Exception as e :
         logger .warning ("Game10 payment debug lookup failed: %s",e .__class__ .__name__ )
@@ -1702,6 +1796,37 @@ async def game10_pay_test_refresh (update :Update ,context :ContextTypes .DEFAUL
     await _run_game10_payment_create_flow (update ,context ,variant =PAYMENT_VARIANT_TEST ,refresh_hint =True )
 
 
+async def game10_pay_check (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    query =update .callback_query
+    if query is None :
+        return
+    await _answer (query )
+    data =str (query .data or "")
+    payment_id =data .split (":",1 )[1 ].strip ()if ":" in data else ""
+    if not payment_id :
+        await _show_screen (update ,context ,"Не удалось определить платеж.",reply_markup =_game10_kb_for_update (update ))
+        return
+    await _show_screen (update ,context ,PAYMENT_CHECKING_SCREEN ,reply_markup =_get_last_game10_payment_ui_kb (context ,payment_id )or _game10_kb_for_update (update ))
+    result =await _check_game10_payment_status_backend (payment_id )
+    if not isinstance (result ,dict )or not result .get ("ok"):
+        await _show_screen (update ,context ,"Не удалось проверить оплату. Попробуйте позже.",reply_markup =_get_last_game10_payment_ui_kb (context ,payment_id )or _game10_kb_for_update (update ))
+        return
+    status =str (result .get ("status")or "").strip ().lower ()
+    if bool (result .get ("already_in_channel")):
+        await _show_screen (update ,context ,PAYMENT_ALREADY_IN_CHANNEL_SCREEN ,reply_markup =_game10_kb_for_update (update ))
+        return
+    if status =="succeeded":
+        await _show_screen (update ,context ,PAYMENT_STATUS_CONFIRMED_SCREEN ,reply_markup =_game10_kb_for_update (update ))
+        return
+    if status in {"pending","waiting_for_capture","created"}:
+        await _show_screen (update ,context ,PAYMENT_STATUS_PENDING_SCREEN ,reply_markup =_get_last_game10_payment_ui_kb (context ,payment_id )or _game10_kb_for_update (update ))
+        return
+    if status in {"canceled","cancelled"}:
+        await _show_screen (update ,context ,PAYMENT_STATUS_CANCELED_SCREEN ,reply_markup =_get_last_game10_payment_ui_kb (context ,payment_id )or _game10_kb_for_update (update ))
+        return
+    await _show_screen (update ,context ,f"Статус платежа: {status or 'unknown'}",reply_markup =_get_last_game10_payment_ui_kb (context ,payment_id )or _game10_kb_for_update (update ))
+
+
 async def pay_contact_phone (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     query =update .callback_query
     if query is None :
@@ -2551,8 +2676,11 @@ async def pay_debug (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     f"tg_id={tg_id}\n"
     f"private_channel_paid={is_paid}\n"
     f"last_payment_id={last_payment .get ('payment_id')or '-'}\n"
+    f"last_payment_variant={last_payment .get ('product')or '-'}\n"
     f"last_payment_status={last_payment .get ('status')or '-'}\n"
-    f"paid_at={last_payment .get ('paid_at')or '-'}"
+    f"paid_at={last_payment .get ('paid_at')or '-'}\n"
+    f"has_phone={bool (last_payment .get ('has_phone'))}\n"
+    f"has_email={bool (last_payment .get ('has_email'))}"
     ),
     )
 
@@ -2630,6 +2758,7 @@ def build_app ()->Application :
     app .add_handler (CallbackQueryHandler (game10_pay_test ,pattern ="^game10_pay_test$"))
     app .add_handler (CallbackQueryHandler (game10_pay_refresh ,pattern ="^game10_pay_refresh$"))
     app .add_handler (CallbackQueryHandler (game10_pay_test_refresh ,pattern ="^game10_pay_test_refresh$"))
+    app .add_handler (CallbackQueryHandler (game10_pay_check ,pattern ="^game10_pay_check:"))
     app .add_handler (CallbackQueryHandler (pay_contact_phone ,pattern ="^pay_contact_phone$"))
     app .add_handler (CallbackQueryHandler (pay_contact_email ,pattern ="^pay_contact_email$"))
     app .add_handler (CallbackQueryHandler (pay_contact_cancel ,pattern ="^pay_contact_cancel$"))

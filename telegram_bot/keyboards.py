@@ -149,21 +149,25 @@ def get_game10_description_kb():
 def get_payment_contact_choice_kb():
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("Поделиться телефоном", callback_data="pay_contact_phone")],
-            [InlineKeyboardButton("Ввести email", callback_data="pay_contact_email")],
-            [InlineKeyboardButton("Отмена", callback_data="pay_contact_cancel")],
+            [InlineKeyboardButton("?????????? ?????????", callback_data="pay_contact_phone")],
+            [InlineKeyboardButton("?????? email", callback_data="pay_contact_email")],
+            [InlineKeyboardButton("??????", callback_data="pay_contact_cancel")],
         ]
     )
 
 
-def get_game10_payment_link_kb(confirmation_url: str, *, refresh_callback_data: str = "game10_pay_refresh"):
-    return InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("Открыть оплату", url=confirmation_url)],
-            [InlineKeyboardButton("Обновить ссылку", callback_data=refresh_callback_data)],
-            [InlineKeyboardButton("В меню", callback_data="menu")],
-        ]
-    )
+def get_game10_payment_link_kb(
+    confirmation_url: str,
+    *,
+    refresh_callback_data: str = "game10_pay_refresh",
+    check_callback_data: str | None = None,
+):
+    rows = [[InlineKeyboardButton("??????? ??????", url=confirmation_url)]]
+    if check_callback_data:
+        rows.append([InlineKeyboardButton("????????? ??????", callback_data=check_callback_data)])
+    rows.append([InlineKeyboardButton("???????? ??????", callback_data=refresh_callback_data)])
+    rows.append([InlineKeyboardButton("? ????", callback_data="menu")])
+    return InlineKeyboardMarkup(rows)
 
 
 def get_ai_quick_actions_kb():

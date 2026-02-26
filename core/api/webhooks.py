@@ -111,14 +111,26 @@ async def _create_game10_join_request_link(*, tg_id: int, payment_id: str) -> st
     return invite_link or None
 
 
+async def _get_chat_member_status(*, chat_id: str | int, user_id: int) -> str | None:
+    result = await _telegram_api_post("getChatMember", {"chat_id": chat_id, "user_id": int(user_id)})
+    if not result:
+        return None
+    status = str(result.get("status") or "").strip().lower()
+    return status or None
+
+
+def _is_active_channel_member_status(status: str | None) -> bool:
+    return str(status or "").strip().lower() in {"member", "administrator", "creator"}
+
+
 async def _send_game10_paid_message(*, tg_id: int, invite_link: str | None) -> None:
     reply_markup = None
-    text = "✅ Оплата прошла. Доступ к закрытому каналу открыт."
+    text = "Оплата прошла. Доступ к закрытому каналу открыт."
     if invite_link:
         reply_markup = {
             "inline_keyboard": [[{"text": "Вступить в канал", "url": invite_link}]],
         }
-        text = "✅ Оплата прошла. Нажмите «Вступить в канал»."
+        text = "Оплата подтверждена. Нажмите «Вступить в канал»."
     payload = {
         "chat_id": tg_id,
         "text": text,
@@ -126,6 +138,43 @@ async def _send_game10_paid_message(*, tg_id: int, invite_link: str | None) -> N
     if reply_markup is not None:
         payload["reply_markup"] = reply_markup
     await _telegram_api_post("sendMessage", payload)
+
+
+async def _send_game10_already_member_message(*, tg_id: int) -> None:
+    await _telegram_api_post(
+        "sendMessage",
+        {
+            "chat_id": tg_id,
+            "text": "Вы уже состоите в закрытом канале.",
+        },
+    )
+
+
+async def process_game10_payment_success(*, db: AsyncSession, payment_id: str, tg_id: int) -> dict[str, Any]:
+    service = CRMService(db)
+    await service.mark_private_channel_paid(int(tg_id), ensure_invite=False)
+
+    channel_id = (os.getenv("TELEGRAM_PRIVATE_CHANNEL_ID") or "").strip()
+    member_status = None
+    if channel_id:
+        member_status = await _get_chat_member_status(chat_id=channel_id, user_id=int(tg_id))
+    if _is_active_channel_member_status(member_status):
+        await _send_game10_already_member_message(tg_id=int(tg_id))
+        return {
+            "result": "already_member",
+            "already_in_channel": True,
+            "invite_sent": False,
+            "member_status": member_status or "",
+        }
+
+    invite_link = await _create_game10_join_request_link(tg_id=int(tg_id), payment_id=str(payment_id))
+    await _send_game10_paid_message(tg_id=int(tg_id), invite_link=invite_link)
+    return {
+        "result": "invite_sent" if invite_link else "paid_notified_no_invite",
+        "already_in_channel": False,
+        "invite_sent": bool(invite_link),
+        "member_status": member_status or "",
+    }
 
 
 @router.post("/getcourse")
@@ -223,13 +272,12 @@ async def yookassa_webhook(
     if event_type == "payment.succeeded":
         target_tg_id = int(payment.tg_id) if payment is not None else (tg_id_value or 0)
         if target_tg_id > 0:
-            logger.info("YooKassa payment succeeded: payment_id=%s tg_id=%s", payment_id, target_tg_id)
-            service = CRMService(db)
-            await service.mark_private_channel_paid(target_tg_id, ensure_invite=False)
-            invite_link = await _create_game10_join_request_link(
-                tg_id=target_tg_id,
-                payment_id=payment_id,
+            result = await process_game10_payment_success(db=db, payment_id=payment_id, tg_id=target_tg_id)
+            logger.info(
+                "YooKassa payment succeeded: payment_id=%s tg_id=%s result=%s",
+                payment_id,
+                target_tg_id,
+                result.get("result"),
             )
-            await _send_game10_paid_message(tg_id=target_tg_id, invite_link=invite_link)
 
     return {"ok": True}
