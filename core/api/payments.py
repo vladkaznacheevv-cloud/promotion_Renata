@@ -23,6 +23,9 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 GAME10_PRICE_RUB = 5000
+GAME10_TEST_PRICE_RUB = 50
+GAME10_PRODUCT = "game10"
+GAME10_TEST_PRODUCT = "game10_test"
 
 
 class Game10PaymentCreateIn(BaseModel):
@@ -109,7 +112,13 @@ def _normalize_phone_for_receipt(value: str | None) -> str | None:
     return phone or None
 
 
-def _build_yookassa_receipt(*, email: str | None, phone: str | None, amount_rub: int) -> dict:
+def _build_yookassa_receipt(
+    *,
+    email: str | None,
+    phone: str | None,
+    amount_rub: int,
+    item_description: str | None = None,
+) -> dict:
     customer: dict[str, str] = {}
     email_value = (str(email).strip() if email else "") or None
     phone_value = _normalize_phone_for_receipt(phone)
@@ -122,7 +131,7 @@ def _build_yookassa_receipt(*, email: str | None, phone: str | None, amount_rub:
         "tax_system_code": _int_env("YOOKASSA_TAX_SYSTEM_CODE", 2),
         "items": [
             {
-                "description": "Игра 10:0 — доступ в закрытое сообщество",
+                "description": str(item_description or "Игра 10:0 — доступ в закрытое сообщество"),
                 "quantity": "1.00",
                 "amount": {"value": f"{amount_rub:.2f}", "currency": "RUB"},
                 "vat_code": _int_env("YOOKASSA_VAT_CODE", 1),
@@ -147,7 +156,16 @@ async def _get_receipt_customer_contact(db: AsyncSession, *, tg_id: int) -> tupl
     return email, phone
 
 
-async def _create_yookassa_payment(*, tg_id: int, customer_email: str | None, customer_phone: str | None) -> dict:
+async def _create_yookassa_payment(
+    *,
+    tg_id: int,
+    customer_email: str | None,
+    customer_phone: str | None,
+    amount_rub: int = GAME10_PRICE_RUB,
+    product_code: str = GAME10_PRODUCT,
+    payment_description: str | None = None,
+    receipt_item_description: str | None = None,
+) -> dict:
     shop_id = (os.getenv("YOOKASSA_SHOP_ID") or "").strip()
     secret_key = (os.getenv("YOOKASSA_SECRET_KEY") or "").strip()
     if not shop_id or not secret_key:
@@ -155,15 +173,16 @@ async def _create_yookassa_payment(*, tg_id: int, customer_email: str | None, cu
 
     idempotence_key = uuid4().hex
     request_body = {
-        "amount": {"value": f"{GAME10_PRICE_RUB:.2f}", "currency": "RUB"},
+        "amount": {"value": f"{amount_rub:.2f}", "currency": "RUB"},
         "capture": True,
         "confirmation": {"type": "redirect", "return_url": _public_return_url()},
-        "description": "Игра 10:0 (доступ в закрытый канал)",
-        "metadata": {"tg_id": str(tg_id), "product": "game10"},
+        "description": str(payment_description or "Игра 10:0 (доступ в закрытый канал)"),
+        "metadata": {"tg_id": str(tg_id), "product": str(product_code)},
         "receipt": _build_yookassa_receipt(
             email=customer_email,
             phone=customer_phone,
-            amount_rub=GAME10_PRICE_RUB,
+            amount_rub=amount_rub,
+            item_description=receipt_item_description,
         ),
     }
     notification_url = _yookassa_notification_url()
@@ -239,43 +258,66 @@ async def _should_reuse_existing_game10_payment(existing: YooKassaPayment | None
     return True, "fresh"
 
 
-@router.post("/game10/create", response_model=Game10PaymentCreateOut)
-async def create_game10_payment(
-    request: Request,
-    body: Optional[Game10PaymentCreateIn] = Body(default=None),
-    tg_id: Optional[int] = Query(default=None, ge=1),
-    db: AsyncSession = Depends(get_db),
-):
-    _require_bot_api_token(request)
-    target_tg_id = int(tg_id or (body.tg_id if body is not None else 0))
-    if target_tg_id <= 0:
-        raise HTTPException(status_code=422, detail="tg_id is required")
-
+async def _get_last_pending_game10_payment(
+    db: AsyncSession,
+    *,
+    tg_id: int,
+    product_code: str,
+    amount_rub: int,
+) -> YooKassaPayment | None:
     existing_row = await db.execute(
         select(YooKassaPayment)
-        .where(YooKassaPayment.tg_id == target_tg_id)
-        .where(YooKassaPayment.product == "game10")
+        .where(YooKassaPayment.tg_id == tg_id)
+        .where(YooKassaPayment.product == str(product_code))
+        .where(YooKassaPayment.amount_rub == int(amount_rub))
         .where(YooKassaPayment.status.in_(["pending", "waiting_for_capture", "created"]))
         .where(YooKassaPayment.confirmation_url.is_not(None))
         .order_by(YooKassaPayment.id.desc())
         .limit(1)
     )
-    existing = existing_row.scalar_one_or_none()
+    return existing_row.scalar_one_or_none()
+
+
+async def _create_game10_payment_common(
+    *,
+    request: Request,
+    body: Optional[Game10PaymentCreateIn],
+    tg_id: Optional[int],
+    db: AsyncSession,
+    product_code: str,
+    amount_rub: int,
+    payment_description: str,
+    receipt_item_description: str,
+) -> Game10PaymentCreateOut:
+    _require_bot_api_token(request)
+    target_tg_id = int(tg_id or (body.tg_id if body is not None else 0))
+    if target_tg_id <= 0:
+        raise HTTPException(status_code=422, detail="tg_id is required")
+
+    existing = await _get_last_pending_game10_payment(
+        db,
+        tg_id=target_tg_id,
+        product_code=product_code,
+        amount_rub=amount_rub,
+    )
     can_reuse, reuse_reason = await _should_reuse_existing_game10_payment(existing)
     if can_reuse and existing and existing.payment_id and existing.confirmation_url:
         return Game10PaymentCreateOut(
             payment_id=str(existing.payment_id),
             confirmation_url=str(existing.confirmation_url),
-            amount_rub=int(existing.amount_rub or GAME10_PRICE_RUB),
+            amount_rub=int(existing.amount_rub or amount_rub),
             is_reused=True,
             reuse_reason=reuse_reason,
         )
 
     email, phone = await _get_receipt_customer_contact(db, tg_id=target_tg_id)
     logger.info(
-        "Game10 YooKassa receipt contacts: has_email=%s has_phone=%s",
+        "Game10 YooKassa receipt contacts: tg_id=%s has_email=%s has_phone=%s amount_rub=%s product=%s",
+        target_tg_id,
         bool(email),
         bool(phone),
+        amount_rub,
+        product_code,
     )
     if not email and not phone:
         raise HTTPException(
@@ -287,19 +329,25 @@ async def create_game10_payment(
         tg_id=target_tg_id,
         customer_email=email,
         customer_phone=phone,
+        amount_rub=amount_rub,
+        product_code=product_code,
+        payment_description=payment_description,
+        receipt_item_description=receipt_item_description,
     )
     logger.info(
-        "Game10 YooKassa payment created: tg_id=%s payment_id=%s status=%s has_email=%s has_phone=%s",
+        "Game10 YooKassa payment created: tg_id=%s payment_id=%s status=%s has_email=%s has_phone=%s amount_rub=%s product=%s",
         target_tg_id,
         created.get("payment_id"),
         created.get("status"),
         bool(email),
         bool(phone),
+        amount_rub,
+        product_code,
     )
     record = YooKassaPayment(
         tg_id=target_tg_id,
-        product="game10",
-        amount_rub=GAME10_PRICE_RUB,
+        product=product_code,
+        amount_rub=amount_rub,
         payment_id=created["payment_id"],
         idempotence_key=created["idempotence_key"],
         status=created["status"] or "pending",
@@ -310,9 +358,47 @@ async def create_game10_payment(
     return Game10PaymentCreateOut(
         payment_id=created["payment_id"],
         confirmation_url=created["confirmation_url"],
-        amount_rub=GAME10_PRICE_RUB,
+        amount_rub=amount_rub,
         is_reused=False,
         reuse_reason=("new" if reuse_reason in {"missing_existing", "fresh"} else reuse_reason),
+    )
+
+
+@router.post("/game10/create", response_model=Game10PaymentCreateOut)
+async def create_game10_payment(
+    request: Request,
+    body: Optional[Game10PaymentCreateIn] = Body(default=None),
+    tg_id: Optional[int] = Query(default=None, ge=1),
+    db: AsyncSession = Depends(get_db),
+):
+    return await _create_game10_payment_common(
+        request=request,
+        body=body,
+        tg_id=tg_id,
+        db=db,
+        product_code=GAME10_PRODUCT,
+        amount_rub=GAME10_PRICE_RUB,
+        payment_description="Игра 10:0 (доступ в закрытый канал)",
+        receipt_item_description="Игра 10:0 — доступ в закрытое сообщество",
+    )
+
+
+@router.post("/game10/test/create", response_model=Game10PaymentCreateOut)
+async def create_game10_test_payment(
+    request: Request,
+    body: Optional[Game10PaymentCreateIn] = Body(default=None),
+    tg_id: Optional[int] = Query(default=None, ge=1),
+    db: AsyncSession = Depends(get_db),
+):
+    return await _create_game10_payment_common(
+        request=request,
+        body=body,
+        tg_id=tg_id,
+        db=db,
+        product_code=GAME10_TEST_PRODUCT,
+        amount_rub=GAME10_TEST_PRICE_RUB,
+        payment_description="Игра 10:0 (тестовый платеж)",
+        receipt_item_description="Игра 10:0 — тестовый платеж",
     )
 
 

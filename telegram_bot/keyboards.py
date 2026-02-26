@@ -126,12 +126,14 @@ def get_private_channel_paid_kb(invite_url: str | None = None):
     return InlineKeyboardMarkup(buttons)
 
 
-def get_game10_kb(payment_url: str | None = None):
+def get_game10_kb(payment_url: str | None = None, *, show_test_payment: bool = False):
     rows = []
     if payment_url and payment_url.startswith(("http://", "https://")):
         rows.append([InlineKeyboardButton("Оплатить 5 000 ₽", url=payment_url)])
     else:
         rows.append([InlineKeyboardButton("Оплатить 5 000 ₽", callback_data="private_channel_payment_info")])
+    if show_test_payment:
+        rows.append([InlineKeyboardButton("Тестовая оплата 50 ₽", callback_data="game10_pay_test")])
     rows.append([InlineKeyboardButton("Описание программы", callback_data="game10_description")])
     rows.append([InlineKeyboardButton("Вопросы к ассистенту", callback_data="game10_questions")])
     rows.append([InlineKeyboardButton("В меню", callback_data="menu")])
@@ -154,11 +156,11 @@ def get_payment_contact_choice_kb():
     )
 
 
-def get_game10_payment_link_kb(confirmation_url: str):
+def get_game10_payment_link_kb(confirmation_url: str, *, refresh_callback_data: str = "game10_pay_refresh"):
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("Открыть оплату", url=confirmation_url)],
-            [InlineKeyboardButton("Обновить ссылку", callback_data="game10_pay_refresh")],
+            [InlineKeyboardButton("Обновить ссылку", callback_data=refresh_callback_data)],
             [InlineKeyboardButton("В меню", callback_data="menu")],
         ]
     )
