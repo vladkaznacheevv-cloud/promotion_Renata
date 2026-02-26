@@ -11,12 +11,12 @@ GETCOURSE_CABINET_URL = "https://renataminakova.getcourse.ru"
 
 def get_main_menu():
     keyboard = [
-        [InlineKeyboardButton("Мероприятия", callback_data="events")],
-        [InlineKeyboardButton("Онлайн-курсы", callback_data="courses")],
-        [InlineKeyboardButton("«Игра 10:0»", callback_data="private_channel")],
-        [InlineKeyboardButton("Консультации", callback_data="consultations")],
-        [InlineKeyboardButton("Связаться с менеджером", callback_data="contact_manager")],
-        [InlineKeyboardButton("Помощь", callback_data="help")],
+        [InlineKeyboardButton("\u00ab\u0418\u0433\u0440\u0430 10:0\u00bb", callback_data="private_channel")],
+        [InlineKeyboardButton("\u041c\u0435\u0440\u043e\u043f\u0440\u0438\u044f\u0442\u0438\u044f", callback_data="events")],
+        [InlineKeyboardButton("\u041e\u043d\u043b\u0430\u0439\u043d-\u043a\u0443\u0440\u0441\u044b", callback_data="courses")],
+        [InlineKeyboardButton("\u041a\u043e\u043d\u0441\u0443\u043b\u044c\u0442\u0430\u0446\u0438\u0438", callback_data="consultations")],
+        [InlineKeyboardButton("\u0421\u0432\u044f\u0437\u0430\u0442\u044c\u0441\u044f \u0441 \u043c\u0435\u043d\u0435\u0434\u0436\u0435\u0440\u043e\u043c", callback_data="contact_manager")],
+        [InlineKeyboardButton("\u041f\u043e\u043c\u043e\u0449\u044c", callback_data="help")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
