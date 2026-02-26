@@ -53,6 +53,8 @@ get_retry_kb ,
 get_private_channel_pending_kb ,
 get_private_channel_paid_kb ,
 get_game10_kb ,
+get_payment_contact_choice_kb ,
+get_game10_payment_link_kb ,
 get_ai_quick_actions_kb ,
 )
 from telegram_bot .text_utils import normalize_text_for_telegram ,looks_like_mojibake 
@@ -112,6 +114,9 @@ CONTACT_FLOW_KEY ="contact_flow"
 PENDING_CONTACTS_KEY ="pending_contacts"
 PENDING_EVENT_ACTIONS_KEY ="pending_event_actions"
 SKIP_NEXT_EMAIL_KEY ="skip_next_email"
+PAYMENT_CONTACT_FLOW_KEY ="payment_contact_flow"
+PAYMENT_PENDING_ACTION_KEY ="payment_pending_action"
+PAYMENT_CONTACT_MODE_KEY ="payment_contact_mode"
 PRODUCT_FOCUS_KEY ="product_focus"
 LAST_USER_ACTIVITY_TS_KEY ="last_user_activity_ts"
 LOCK_FILE_PATH =get_lock_path ()
@@ -129,6 +134,15 @@ SCREEN_EVENT_ID_KEY ="screen_event_id"
 AUTO_AI_REPLY_TIMESTAMPS_KEY ="auto_ai_reply_timestamps"
 AUTO_AI_RATE_LIMIT_WINDOW_SEC =12
 AUTO_AI_RATE_LIMIT_MAX =3
+
+PAYMENT_CREATING_SCREEN ="Создаю оплату..."
+PAYMENT_NEED_CONTACT_SCREEN ="Для оплаты нужен телефон или email (для чека).\n\nВыберите вариант:"
+PAYMENT_ASK_PHONE_SCREEN ="Поделитесь номером телефона.\nЭто нужно для отправки чека."
+PAYMENT_ASK_EMAIL_SCREEN ="Напишите email одним сообщением.\nЭто нужно для отправки чека."
+PAYMENT_CONTACT_SAVED_SCREEN ="Контакт получен. Формирую оплату..."
+PAYMENT_CANCELLED_SCREEN ="Ок. Оплату отменил."
+PAYMENT_LINK_READY_SCREEN ="Ссылка на оплату готова.\nОткройте оплату или отсканируйте QR."
+PAYMENT_EXPIRED_HINT ="Ссылка устарела. Создаю новую..."
 
 
 def _instance_meta ()->dict [str ,str ]:
@@ -248,6 +262,27 @@ def _bot_api_auth_headers ()->dict [str ,str ]:
     return {"X-Bot-Api-Token":token }
 
 
+def _clear_payment_contact_flow (context :ContextTypes .DEFAULT_TYPE )->None :
+    context .user_data .pop (PAYMENT_CONTACT_FLOW_KEY ,None )
+    context .user_data .pop (PAYMENT_PENDING_ACTION_KEY ,None )
+    context .user_data .pop (PAYMENT_CONTACT_MODE_KEY ,None )
+
+
+def _start_payment_contact_flow_state (context :ContextTypes .DEFAULT_TYPE )->None :
+    context .user_data [PAYMENT_CONTACT_FLOW_KEY ]=True
+    context .user_data [PAYMENT_PENDING_ACTION_KEY ]="game10_payment"
+    context .user_data .pop (PAYMENT_CONTACT_MODE_KEY ,None )
+
+
+def _payment_backend_need_contact (result :dict |None )->bool :
+    if not isinstance (result ,dict ):
+        return False
+    if int (result .get ("status_code")or 0 )!=400:
+        return False
+    detail =str (result .get ("detail")or "").lower ()
+    return "email" in detail and ("телефон" in detail or "phone" in detail)
+
+
 async def _create_game10_payment_backend (tg_id :int )->dict |None :
     if not CRM_API_BASE_URL :
         return None
@@ -263,7 +298,14 @@ async def _create_game10_payment_backend (tg_id :int )->dict |None :
             json ={"tg_id":int (tg_id )},
             )
         if response .status_code !=200 :
-            return {"ok":False ,"status_code":response .status_code ,"detail":response .text [:240 ]}
+            detail =response .text [:240 ]
+            try :
+                payload =response .json ()
+                if isinstance (payload ,dict )and payload .get ("detail")is not None :
+                    detail =str (payload .get ("detail"))
+            except Exception :
+                pass
+            return {"ok":False ,"status_code":response .status_code ,"detail":detail [:240 ]}
         payload =response .json ()
         if not isinstance (payload ,dict ):
             return {"ok":False ,"detail":"invalid backend payload"}
@@ -272,6 +314,105 @@ async def _create_game10_payment_backend (tg_id :int )->dict |None :
     except Exception as e :
         logger .warning ("Game10 payment create request failed: %s",e .__class__ .__name__ )
         return {"ok":False ,"detail":e .__class__ .__name__ }
+
+
+async def _send_reply_keyboard_remove (update :Update ,context :ContextTypes .DEFAULT_TYPE )->None :
+    chat =update .effective_chat
+    if chat is None :
+        return
+    try :
+        await _send (context .bot ,chat_id =chat .id ,text ="\u200b",reply_markup =get_remove_reply_kb ())
+    except Exception :
+        return
+
+
+async def _send_game10_payment_qr_and_screen (
+update :Update ,
+context :ContextTypes .DEFAULT_TYPE ,
+*,
+confirmation_url :str ,
+payment_id :str ,
+amount_rub :int ,
+)->None :
+    chat =update .effective_chat
+    if chat is None :
+        return
+    pay_kb =get_game10_payment_link_kb (confirmation_url )
+    caption =(
+    f"Оплатите {amount_rub} ₽. После оплаты доступ откроется автоматически.\n"
+    "После оплаты бот пришлёт кнопку для вступления в закрытый канал."
+    )
+    qr =_build_qr_png (confirmation_url )
+    if qr is not None :
+        await _send_photo (context .bot ,chat .id ,qr ,caption =caption ,reply_markup =pay_kb )
+    else :
+        await _send (context .bot ,chat_id =chat .id ,text =caption ,reply_markup =pay_kb )
+    await _show_screen (
+    update ,
+    context ,
+    f"{PAYMENT_LINK_READY_SCREEN }\n\nID: {payment_id }",
+    reply_markup =pay_kb ,
+    )
+
+
+async def _request_payment_contact_screen (update :Update ,context :ContextTypes .DEFAULT_TYPE )->None :
+    _start_payment_contact_flow_state (context )
+    await _show_screen (
+    update ,
+    context ,
+    PAYMENT_NEED_CONTACT_SCREEN ,
+    reply_markup =get_payment_contact_choice_kb (),
+    )
+
+
+async def _run_game10_payment_create_flow (
+update :Update ,
+context :ContextTypes .DEFAULT_TYPE ,
+*,
+refresh_hint :bool =False ,
+)->None :
+    user =update .effective_user
+    if user is None :
+        return
+    await _show_screen (
+    update ,
+    context ,
+    PAYMENT_EXPIRED_HINT if refresh_hint else PAYMENT_CREATING_SCREEN ,
+    reply_markup =get_game10_kb (_private_channel_payment_url ()),
+    )
+    result =await _create_game10_payment_backend (user .id )
+    if not isinstance (result ,dict )or not result .get ("ok"):
+        if _payment_backend_need_contact (result ):
+            await _request_payment_contact_screen (update ,context )
+            return
+        _clear_payment_contact_flow (context )
+        await _show_screen (
+        update ,
+        context ,
+        "Сейчас не удалось создать платёж. Попробуйте ещё раз через минуту или нажмите «Связаться с менеджером».",
+        reply_markup =get_game10_kb (_private_channel_payment_url ()),
+        )
+        return
+    _clear_payment_contact_flow (context )
+    confirmation_url =str (result .get ("confirmation_url")or "").strip ()
+    payment_id =str (result .get ("payment_id")or "").strip ()
+    amount_rub =int (result .get ("amount_rub")or 5000 )
+    if not confirmation_url :
+        _clear_payment_contact_flow (context )
+        await _show_screen (
+        update ,
+        context ,
+        "Платёж создан, но ссылка оплаты не получена. Нажмите «Связаться с менеджером».",
+        reply_markup =get_game10_kb (_private_channel_payment_url ()),
+        )
+        return
+    await _send_game10_payment_qr_and_screen (
+    update ,
+    context ,
+    confirmation_url =confirmation_url ,
+    payment_id =payment_id ,
+    amount_rub =amount_rub ,
+    )
 
 
 def _build_qr_png (value :str )->BytesIO |None :
@@ -496,6 +637,7 @@ def _reset_states (context :ContextTypes .DEFAULT_TYPE ):
     context .user_data .pop (CONTACT_FLOW_KEY ,None )
     context .user_data .pop (CONTACT_PHONE_KEY ,None )
     context .user_data .pop (SKIP_NEXT_EMAIL_KEY ,None )
+    _clear_payment_contact_flow (context )
     context .user_data .pop (PRODUCT_FOCUS_KEY ,None )
 
 
@@ -712,6 +854,8 @@ async def ensure_user_on_message (update :Update ,context :ContextTypes .DEFAULT
         return
     if context .user_data .get (WAITING_CONTACT_PHONE_KEY )or context .user_data .get (WAITING_CONTACT_EMAIL_KEY ):
         return
+    if context .user_data .get (PAYMENT_CONTACT_FLOW_KEY ):
+        return
     if not classify_update_need_db (update ,context ):
         logger .debug ("DB guard skipped for navigation message update")
         return
@@ -872,6 +1016,18 @@ async def _save_contact_field (update :Update ,context :ContextTypes .DEFAULT_TY
 async def handle_contact_phone (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     if not update .message or not update .message .contact :
         return 
+    if context .user_data .get (PAYMENT_CONTACT_FLOW_KEY ):
+        contact =update .message .contact
+        phone =(contact .phone_number or "").strip ()
+        if not phone :
+            await _show_screen (update ,context ,"Не удалось прочитать номер. Отправьте контакт ещё раз.",reply_markup =get_payment_contact_choice_kb ())
+            return
+        if not await _save_contact_field (update ,context ,phone =phone ):
+            return
+        await _send_reply_keyboard_remove (update ,context )
+        await _show_screen (update ,context ,PAYMENT_CONTACT_SAVED_SCREEN ,reply_markup =get_back_to_menu_kb ())
+        await _run_game10_payment_create_flow (update ,context )
+        return
 
     waiting_phone =bool (context .user_data .get (WAITING_CONTACT_PHONE_KEY ))
     if not waiting_phone :
@@ -901,6 +1057,42 @@ async def handle_contact_phone (update :Update ,context :ContextTypes .DEFAULT_T
 
 
 async def handle_contact_phone_text (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    if context .user_data .get (PAYMENT_CONTACT_FLOW_KEY ):
+        payment_mode =str (context .user_data .get (PAYMENT_CONTACT_MODE_KEY )or "")
+        if payment_mode == "email":
+            return
+        if not update .message or not update .message .text :
+            return
+        if payment_mode != "phone":
+            text =(update .message .text or "").strip ()
+            if text .lower ()=="отмена":
+                await _send_reply_keyboard_remove (update ,context )
+                _clear_payment_contact_flow (context )
+                await _show_screen (update ,context ,PAYMENT_CANCELLED_SCREEN ,reply_markup =get_back_to_menu_kb ())
+                await _show_screen (update ,context ,"Главное меню",reply_markup =get_main_menu ())
+            else :
+                await _request_payment_contact_screen (update ,context )
+            return
+    if context .user_data .get (PAYMENT_CONTACT_FLOW_KEY )and str (context .user_data .get (PAYMENT_CONTACT_MODE_KEY )or "")=="phone":
+        if not update .message or not update .message .text :
+            return
+        text =(update .message .text or "").strip ()
+        if text .lower ()=="отмена":
+            await _send_reply_keyboard_remove (update ,context )
+            _clear_payment_contact_flow (context )
+            await _show_screen (update ,context ,PAYMENT_CANCELLED_SCREEN ,reply_markup =get_back_to_menu_kb ())
+            await _show_screen (update ,context ,"Главное меню",reply_markup =get_main_menu ())
+            return
+        normalized =re .sub (r"[^\\d+]","",text )
+        if len (re .sub (r"\\D","",normalized ))<10 :
+            await _show_screen (update ,context ,"Номер выглядит некорректно. Нажмите кнопку отправки контакта или введите номер ещё раз.",reply_markup =get_payment_contact_choice_kb ())
+            return
+        if not await _save_contact_field (update ,context ,phone =normalized ):
+            return
+        await _send_reply_keyboard_remove (update ,context )
+        await _show_screen (update ,context ,PAYMENT_CONTACT_SAVED_SCREEN ,reply_markup =get_back_to_menu_kb ())
+        await _run_game10_payment_create_flow (update ,context )
+        return
     if not context .user_data .get (WAITING_CONTACT_PHONE_KEY ):
         return 
     if not update .message or not update .message .text :
@@ -927,6 +1119,25 @@ async def handle_contact_phone_text (update :Update ,context :ContextTypes .DEFA
 
 
 async def handle_contact_email_text (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    if context .user_data .get (PAYMENT_CONTACT_FLOW_KEY )and str (context .user_data .get (PAYMENT_CONTACT_MODE_KEY )or "")=="email":
+        if not update .message or not update .message .text :
+            return
+        email =(update .message .text or "").strip ().lower ()
+        if email =="отмена":
+            await _send_reply_keyboard_remove (update ,context )
+            _clear_payment_contact_flow (context )
+            await _show_screen (update ,context ,PAYMENT_CANCELLED_SCREEN ,reply_markup =get_back_to_menu_kb ())
+            await _show_screen (update ,context ,"Главное меню",reply_markup =get_main_menu ())
+            return
+        if not EMAIL_RE .match (email ):
+            await _show_screen (update ,context ,"Некорректный email. Введите ещё раз или нажмите «Отмена».",reply_markup =get_payment_contact_choice_kb ())
+            return
+        if not await _save_contact_field (update ,context ,email =email ):
+            return
+        await _send_reply_keyboard_remove (update ,context )
+        await _show_screen (update ,context ,PAYMENT_CONTACT_SAVED_SCREEN ,reply_markup =get_back_to_menu_kb ())
+        await _run_game10_payment_create_flow (update ,context )
+        return
     if context .user_data .pop (SKIP_NEXT_EMAIL_KEY ,False ):
         return 
     if not update .message or not update .message .text :
@@ -1336,59 +1547,58 @@ async def show_private_channel (update :Update ,context :ContextTypes .DEFAULT_T
 
 
 async def private_channel_payment_info (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
-    query =update .callback_query 
+    query =update .callback_query
     if query is None :
-        return 
+        return
     await _answer (query )
-    user =update .effective_user 
-    chat =update .effective_chat 
-    if user is None or chat is None :
-        return 
-    await _show_screen (
-    update ,
-    context ,
-    "Создаю платёж…",
-    reply_markup =get_game10_kb (_private_channel_payment_url ()),
-    )
-    result =await _create_game10_payment_backend (user .id )
-    if not isinstance (result ,dict )or not result .get ("ok"):
-        await _show_screen (
-        update ,
-        context ,
-        "Сейчас не удалось создать платёж. Попробуйте ещё раз через минуту или нажмите «Связаться с менеджером».",
-        reply_markup =get_game10_kb (_private_channel_payment_url ()),
-        )
-        return 
-    confirmation_url =str (result .get ("confirmation_url")or "").strip ()
-    payment_id =str (result .get ("payment_id")or "").strip ()
-    amount_rub =int (result .get ("amount_rub")or 5000 )
-    if not confirmation_url :
-        await _show_screen (
-        update ,
-        context ,
-        "Платёж создан, но ссылка оплаты не получена. Нажмите «Связаться с менеджером».",
-        reply_markup =get_game10_kb (_private_channel_payment_url ()),
-        )
-        return 
-    pay_kb =InlineKeyboardMarkup ([
-    [InlineKeyboardButton ("Открыть оплату",url =confirmation_url )],
-    [InlineKeyboardButton ("В меню",callback_data ="menu")],
-    ])
-    caption =(
-    f"Оплатите {amount_rub } ₽. После оплаты доступ откроется автоматически.\n"
-    "После оплаты бот пришлёт кнопку для вступления в закрытый канал."
-    )
-    qr =_build_qr_png (confirmation_url )
-    if qr is not None :
-        await _send_photo (context .bot ,chat .id ,qr ,caption =caption ,reply_markup =pay_kb )
-    else :
-        await _send (context .bot ,chat_id =chat .id ,text =caption ,reply_markup =pay_kb )
-    await _show_screen (
-    update ,
-    context ,
-    f"Платёж создан. ID: {payment_id}\nПроверьте сообщение ниже с QR и кнопкой оплаты.",
-    reply_markup =get_game10_kb (_private_channel_payment_url ()),
-    )
+    await _run_game10_payment_create_flow (update ,context )
+
+
+async def game10_pay_refresh (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    query =update .callback_query
+    if query is None :
+        return
+    await _answer (query )
+    await _run_game10_payment_create_flow (update ,context ,refresh_hint =True )
+
+
+async def pay_contact_phone (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    query =update .callback_query
+    if query is None :
+        return
+    await _answer (query )
+    if not context .user_data .get (PAYMENT_CONTACT_FLOW_KEY ):
+        await _request_payment_contact_screen (update ,context )
+        return
+    context .user_data [PAYMENT_CONTACT_MODE_KEY ]="phone"
+    await _show_screen (update ,context ,PAYMENT_ASK_PHONE_SCREEN ,reply_markup =get_payment_contact_choice_kb ())
+    chat =update .effective_chat
+    if chat is not None :
+        await _send (context .bot ,chat_id =chat .id ,text ="Нажмите кнопку ниже, чтобы отправить номер.",reply_markup =get_contact_request_kb ())
+
+
+async def pay_contact_email (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    query =update .callback_query
+    if query is None :
+        return
+    await _answer (query )
+    if not context .user_data .get (PAYMENT_CONTACT_FLOW_KEY ):
+        await _request_payment_contact_screen (update ,context )
+        return
+    context .user_data [PAYMENT_CONTACT_MODE_KEY ]="email"
+    await _send_reply_keyboard_remove (update ,context )
+    await _show_screen (update ,context ,PAYMENT_ASK_EMAIL_SCREEN ,reply_markup =get_payment_contact_choice_kb ())
+
+
+async def pay_contact_cancel (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    query =update .callback_query
+    if query is None :
+        return
+    await _answer (query )
+    await _send_reply_keyboard_remove (update ,context )
+    _clear_payment_contact_flow (context )
+    await _show_screen (update ,context ,PAYMENT_CANCELLED_SCREEN ,reply_markup =get_back_to_menu_kb ())
+    await _show_screen (update ,context ,"Главное меню",reply_markup =get_main_menu ())
 
 
     # --------- Consultations / Gestalt ---------
@@ -2276,6 +2486,10 @@ def build_app ()->Application :
     app .add_handler (CallbackQueryHandler (show_courses_page ,pattern ="^courses_page:"))
     app .add_handler (CallbackQueryHandler (show_private_channel ,pattern ="^private_channel$"))
     app .add_handler (CallbackQueryHandler (private_channel_payment_info ,pattern ="^private_channel_payment_info$"))
+    app .add_handler (CallbackQueryHandler (game10_pay_refresh ,pattern ="^game10_pay_refresh$"))
+    app .add_handler (CallbackQueryHandler (pay_contact_phone ,pattern ="^pay_contact_phone$"))
+    app .add_handler (CallbackQueryHandler (pay_contact_email ,pattern ="^pay_contact_email$"))
+    app .add_handler (CallbackQueryHandler (pay_contact_cancel ,pattern ="^pay_contact_cancel$"))
     app .add_handler (CallbackQueryHandler (course_link_unavailable ,pattern ="^course_link_unavailable$"))
     app .add_handler (CallbackQueryHandler (show_consultations ,pattern ="^consultations$"))
     app .add_handler (CallbackQueryHandler (show_formats_and_prices ,pattern ="^consult_formats$"))

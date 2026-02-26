@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -146,4 +147,55 @@ def test_game10_create_returns_400_when_no_receipt_contacts(monkeypatch):
         json={"tg_id": 123456},
     )
     assert response.status_code == 400
-    assert "телефон или email" in response.json()["detail"].lower()
+    assert "телефон" in response.json()["detail"].lower()
+    assert "email" in response.json()["detail"].lower()
+
+
+
+def test_should_reuse_existing_payment_when_fresh_and_pending(monkeypatch):
+    monkeypatch.setenv("YOOKASSA_REUSE_TTL_MINUTES", "15")
+    existing = SimpleNamespace(
+        payment_id="pay_1",
+        confirmation_url="https://pay.example/1",
+        created_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+    )
+    monkeypatch.setattr(
+        payments_api,
+        "_get_yookassa_payment_status",
+        AsyncMock(return_value="pending"),
+    )
+    can_reuse, reason = asyncio.run(payments_api._should_reuse_existing_game10_payment(existing))
+    assert can_reuse is True
+    assert reason == "fresh"
+
+
+def test_should_not_reuse_existing_payment_when_expired_ttl(monkeypatch):
+    monkeypatch.setenv("YOOKASSA_REUSE_TTL_MINUTES", "15")
+    existing = SimpleNamespace(
+        payment_id="pay_2",
+        confirmation_url="https://pay.example/2",
+        created_at=datetime.now(timezone.utc) - timedelta(minutes=20),
+    )
+    status_mock = AsyncMock(return_value="pending")
+    monkeypatch.setattr(payments_api, "_get_yookassa_payment_status", status_mock)
+    can_reuse, reason = asyncio.run(payments_api._should_reuse_existing_game10_payment(existing))
+    assert can_reuse is False
+    assert reason == "expired_ttl"
+    assert status_mock.await_count == 0
+
+
+def test_should_not_reuse_existing_payment_when_status_canceled(monkeypatch):
+    monkeypatch.setenv("YOOKASSA_REUSE_TTL_MINUTES", "15")
+    existing = SimpleNamespace(
+        payment_id="pay_3",
+        confirmation_url="https://pay.example/3",
+        created_at=datetime.now(timezone.utc) - timedelta(minutes=3),
+    )
+    monkeypatch.setattr(
+        payments_api,
+        "_get_yookassa_payment_status",
+        AsyncMock(return_value="canceled"),
+    )
+    can_reuse, reason = asyncio.run(payments_api._should_reuse_existing_game10_payment(existing))
+    assert can_reuse is False
+    assert reason == "status_not_pending"

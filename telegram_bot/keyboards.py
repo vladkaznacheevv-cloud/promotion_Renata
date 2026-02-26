@@ -137,6 +137,26 @@ def get_game10_kb(payment_url: str | None = None):
     return InlineKeyboardMarkup(rows)
 
 
+def get_payment_contact_choice_kb():
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Поделиться телефоном", callback_data="pay_contact_phone")],
+            [InlineKeyboardButton("Ввести email", callback_data="pay_contact_email")],
+            [InlineKeyboardButton("Отмена", callback_data="pay_contact_cancel")],
+        ]
+    )
+
+
+def get_game10_payment_link_kb(confirmation_url: str):
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Открыть оплату", url=confirmation_url)],
+            [InlineKeyboardButton("Обновить ссылку", callback_data="game10_pay_refresh")],
+            [InlineKeyboardButton("В меню", callback_data="menu")],
+        ]
+    )
+
+
 def get_ai_quick_actions_kb():
     return InlineKeyboardMarkup(
         [

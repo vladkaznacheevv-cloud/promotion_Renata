@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 from typing import List, Optional
 
@@ -32,6 +33,8 @@ class Game10PaymentCreateOut(BaseModel):
     payment_id: str
     confirmation_url: str
     amount_rub: int
+    is_reused: bool | None = None
+    reuse_reason: str | None = None
 
 
 def _extract_internal_token(request: Request) -> str:
@@ -74,6 +77,29 @@ def _int_env(name: str, default: int) -> int:
         return int(raw) if raw else default
     except Exception:
         return default
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _normalize_dt(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _reuse_ttl_minutes() -> int:
+    return max(1, _int_env("YOOKASSA_REUSE_TTL_MINUTES", 15))
+
+
+def _is_within_reuse_ttl(created_at: datetime | None) -> bool:
+    created = _normalize_dt(created_at)
+    if created is None:
+        return False
+    return (_utcnow() - created) <= timedelta(minutes=_reuse_ttl_minutes())
 
 
 def _normalize_phone_for_receipt(value: str | None) -> str | None:
@@ -177,6 +203,42 @@ async def _create_yookassa_payment(*, tg_id: int, customer_email: str | None, cu
     }
 
 
+async def _get_yookassa_payment_status(payment_id: str) -> str | None:
+    payment_id = str(payment_id or "").strip()
+    if not payment_id:
+        return None
+    shop_id = (os.getenv("YOOKASSA_SHOP_ID") or "").strip()
+    secret_key = (os.getenv("YOOKASSA_SECRET_KEY") or "").strip()
+    if not shop_id or not secret_key:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                f"https://api.yookassa.ru/v3/payments/{payment_id}",
+                auth=(shop_id, secret_key),
+            )
+    except Exception:
+        return None
+    if response.status_code >= 400:
+        return None
+    try:
+        payload = response.json()
+    except Exception:
+        return None
+    return str(payload.get("status") or "").strip().lower() or None
+
+
+async def _should_reuse_existing_game10_payment(existing: YooKassaPayment | None) -> tuple[bool, str]:
+    if existing is None or not existing.payment_id or not existing.confirmation_url:
+        return False, "missing_existing"
+    if not _is_within_reuse_ttl(existing.created_at):
+        return False, "expired_ttl"
+    remote_status = await _get_yookassa_payment_status(str(existing.payment_id))
+    if remote_status and remote_status not in {"pending", "waiting_for_capture"}:
+        return False, "status_not_pending"
+    return True, "fresh"
+
+
 @router.post("/game10/create", response_model=Game10PaymentCreateOut)
 async def create_game10_payment(
     request: Request,
@@ -193,17 +255,20 @@ async def create_game10_payment(
         select(YooKassaPayment)
         .where(YooKassaPayment.tg_id == target_tg_id)
         .where(YooKassaPayment.product == "game10")
-        .where(YooKassaPayment.status == "pending")
+        .where(YooKassaPayment.status.in_(["pending", "waiting_for_capture", "created"]))
         .where(YooKassaPayment.confirmation_url.is_not(None))
         .order_by(YooKassaPayment.id.desc())
         .limit(1)
     )
     existing = existing_row.scalar_one_or_none()
-    if existing and existing.payment_id and existing.confirmation_url:
+    can_reuse, reuse_reason = await _should_reuse_existing_game10_payment(existing)
+    if can_reuse and existing and existing.payment_id and existing.confirmation_url:
         return Game10PaymentCreateOut(
             payment_id=str(existing.payment_id),
             confirmation_url=str(existing.confirmation_url),
             amount_rub=int(existing.amount_rub or GAME10_PRICE_RUB),
+            is_reused=True,
+            reuse_reason=reuse_reason,
         )
 
     email, phone = await _get_receipt_customer_contact(db, tg_id=target_tg_id)
@@ -246,6 +311,8 @@ async def create_game10_payment(
         payment_id=created["payment_id"],
         confirmation_url=created["confirmation_url"],
         amount_rub=GAME10_PRICE_RUB,
+        is_reused=False,
+        reuse_reason=("new" if reuse_reason in {"missing_existing", "fresh"} else reuse_reason),
     )
 
 
