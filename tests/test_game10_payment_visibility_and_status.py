@@ -5,16 +5,25 @@ from types import SimpleNamespace
 from telegram import InlineKeyboardMarkup
 
 from telegram_bot import main as bot_main
-from telegram_bot.keyboards import get_game10_kb
+from telegram_bot.keyboards import get_game10_kb, get_main_menu
 from core.api import webhooks as webhooks_api
 
 
 def test_game10_keyboard_has_only_main_payment_button():
     kb = get_game10_kb(show_test_payment=True)
     assert isinstance(kb, InlineKeyboardMarkup)
-    texts = [btn.text for row in kb.inline_keyboard for btn in row]
-    assert "Оплатить 5 000 ₽" in texts
-    assert "Тестовая оплата 50 ₽" not in texts
+    callback_data = [btn.callback_data for row in kb.inline_keyboard for btn in row if btn.callback_data]
+    assert "private_channel_payment_info" in callback_data
+    assert "game10_pay_test" not in callback_data
+
+
+def test_main_menu_order_game10_then_courses():
+    kb = get_main_menu()
+    texts = [row[0].text for row in kb.inline_keyboard]
+    assert texts[0] == "«Игра 10:0»"
+    assert texts[1] == "Авторский курс лекций"
+    assert kb.inline_keyboard[0][0].callback_data == "private_channel"
+    assert kb.inline_keyboard[1][0].callback_data == "courses"
 
 def test_payment_ui_strings_do_not_contain_question_garbage():
     strings = [
