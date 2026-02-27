@@ -16,6 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+import core.models  # noqa: F401  # ensure all ORM models are registered before mapper config
 import core.db.database as db
 from core.api.payments import _recheck_yookassa_payment_internal
 
