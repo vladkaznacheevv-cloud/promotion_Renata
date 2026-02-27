@@ -15,16 +15,22 @@ from telegram_bot.keyboards import (
 from telegram_bot.text_utils import normalize_ui_reply_markup, normalize_ui_text
 
 
-BAD_CHARS = set("\u0452\u0453\u0454\u0456\u0457\u0458\u0459\u045a\u045b\u045c\u045e\u045f")
+BAD_UNICODE_CHARS = set("\u0452\u0453\u0454\u0456\u0457\u0458\u0459\u045a\u045b\u045c\u045e\u045f")
+BAD_FRAGMENTS = (
+    "\u0420\u045f",
+    "\u0420\u2019",
+    "\u0420\u0178",
+    "\u0421\u0455",
+    "\u0421\u040f",
+    "\u0421\u201a",
+    "\u0421\u20ac",
+    "\u0421\u0453",
+    "????",
+)
 
 
 def _make_mojibake(value: str) -> str:
     return value.encode("utf-8").decode("cp1251")
-
-
-BAD_FRAGMENTS = tuple(
-    _make_mojibake(ch) for ch in ("А", "В", "П", "с", "я", "т", "ш", "у")
-) + ("????",)
 
 
 def _assert_clean(value: str) -> None:
@@ -32,24 +38,24 @@ def _assert_clean(value: str) -> None:
     for token in BAD_FRAGMENTS:
         assert token not in value
     assert "????" not in value
-    assert not any(ch in BAD_CHARS for ch in value)
+    assert not any(ch in BAD_UNICODE_CHARS for ch in value)
 
 
-def test_normalize_ui_text_repairs_common_mojibake():
-    assert normalize_ui_text(_make_mojibake("В меню")) == "В меню"
-    assert normalize_ui_text(_make_mojibake("Открыть GetCourse")) == "Открыть GetCourse"
-    assert normalize_ui_text("Авторский курс лекций") == "Авторский курс лекций"
+def test_normalize_ui_text_repairs_common_mojibake() -> None:
+    assert normalize_ui_text(_make_mojibake("\u0412 \u043c\u0435\u043d\u044e")) == "\u0412 \u043c\u0435\u043d\u044e"
+    assert normalize_ui_text(_make_mojibake("\u041e\u0442\u043a\u0440\u044b\u0442\u044c GetCourse")) == "\u041e\u0442\u043a\u0440\u044b\u0442\u044c GetCourse"
+    assert normalize_ui_text("\u0410\u0432\u0442\u043e\u0440\u0441\u043a\u0438\u0439 \u043a\u0443\u0440\u0441 \u043b\u0435\u043a\u0446\u0438\u0439") == "\u0410\u0432\u0442\u043e\u0440\u0441\u043a\u0438\u0439 \u043a\u0443\u0440\u0441 \u043b\u0435\u043a\u0446\u0438\u0439"
 
 
-def test_normalize_ui_reply_markup_repairs_button_labels():
-    broken = _make_mojibake("В меню")
+def test_normalize_ui_reply_markup_repairs_button_labels() -> None:
+    broken = _make_mojibake("\u0412 \u043c\u0435\u043d\u044e")
     markup = InlineKeyboardMarkup([[InlineKeyboardButton(broken, callback_data="main_menu")]])
     normalized = normalize_ui_reply_markup(markup)
-    assert normalized.inline_keyboard[0][0].text == "В меню"
+    assert normalized.inline_keyboard[0][0].text == "\u0412 \u043c\u0435\u043d\u044e"
     assert normalized.inline_keyboard[0][0].callback_data == "main_menu"
 
 
-def test_keyboards_texts_are_clean_utf8():
+def test_keyboards_texts_are_clean_utf8() -> None:
     inline_markups = [
         get_main_menu(),
         get_back_to_menu_kb(),
@@ -69,7 +75,7 @@ def test_keyboards_texts_are_clean_utf8():
             _assert_clean(button.text)
 
 
-def test_key_screen_texts_are_clean_after_normalization():
+def test_key_screen_texts_are_clean_after_normalization() -> None:
     key_texts = [
         bot_main.GAME10_SCREEN_TEXT,
         bot_main.GAME10_DESCRIPTION_SCREEN_TEXT,

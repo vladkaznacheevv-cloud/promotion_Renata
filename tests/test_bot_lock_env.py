@@ -1,4 +1,5 @@
-﻿import os
+import os
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,13 @@ def test_bot_lock_path_from_env(monkeypatch):
     monkeypatch.setenv("BOT_LOCK_PATH", "/tmp/custom-bot.lock")
     monkeypatch.delenv("BOT_LOCK_FILE", raising=False)
     assert get_lock_path() == "/tmp/custom-bot.lock"
+
+
+def test_bot_lock_path_default_in_system_tmp(monkeypatch):
+    monkeypatch.delenv("BOT_LOCK_PATH", raising=False)
+    monkeypatch.delenv("BOT_LOCK_FILE", raising=False)
+    expected = str(Path(tempfile.gettempdir()) / "promotion_renata" / "renata_bot.lock")
+    assert get_lock_path() == expected
 
 
 def test_single_instance_lock_applies():

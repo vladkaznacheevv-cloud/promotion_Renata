@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from telegram import Update
+from telegram import InlineKeyboardMarkup, Update
 from telegram.error import BadRequest
 
 from telegram_bot.text_utils import normalize_telegram_text, normalize_text_for_telegram, normalize_ui_reply_markup
@@ -8,6 +8,10 @@ from telegram_bot.text_utils import normalize_telegram_text, normalize_text_for_
 
 class ScreenManager:
     LAST_SCREEN_MESSAGE_ID_KEY = "last_screen_message_id"
+
+    @staticmethod
+    def _can_edit_message_with_markup(reply_markup) -> bool:
+        return reply_markup is None or isinstance(reply_markup, InlineKeyboardMarkup)
 
     def clear_screen(self, context) -> None:
         if context is None:
@@ -40,6 +44,13 @@ class ScreenManager:
         normalized_reply_markup = normalize_ui_reply_markup(reply_markup)
         last_message_id = context.user_data.get(self.LAST_SCREEN_MESSAGE_ID_KEY)
         is_message_update = getattr(update, "message", None) is not None
+        callback_query = getattr(update, "callback_query", None)
+
+        if callback_query is not None:
+            try:
+                await callback_query.answer()
+            except Exception:
+                pass
 
         if prefer_new_on_message and is_message_update:
             sent = await context.bot.send_message(
@@ -56,7 +67,7 @@ class ScreenManager:
                 pass
             return sent
 
-        if last_message_id:
+        if last_message_id and self._can_edit_message_with_markup(normalized_reply_markup):
             try:
                 await context.bot.edit_message_text(
                     chat_id=chat_id,

@@ -9,53 +9,38 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton,
 
 logger = logging.getLogger(__name__)
 
-_MOJIBAKE_PATTERNS: tuple[str, ...] = (
-    "Ð",
-    "Ñ",
-    "Ã",
-    "Рџ",
-    "рџ",
-    "Р°",
-    "Рќ",
-    "вЂ",
-)
-
-_CYRILLIC_RE = re.compile(r"[А-Яа-яЁё]")
-_MOJIBAKE_LATIN_RE = re.compile(r"[ÐÑÃ]")
+_RUS_RE = re.compile(r"[\u0410-\u042F\u0430-\u044F\u0401\u0451]")
+_MOJIBAKE_BIGRAM_RE = re.compile(r"(?:\u0420[\u0410-\u044FA-Za-z]|\u0421[\u0410-\u044FA-Za-z]|\u00D0.|\u00D1.)")
+_MOJIBAKE_LATIN_RE = re.compile(r"[\u00D0\u00D1\u00C3]")
+_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
 _TRAILING_SPACES_RE = re.compile(r"[ \t]+\n")
 _TOO_MANY_NEWLINES_RE = re.compile(r"\n{3,}")
-_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
-_MOJIBAKE_BIGRAM_RE = re.compile(r"(?:Р[А-Яа-яA-Za-z]|С[А-Яа-яA-Za-z])")
-_BAD_CYR_CHARS = set("ђѓєіїјљњћќўџ")
+_BAD_CYR_CHARS = set("\u0452\u0453\u0454\u0456\u0457\u0458\u0459\u045a\u045b\u045c\u045e\u045f")
 
 
-def _is_russian_cyrillic_char(ch: str) -> bool:
-    code = ord(ch)
-    return code == 0x401 or code == 0x451 or 0x410 <= code <= 0x44F
+def _score_text(value: str) -> int:
+    if not value:
+        return -10_000
 
-
-def _non_russian_cyrillic_count(value: str) -> int:
-    count = 0
-    for ch in value:
-        code = ord(ch)
-        if 0x0400 <= code <= 0x04FF and not _is_russian_cyrillic_char(ch):
-            count += 1
-    return count
+    russian = len(_RUS_RE.findall(value))
+    bad_bigram = len(_MOJIBAKE_BIGRAM_RE.findall(value))
+    bad_latin = len(_MOJIBAKE_LATIN_RE.findall(value))
+    bad_cyr = sum(1 for ch in value if ch in _BAD_CYR_CHARS)
+    replacement = value.count("\ufffd") + value.count("????")
+    return (russian * 8) - (bad_bigram * 12) - (bad_latin * 6) - (bad_cyr * 10) - (replacement * 20)
 
 
 def looks_like_mojibake(text: str | None) -> bool:
     if not text:
         return False
-    if any(marker in text for marker in _MOJIBAKE_PATTERNS):
+    if "????" in text:
         return True
-    if _MOJIBAKE_LATIN_RE.search(text):
+    if any(ch in text for ch in _BAD_CYR_CHARS):
         return True
-
-    russian = len(_CYRILLIC_RE.findall(text))
-    if russian > 0:
-        rs_ratio = (text.count("Р") + text.count("С")) / max(1, russian)
-        if rs_ratio > 0.35 and any(ch in text for ch in ("ѓ", "љ", "ќ", "џ", "ў")):
-            return True
+    if _MOJIBAKE_BIGRAM_RE.search(text):
+        return True
+    if _MOJIBAKE_LATIN_RE.search(text) and len(_RUS_RE.findall(text)) < 3:
+        return True
     return False
 
 
@@ -63,29 +48,10 @@ def _attempt_repairs(text: str) -> Iterable[str]:
     for source_encoding in ("cp1251", "latin1", "cp1252"):
         try:
             repaired = text.encode(source_encoding, errors="strict").decode("utf-8", errors="strict")
-            if repaired:
-                yield repaired
         except Exception:
             continue
-
-
-def _score_text(value: str) -> int:
-    if not value:
-        return -10_000
-
-    russian_count = len(_CYRILLIC_RE.findall(value))
-    non_russian_cyr = _non_russian_cyrillic_count(value)
-    mojibake_penalty = sum(value.count(marker) for marker in _MOJIBAKE_PATTERNS)
-    latin_mojibake_penalty = len(_MOJIBAKE_LATIN_RE.findall(value))
-    replacement_penalty = value.count("�")
-
-    return (
-        (russian_count * 10)
-        - (non_russian_cyr * 25)
-        - (mojibake_penalty * 60)
-        - (latin_mojibake_penalty * 80)
-        - (replacement_penalty * 100)
-    )
+        if repaired:
+            yield repaired
 
 
 def repair_mojibake(text: str | None) -> str | None:
@@ -96,32 +62,17 @@ def repair_mojibake(text: str | None) -> str | None:
 
     best = text
     best_score = _score_text(text)
-    frontier = {text}
-    visited = {text}
-
-    for _ in range(2):
-        next_frontier = set()
-        for current in frontier:
-            for candidate in _attempt_repairs(current):
-                if candidate in visited:
-                    continue
-                visited.add(candidate)
-                next_frontier.add(candidate)
-                score = _score_text(candidate)
-                if score > best_score:
-                    best = candidate
-                    best_score = score
-        if not next_frontier:
-            break
-        frontier = next_frontier
-
+    for candidate in _attempt_repairs(text):
+        score = _score_text(candidate)
+        if score > best_score:
+            best = candidate
+            best_score = score
     return best
 
 
 def render_text(text: str | None) -> str | None:
     if text is None:
         return None
-
     value = text.replace("\\r\\n", "\n").replace("\\n", "\n")
     value = value.replace("\r\n", "\n").replace("\r", "\n")
     value = _TRAILING_SPACES_RE.sub("\n", value)
@@ -135,14 +86,12 @@ def normalize_telegram_text(text: str | None) -> str | None:
 
     value = text
     try:
-        # Join valid surrogate pairs into normal Unicode code points.
         value = value.encode("utf-16", "surrogatepass").decode("utf-16")
     except UnicodeError:
         pass
 
     value = _SURROGATE_RE.sub("", value)
-    if "\ufffd" in value:
-        value = value.replace("\ufffd", "")
+    value = value.replace("\ufffd", "")
     return value
 
 
@@ -150,30 +99,14 @@ def normalize_ui_text(text: str | None) -> str | None:
     if text is None:
         return None
 
-    source = str(text)
-    base = normalize_telegram_text(source) or source
-    suspicious = (
-        "????" in base
-        or bool(_MOJIBAKE_BIGRAM_RE.search(base))
-        or any(ch in _BAD_CYR_CHARS for ch in base)
-        or looks_like_mojibake(base)
-    )
-    if not suspicious:
-        return base
+    source = normalize_telegram_text(str(text)) or str(text)
+    if not looks_like_mojibake(source):
+        return source
 
-    candidates: list[str] = [base]
-    for source_encoding in ("cp1251", "latin1", "cp1252"):
-        try:
-            fixed = base.encode(source_encoding, errors="strict").decode("utf-8", errors="strict")
-        except Exception:
-            continue
-        if fixed:
-            candidates.append(fixed)
-
-    best = base
-    best_score = _score_text(base) - (base.count("????") * 250)
-    for candidate in candidates[1:]:
-        score = _score_text(candidate) - (candidate.count("????") * 250)
+    best = source
+    best_score = _score_text(source)
+    for candidate in _attempt_repairs(source):
+        score = _score_text(candidate)
         if score > best_score:
             best = candidate
             best_score = score
@@ -193,16 +126,11 @@ def normalize_text_for_telegram(text: str | None, *, label: str | None = None) -
     if os.getenv("BOT_TEXT_DEBUG") == "1":
         marker = label or "text"
         logger.info(
-            "text-debug %s: repr=%r utf8_len=%s mojibake=%s",
+            "text-debug %s: utf8_len=%s mojibake=%s",
             marker,
-            text,
             len(text.encode("utf-8", errors="replace")),
             looks_like_mojibake(text),
         )
-        if repaired != text:
-            logger.info("text-debug %s repaired -> %r", marker, repaired)
-        if rendered != repaired:
-            logger.info("text-debug %s rendered -> %r", marker, rendered)
     return rendered
 
 
@@ -235,6 +163,7 @@ def normalize_ui_reply_markup(reply_markup):
                     )
                 rows.append(normalized_row)
             return InlineKeyboardMarkup(rows)
+
         if isinstance(reply_markup, ReplyKeyboardMarkup):
             rows = []
             for row in reply_markup.keyboard:

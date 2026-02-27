@@ -103,8 +103,8 @@ class EventService:
         status: str = "registered",
     ) -> UserEvent:
         """
-        Р РµРіРёСЃС‚СЂРёСЂСѓРµС‚ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ РЅР° СЃРѕР±С‹С‚РёРµ.
-        Р•СЃР»Рё СѓР¶Рµ РµСЃС‚СЊ Р·Р°РїРёСЃСЊ вЂ” РїСЂРѕСЃС‚Рѕ РѕР±РЅРѕРІРёС‚ status.
+        Регистрирует пользователя на событие.
+        Если запись уже существует, обновляет статус.
         """
         res = await self.session.execute(
             select(UserEvent).where(
@@ -124,7 +124,7 @@ class EventService:
 
     async def unregister_user(self, user_id: int, event_id: int) -> bool:
         """
-        РњСЏРіРєР°СЏ РѕС‚РјРµРЅР°: СЃС‚Р°РІРёРј СЃС‚Р°С‚СѓСЃ cancelled (Р° РЅРµ СѓРґР°Р»СЏРµРј СЃС‚СЂРѕРєСѓ).
+        Мягкая отмена: выставляем статус cancelled (без удаления записи).
         """
         res = await self.session.execute(
             select(UserEvent).where(

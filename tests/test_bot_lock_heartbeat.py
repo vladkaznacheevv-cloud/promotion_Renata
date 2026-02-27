@@ -9,10 +9,12 @@ def test_get_lock_path_from_env(monkeypatch):
     assert get_lock_path() == "/tmp/custom.lock"
 
 
-def test_touch_lock_heartbeat_handles_missing_directory():
+def test_touch_lock_heartbeat_creates_missing_directory():
     missing_dir = Path(".tmp") / f"missing-{uuid.uuid4().hex}"
     lock_path = missing_dir / "bot.lock"
-    assert touch_lock_heartbeat(str(lock_path)) is False
+    assert touch_lock_heartbeat(str(lock_path)) is True
+    assert missing_dir.exists()
+    assert lock_path.exists()
 
 
 def test_touch_lock_heartbeat_creates_file():

@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 pytest.importorskip("jose")
+pytestmark = pytest.mark.integration
 
 from core.api.deps import get_db
 from core.auth.deps import get_current_admin_user
@@ -39,9 +40,9 @@ def test_get_clients_smoke(monkeypatch):
                     {
                         "id": 1,
                         "tg_id": 10001,
-                        "name": "Тест",
+                        "name": "Test",
                         "telegram": "@test",
-                        "status": "Новый",
+                        "status": "New",
                         "stage": "NEW",
                         "phone": None,
                         "email": None,
@@ -74,9 +75,9 @@ def test_patch_client_smoke(monkeypatch):
             return_value={
                 "id": 1,
                 "tg_id": 10001,
-                "name": "Тест",
+                "name": "Test",
                 "telegram": "@test",
-                "status": "Новый",
+                "status": "New",
                 "stage": "MANAGER_FOLLOWUP",
                 "phone": "+79991234567",
                 "email": "test@example.com",
@@ -107,10 +108,10 @@ def test_create_payment_then_mark_paid_smoke(monkeypatch):
             return_value={
                 "id": 10,
                 "user_id": 1,
-                "client_name": "Тест",
+                "client_name": "Test",
                 "tg_id": 10001,
                 "event_id": 5,
-                "event_title": "Событие",
+                "event_title": "Event",
                 "amount": 1000,
                 "currency": "RUB",
                 "status": "pending",
@@ -127,10 +128,10 @@ def test_create_payment_then_mark_paid_smoke(monkeypatch):
             return_value={
                 "id": 10,
                 "user_id": 1,
-                "client_name": "Тест",
+                "client_name": "Test",
                 "tg_id": 10001,
                 "event_id": 5,
-                "event_title": "Событие",
+                "event_title": "Event",
                 "amount": 1000,
                 "currency": "RUB",
                 "status": "paid",
@@ -158,14 +159,14 @@ def test_create_payment_then_mark_paid_smoke(monkeypatch):
 def _event_stub(**overrides):
     payload = {
         "id": 1,
-        "title": "Тестовое событие",
-        "type": "Событие",
+        "title": "Test event",
+        "type": "Event",
         "price": 4500,
         "attendees": 0,
         "date": None,
         "status": "active",
-        "description": "Описание",
-        "location": "Онлайн",
+        "description": "Description",
+        "location": "Online",
         "link_getcourse": None,
         "revenue": 0,
         "schedule_type": "recurring",
@@ -174,8 +175,8 @@ def _event_stub(**overrides):
         "end_time": "21:00",
         "recurring_rule": {"freq": "MONTHLY", "bysetpos": [2, 4], "byweekday": "TU"},
         "occurrence_dates": None,
-        "schedule_text": "Старт 08.09.2026; 2-й и 4-й вторник, 17:00–21:00",
-        "pricing_options": [{"label": "Встреча", "price_rub": 4500, "note": None}],
+        "schedule_text": "Start 08.09.2026; 2nd and 4th Tuesday, 17:00-21:00",
+        "pricing_options": [{"label": "Session", "price_rub": 4500, "note": None}],
         "hosts": None,
         "price_individual_rub": None,
         "price_group_rub": None,
@@ -192,8 +193,8 @@ def test_create_event_one_time_without_date_returns_422():
     response = client.post(
         "/api/crm/events",
         json={
-            "title": "Разовое",
-            "description": "Описание",
+            "title": "One-time",
+            "description": "Description",
             "schedule_type": "one_time",
             "date": None,
         },
@@ -208,7 +209,7 @@ def test_create_event_rolling_with_date_returns_422():
         "/api/crm/events",
         json={
             "title": "Rolling",
-            "description": "Описание",
+            "description": "Description",
             "schedule_type": "rolling",
             "date": "2026-09-08",
         },
@@ -223,7 +224,7 @@ def test_create_event_recurring_without_start_date_returns_422():
         "/api/crm/events",
         json={
             "title": "Recurring",
-            "description": "Описание",
+            "description": "Description",
             "schedule_type": "recurring",
             "recurring_rule": {"freq": "MONTHLY", "bysetpos": [2, 4], "byweekday": "TU"},
         },
@@ -238,14 +239,14 @@ def test_create_event_recurring_with_rule_returns_200(monkeypatch):
     response = client.post(
         "/api/crm/events",
         json={
-            "title": "Я взрослею",
-            "description": "Описание",
+            "title": "Growing up",
+            "description": "Description",
             "schedule_type": "recurring",
             "start_date": "2026-09-08",
             "start_time": "17:00",
             "end_time": "21:00",
             "recurring_rule": {"freq": "MONTHLY", "bysetpos": [2, 4], "byweekday": "TU"},
-            "pricing_options": [{"label": "Встреча", "price_rub": 4500}],
+            "pricing_options": [{"label": "Session", "price_rub": 4500}],
         },
     )
     assert response.status_code == 200
@@ -260,7 +261,7 @@ def test_create_event_recurring_with_occurrence_dates_returns_200(monkeypatch):
             return_value=_event_stub(
                 recurring_rule=None,
                 occurrence_dates=["2026-03-27", "2026-04-24", "2026-05-29"],
-                schedule_text="Даты: 27.03, 24.04, 29.05; 10:00–18:00",
+                schedule_text="Dates: 27.03, 24.04, 29.05; 10:00-18:00",
                 start_time="10:00",
                 end_time="18:00",
             )
@@ -271,14 +272,14 @@ def test_create_event_recurring_with_occurrence_dates_returns_200(monkeypatch):
     response = client.post(
         "/api/crm/events",
         json={
-            "title": "Супервизорская группа",
-            "description": "Описание",
+            "title": "Supervisor group",
+            "description": "Description",
             "schedule_type": "recurring",
             "start_date": "2026-03-01",
             "start_time": "10:00",
             "end_time": "18:00",
             "occurrence_dates": ["2026-03-27", "2026-04-24", "2026-05-29"],
-            "pricing_options": [{"label": "Стоимость", "price_rub": 6000}],
+            "pricing_options": [{"label": "Price", "price_rub": 6000}],
         },
     )
     assert response.status_code == 200

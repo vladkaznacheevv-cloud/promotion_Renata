@@ -5,6 +5,7 @@ import json
 import logging
 import os
 from typing import Any
+from uuid import uuid4
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -22,6 +23,14 @@ from core.users.models import User
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _request_id(request: Request) -> str:
+    for header in ("X-Request-Id", "x-request-id", "X-Correlation-Id", "x-correlation-id"):
+        value = (request.headers.get(header) or "").strip()
+        if value:
+            return value
+    return uuid4().hex[:12]
 
 
 def _get_webhook_token(request: Request) -> str:
@@ -69,26 +78,82 @@ async def _parse_payload(request: Request) -> dict[str, Any]:
         return {"raw": raw}
 
 
-async def _telegram_api_post(method: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+def _classify_telegram_error(
+    *,
+    status_code: int | None = None,
+    description: str | None = None,
+    exc: Exception | None = None,
+) -> str:
+    if isinstance(exc, httpx.TimeoutException) or status_code in {408, 504}:
+        return "Timeout"
+    lowered = str(description or "").lower()
+    if status_code == 403 or "forbidden" in lowered or "bot was blocked" in lowered:
+        return "Forbidden"
+    if status_code == 400 or "bad request" in lowered:
+        return "BadRequest"
+    return "Other"
+
+
+async def _telegram_api_post_detailed(method: str, payload: dict[str, Any]) -> dict[str, Any]:
     bot_token = (os.getenv("BOT_TOKEN") or "").strip()
     if not bot_token:
-        return None
+        return {"ok": False, "result": None, "error_type": "Other"}
     endpoint = f"https://api.telegram.org/bot{bot_token}/{method}"
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.post(endpoint, json=payload)
-    except Exception:
-        return None
-    if response.status_code != 200:
-        return None
+    except Exception as exc:
+        return {
+            "ok": False,
+            "result": None,
+            "error_type": _classify_telegram_error(exc=exc),
+        }
+
+    data: dict[str, Any] | None = None
     try:
-        data = response.json()
+        raw_data = response.json()
+        if isinstance(raw_data, dict):
+            data = raw_data
     except Exception:
-        return None
+        data = None
+
+    if response.status_code != 200:
+        description = str((data or {}).get("description") or "")
+        return {
+            "ok": False,
+            "result": None,
+            "error_type": _classify_telegram_error(
+                status_code=response.status_code,
+                description=description,
+            ),
+        }
+
     if not isinstance(data, dict) or not data.get("ok"):
-        return None
+        error_code = response.status_code
+        description = ""
+        if isinstance(data, dict):
+            try:
+                error_code = int(data.get("error_code") or response.status_code or 0)
+            except Exception:
+                error_code = response.status_code
+            description = str(data.get("description") or "")
+        return {
+            "ok": False,
+            "result": None,
+            "error_type": _classify_telegram_error(status_code=error_code, description=description),
+        }
+
     result = data.get("result")
-    return result if isinstance(result, dict) else {"result": result}
+    result_payload = result if isinstance(result, dict) else {"result": result}
+    return {"ok": True, "result": result_payload, "error_type": None}
+
+
+async def _telegram_api_post(method: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    outcome = await _telegram_api_post_detailed(method, payload)
+    if not outcome.get("ok"):
+        return None
+    result = outcome.get("result")
+    return result if isinstance(result, dict) else None
 
 
 async def _create_game10_join_request_link(*, tg_id: int, payment_id: str) -> str | None:
@@ -125,7 +190,7 @@ def _is_active_channel_member_status(status: str | None) -> bool:
     return str(status or "").strip().lower() in {"member", "administrator", "creator"}
 
 
-async def _send_game10_paid_message(*, tg_id: int, invite_link: str | None) -> None:
+async def _send_game10_paid_message(*, tg_id: int, invite_link: str | None) -> dict[str, Any]:
     reply_markup = None
     text = "Оплата прошла. Доступ к закрытому каналу открыт."
     if invite_link:
@@ -139,7 +204,11 @@ async def _send_game10_paid_message(*, tg_id: int, invite_link: str | None) -> N
     }
     if reply_markup is not None:
         payload["reply_markup"] = reply_markup
-    await _telegram_api_post("sendMessage", payload)
+    outcome = await _telegram_api_post_detailed("sendMessage", payload)
+    return {
+        "ok": bool(outcome.get("ok")),
+        "error_type": str(outcome.get("error_type") or "Other") if not outcome.get("ok") else None,
+    }
 
 
 async def _send_game10_already_member_message(*, tg_id: int) -> None:
@@ -233,11 +302,45 @@ async def process_game10_payment_success(*, db: AsyncSession, payment_id: str, t
         }
 
     invite_link = await _create_game10_join_request_link(tg_id=int(tg_id), payment_id=str(payment_id))
-    await _send_game10_paid_message(tg_id=int(tg_id), invite_link=invite_link)
+    if not invite_link:
+        error_type = "Other"
+        logger.warning(
+            "Game10 invite delivery failed: payment_id=%s tg_id=%s error_type=%s",
+            str(payment_id),
+            int(tg_id),
+            error_type,
+        )
+        return {
+            "result": "invite_failed",
+            "already_in_channel": False,
+            "invite_sent": False,
+            "member_status": member_status or "",
+            "crm_payment": crm_payment_result,
+            "error_type": error_type,
+        }
+
+    send_result = await _send_game10_paid_message(tg_id=int(tg_id), invite_link=invite_link)
+    if not bool((send_result or {}).get("ok")):
+        error_type = str((send_result or {}).get("error_type") or "Other")
+        logger.warning(
+            "Game10 invite delivery failed: payment_id=%s tg_id=%s error_type=%s",
+            str(payment_id),
+            int(tg_id),
+            error_type,
+        )
+        return {
+            "result": "invite_failed",
+            "already_in_channel": False,
+            "invite_sent": False,
+            "member_status": member_status or "",
+            "crm_payment": crm_payment_result,
+            "error_type": error_type,
+        }
+
     return {
-        "result": "invite_sent" if invite_link else "paid_notified_no_invite",
+        "result": "invite_sent",
         "already_in_channel": False,
-        "invite_sent": bool(invite_link),
+        "invite_sent": True,
         "member_status": member_status or "",
         "crm_payment": crm_payment_result,
     }
@@ -266,15 +369,43 @@ async def yookassa_webhook(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
+    request_id = _request_id(request)
+    event_type = "unknown"
+    payment_id = "-"
     expected = (os.getenv("YOOKASSA_WEBHOOK_TOKEN") or "").strip()
     if not expected or token != expected:
+        logger.warning(
+            "YooKassa webhook handled: request_id=%s event=%s payment_id=%s status=%s",
+            request_id,
+            event_type,
+            payment_id,
+            401,
+        )
         raise HTTPException(status_code=401, detail="Invalid webhook token")
 
-    payload = await _parse_payload(request)
+    try:
+        payload = await _parse_payload(request)
+    except HTTPException as exc:
+        logger.info(
+            "YooKassa webhook handled: request_id=%s event=%s payment_id=%s status=%s",
+            request_id,
+            event_type,
+            payment_id,
+            exc.status_code,
+        )
+        raise
+
     event_type = str(payload.get("event") or "").strip() or "unknown"
     obj = payload.get("object") if isinstance(payload.get("object"), dict) else {}
     payment_id = str((obj or {}).get("id") or "").strip()
     if not payment_id:
+        logger.info(
+            "YooKassa webhook handled: request_id=%s event=%s payment_id=%s status=%s",
+            request_id,
+            event_type,
+            "-",
+            400,
+        )
         raise HTTPException(status_code=400, detail="Missing payment_id")
 
     raw_json = json.dumps(payload, ensure_ascii=False)
@@ -289,7 +420,13 @@ async def yookassa_webhook(
         await db.flush()
     except IntegrityError:
         await db.rollback()
-        logger.info("YooKassa webhook duplicate: event=%s payment_id=%s", event_type, payment_id)
+        logger.info(
+            "YooKassa webhook handled: request_id=%s event=%s payment_id=%s status=%s",
+            request_id,
+            event_type,
+            payment_id,
+            200,
+        )
         return {"ok": True, "duplicate": True}
 
     payment_row = await db.execute(
@@ -306,12 +443,6 @@ async def yookassa_webhook(
             tg_id_value = int(str(tg_id_raw).strip())
     except Exception:
         tg_id_value = None
-    logger.info(
-        "YooKassa webhook received: event=%s payment_id=%s tg_id=%s",
-        event_type,
-        payment_id,
-        tg_id_value or "-",
-    )
 
     amount_obj = obj.get("amount") if isinstance(obj, dict) else {}
     amount_rub = None
@@ -346,12 +477,18 @@ async def yookassa_webhook(
         if target_tg_id > 0:
             result = await process_game10_payment_success(db=db, payment_id=payment_id, tg_id=target_tg_id)
             logger.info(
-                "YooKassa payment succeeded: payment_id=%s tg_id=%s result=%s",
+                "YooKassa payment succeeded: payment_id=%s result=%s",
                 payment_id,
-                target_tg_id,
                 result.get("result"),
             )
         else:
             logger.info("YooKassa payment succeeded without tg_id: payment_id=%s", payment_id)
 
+    logger.info(
+        "YooKassa webhook handled: request_id=%s event=%s payment_id=%s status=%s",
+        request_id,
+        event_type,
+        payment_id,
+        200,
+    )
     return {"ok": True}

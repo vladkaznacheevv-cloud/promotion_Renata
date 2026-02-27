@@ -1,4 +1,4 @@
-﻿from sqlalchemy import (
+from sqlalchemy import (
     Column,
     BigInteger,
     Integer,
@@ -46,7 +46,7 @@ class Event(Base):
     external_id = Column(Text, nullable=True, index=True)
     external_updated_at = Column(DateTime(timezone=True), nullable=True)
 
-    # Р’ Р‘Р” numeric (С„Р°РєС‚РёС‡РµСЃРєРё numeric(12,2) вЂ” РµСЃР»Рё С‚Р°Рє СЃРѕР·РґР°РІР°Р»)
+    # В БД поле numeric (фактически numeric(12,2)).
     price = Column(Numeric(12, 2), nullable=True)
 
     capacity = Column(Integer, nullable=True)

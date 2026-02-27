@@ -29,7 +29,7 @@ _DEFAULT_SYSTEM_PROMPT = (
     "Если не хватает данных, честно скажи об этом и задай уточняющий вопрос."
 )
 
-_MOJIBAKE_RE = re.compile(r"[РСЃ][\w\d]{0,3}")
+_MOJIBAKE_RE = re.compile(r"(?:\u00D0.|\u00D1.|\u0420[\u0410-\u044FA-Za-z]|\u0421[\u0410-\u044FA-Za-z])")
 _RAG_FOCUS_PREFIX_RE = re.compile(r"^\s*\[FOCUS:(?P<name>[A-Z0-9_/-]+)\]\s*", re.IGNORECASE)
 
 
@@ -637,7 +637,7 @@ class AIService:
         trace["rag_hits"] = len(result.top_chunks)
         trace["rag_top_scores"] = [float(getattr(hit, "score", 0.0)) for hit in result.top_chunks[:3]]
 
-        lines = ["???????? ???? ??????:"]
+        lines = ["Контекст из базы знаний:"]
         for idx, chunk in enumerate(result.top_chunks, start=1):
             lines.append(
                 f"{idx}. {chunk.title} ({chunk.source}, score={getattr(chunk, 'score', 0)}): {self._short(chunk.text, limit=520)}"

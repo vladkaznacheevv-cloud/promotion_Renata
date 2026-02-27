@@ -1,5 +1,8 @@
 import sys
 import types
+import os
+
+import pytest
 
 
 def _ensure_jose_stub() -> None:
@@ -50,3 +53,19 @@ def _ensure_passlib_stub() -> None:
 
 _ensure_jose_stub()
 _ensure_passlib_stub()
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "integration: optional integration checks (run with RUN_INTEGRATION_TESTS=1)",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    if os.getenv("RUN_INTEGRATION_TESTS", "0") in {"1", "true", "yes"}:
+        return
+    skip_integration = pytest.mark.skip(reason="set RUN_INTEGRATION_TESTS=1 to run integration tests")
+    for item in items:
+        if "integration" in item.keywords:
+            item.add_marker(skip_integration)

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 from telegram import InlineKeyboardMarkup
 
+from core.api import webhooks as webhooks_api
 from telegram_bot import main as bot_main
 from telegram_bot.keyboards import get_game10_kb, get_main_menu
-from core.api import webhooks as webhooks_api
 
 
 def test_game10_keyboard_has_only_main_payment_button():
@@ -24,6 +25,7 @@ def test_main_menu_order_game10_then_courses():
     assert texts[1] == "Авторский курс лекций"
     assert kb.inline_keyboard[0][0].callback_data == "private_channel"
     assert kb.inline_keyboard[1][0].callback_data == "courses"
+
 
 def test_payment_ui_strings_do_not_contain_question_garbage():
     strings = [
@@ -71,11 +73,11 @@ def test_process_game10_payment_success_returns_already_member(monkeypatch):
     monkeypatch.setattr(webhooks_api, "_send_game10_already_member_message", _fake_send_already_member_message)
     monkeypatch.setattr(webhooks_api, "_create_game10_join_request_link", _fake_create_invite)
     monkeypatch.setattr(webhooks_api, "_send_game10_paid_message", _fake_send_paid_message)
+
     async def _fake_upsert_crm_game10_payment(*, db, tg_id, payment_id):
         return "created"
-    monkeypatch.setattr(webhooks_api, "_upsert_crm_game10_payment", _fake_upsert_crm_game10_payment)
 
-    import asyncio
+    monkeypatch.setattr(webhooks_api, "_upsert_crm_game10_payment", _fake_upsert_crm_game10_payment)
 
     result = asyncio.run(
         webhooks_api.process_game10_payment_success(
@@ -90,3 +92,83 @@ def test_process_game10_payment_success_returns_already_member(monkeypatch):
     assert calls["already_msg"] == 1
     assert calls["invite"] == 0
     assert calls["paid_msg"] == 0
+
+
+def test_process_game10_payment_success_sets_invite_sent_only_after_successful_delivery(monkeypatch):
+    class _DummyCRMService:
+        def __init__(self, db):
+            self.db = db
+
+        async def mark_private_channel_paid(self, tg_id, ensure_invite=False):
+            return True
+
+    async def _fake_get_chat_member_status(*, chat_id, user_id):
+        return None
+
+    async def _fake_create_invite(*, tg_id, payment_id):
+        return "https://example.com/invite"
+
+    async def _fake_send_paid_message(*, tg_id, invite_link):
+        return {"ok": True, "error_type": None}
+
+    async def _fake_upsert_crm_game10_payment(*, db, tg_id, payment_id):
+        return "created"
+
+    monkeypatch.setenv("TELEGRAM_PRIVATE_CHANNEL_ID", "-1003326379979")
+    monkeypatch.setattr(webhooks_api, "CRMService", _DummyCRMService)
+    monkeypatch.setattr(webhooks_api, "_get_chat_member_status", _fake_get_chat_member_status)
+    monkeypatch.setattr(webhooks_api, "_create_game10_join_request_link", _fake_create_invite)
+    monkeypatch.setattr(webhooks_api, "_send_game10_paid_message", _fake_send_paid_message)
+    monkeypatch.setattr(webhooks_api, "_upsert_crm_game10_payment", _fake_upsert_crm_game10_payment)
+
+    result = asyncio.run(
+        webhooks_api.process_game10_payment_success(
+            db=SimpleNamespace(),
+            payment_id="yk_ok_1",
+            tg_id=123456,
+        )
+    )
+
+    assert result["result"] == "invite_sent"
+    assert result["invite_sent"] is True
+    assert result["already_in_channel"] is False
+
+
+def test_process_game10_payment_success_returns_invite_failed_on_telegram_error(monkeypatch):
+    class _DummyCRMService:
+        def __init__(self, db):
+            self.db = db
+
+        async def mark_private_channel_paid(self, tg_id, ensure_invite=False):
+            return True
+
+    async def _fake_get_chat_member_status(*, chat_id, user_id):
+        return None
+
+    async def _fake_create_invite(*, tg_id, payment_id):
+        return "https://example.com/invite"
+
+    async def _fake_send_paid_message(*, tg_id, invite_link):
+        return {"ok": False, "error_type": "Forbidden"}
+
+    async def _fake_upsert_crm_game10_payment(*, db, tg_id, payment_id):
+        return "created"
+
+    monkeypatch.setenv("TELEGRAM_PRIVATE_CHANNEL_ID", "-1003326379979")
+    monkeypatch.setattr(webhooks_api, "CRMService", _DummyCRMService)
+    monkeypatch.setattr(webhooks_api, "_get_chat_member_status", _fake_get_chat_member_status)
+    monkeypatch.setattr(webhooks_api, "_create_game10_join_request_link", _fake_create_invite)
+    monkeypatch.setattr(webhooks_api, "_send_game10_paid_message", _fake_send_paid_message)
+    monkeypatch.setattr(webhooks_api, "_upsert_crm_game10_payment", _fake_upsert_crm_game10_payment)
+
+    result = asyncio.run(
+        webhooks_api.process_game10_payment_success(
+            db=SimpleNamespace(),
+            payment_id="yk_err_1",
+            tg_id=123456,
+        )
+    )
+
+    assert result["result"] == "invite_failed"
+    assert result["invite_sent"] is False
+    assert result["error_type"] == "Forbidden"

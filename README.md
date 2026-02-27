@@ -1,4 +1,4 @@
-﻿# promotion_Renata
+# promotion_Renata
 
 ## Запуск Docker-стека
 
@@ -15,6 +15,10 @@ Runtime entrypoints:
 - `web`: `uvicorn core.main:app --host 0.0.0.0 --port 8000`
 - `bot`: `python -m telegram_bot.main`
 - `frontend`: `nginx` (из `crm_web/admin-panel/Dockerfile`)
+
+Контур runtime опирается на `core/`, `telegram_bot/`, `crm_web/admin-panel/`.
+Папки `legacy/` и `backend/` оставлены как архив/история и не участвуют в production entrypoints.
+Артефакты разработки (`.tmp/`, `__pycache__/`, `.pytest_cache/`, `.vscode/`, `*.pyc`, `*.lock`) исключены из git и docker build context.
 
 Порты в production compose (для подготовки HTTPS на хосте):
 - `web`: `127.0.0.1:8000:8000`
@@ -69,7 +73,7 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml ps
 Бот работает в polling (`getUpdates`) и должен быть запущен только в одном экземпляре.
 
 Что добавлено:
-- lock-файл: `/tmp/renata_bot.lock`
+- lock-файл по умолчанию: `/tmp/promotion_renata/renata_bot.lock`
 - lock-путь можно переопределить через `BOT_LOCK_PATH`
 - лог инстанса: `host`, `pid`, `token_hash` (без вывода токена)
 - при занятом lock второй процесс завершается, не создавая конфликтов
@@ -112,6 +116,7 @@ docker ps --format "{{.Names}}\t{{.Image}}\t{{.Labels}}"
 - убедиться, что запущен только один контейнер `bot`
 - убедиться, что локально не запущен `python -m telegram_bot.main`
 - убедиться, что `BOT_LOCK_PATH` указывает в доступный путь внутри контейнера
+- временные lock/runtime-файлы не должны храниться в корне репозитория
 
 ### Bot unhealthy
 
@@ -686,3 +691,62 @@ curl -i -H "Host: api.<DOMAIN>" http://127.0.0.1/readyz
 curl -i -H "Host: crm.<DOMAIN>" http://127.0.0.1/api/healthz
 curl -i -H "Host: crm.<DOMAIN>" http://127.0.0.1/api/readyz
 ```
+
+## Payment access diagnostics (P0)
+
+Use this checklist when user says "payment succeeded, but no private TG access".
+
+1. Verify YooKassa webhook POST traffic in nginx:
+
+```bash
+zgrep -h 'POST /api/webhooks/yookassa/' /var/log/nginx/access.log*
+```
+
+2. Verify backend webhook handler diagnostics (`event`, `payment_id`, `request_id`, `status`):
+
+```bash
+docker compose -f compose.prod.yml logs -n 300 web | grep "YooKassa webhook handled"
+```
+
+3. Verify invite delivery result and error type (`invite_sent` or `invite_failed`):
+
+```bash
+docker compose -f compose.prod.yml logs -n 300 web | grep -E "YooKassa payment succeeded|Game10 invite delivery failed"
+```
+
+4. Safe Telegram delivery probe by `tg_id` (token is read from env, never printed):
+
+```bash
+docker compose -f compose.prod.yml exec -T bot python - <<'PY'
+import asyncio
+import os
+import httpx
+
+tg_id = int(os.environ["TEST_TG_ID"])
+bot_token = os.environ["BOT_TOKEN"]
+
+async def main():
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {"chat_id": tg_id, "text": "diag: delivery check"}
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(url, json=payload)
+    try:
+        data = resp.json()
+    except Exception:
+        data = {}
+    print({
+        "status_code": resp.status_code,
+        "ok": bool(data.get("ok")),
+        "error_code": data.get("error_code"),
+        "description": data.get("description"),
+    })
+
+asyncio.run(main())
+PY
+```
+
+Interpretation:
+- `Forbidden`: user blocked bot or user never started chat with bot.
+- `BadRequest`: invalid `tg_id`/chat not found or malformed Telegram request.
+- `Timeout`: Telegram API/network timeout.
+- No webhook POST records in nginx: YooKassa webhook URL/delivery issue.

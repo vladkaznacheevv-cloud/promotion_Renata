@@ -21,9 +21,11 @@ __pycache__
 *.bak
 *.bak-*
 *.tmp
+*.lock
 
 .tmp
 tmp
+tests
 
 crm_web/admin-panel/node_modules
 crm_web/admin-panel/dist

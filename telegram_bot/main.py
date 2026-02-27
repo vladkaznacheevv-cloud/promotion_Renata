@@ -57,14 +57,13 @@ get_game10_kb ,
 get_game10_description_kb ,
 get_payment_contact_choice_kb ,
 get_game10_payment_link_kb ,
-get_ai_quick_actions_kb ,
 )
 from telegram_bot .text_utils import normalize_text_for_telegram ,looks_like_mojibake ,normalize_ui_reply_markup 
 from telegram_bot .text_formatting import format_event_card 
 from telegram_bot .lock_utils import get_lock_path ,touch_lock_heartbeat 
 from telegram_bot .typing_indicator import TypingIndicator 
 from telegram_bot .screen_manager import ScreenManager
-from telegram_bot .utils import detect_intent ,detect_product_focus ,detect_buy_intent ,apply_focus_timeout_state
+from telegram_bot .utils import detect_intent ,detect_product_focus ,apply_focus_timeout_state
 from telegram_bot .private_channel_gate import decide_private_channel_join_action
 try:
     import qrcode
@@ -106,7 +105,7 @@ logger .info ("AI configured: key=%s model=%s",bool (AI_API_KEY ),ai_service .mo
 screen_manager =ScreenManager ()
 
 
-# In-memory (РїРѕР·Р¶Рµ РјРѕР¶РЅРѕ РІС‹РЅРµСЃС‚Рё РёСЃС‚РѕСЂРёСЋ РІ Redis/DB)
+# In-memory (при необходимости историю можно перенести в Redis/DB)
 chat_histories :dict [int ,list [dict ]]={}
 
 # User states
@@ -158,6 +157,7 @@ PAYMENT_STATUS_CANCELED_SCREEN ="Платеж отменен или истек. 
 PAYMENT_STATUS_CONFIRMED_SCREEN ="Оплата подтверждена. Нажмите «Вступить в канал»."
 PAYMENT_ALREADY_IN_CHANNEL_SCREEN ="Вы уже состоите в закрытом канале."
 PAYMENT_VARIANT_MAIN ="game10_main"
+ASSISTANT_ENTRY_HINT_TEXT ="Чтобы задать вопрос ассистенту, откройте раздел и нажмите «Вопросы к ассистенту»."
 
 
 def _instance_meta ()->dict [str ,str ]:
@@ -706,7 +706,7 @@ async def _get_last_game10_payment_local (tg_id :int )->dict |None :
 
 def _short_text (value :str |None ,limit :int =420 )->str :
     if not value :
-        return "РћРїРёСЃР°РЅРёРµ РЅРµ СѓРєР°Р·Р°РЅРѕ."
+        return "Описание не указано."
     text =normalize_text_for_telegram (value )or value 
     if len (text )<=limit :
         return text 
@@ -716,141 +716,87 @@ def _short_text (value :str |None ,limit :int =420 )->str :
 def _format_catalog_price (price_value )->str :
     try :
         if price_value is None :
-            return "Р¦РµРЅР° РїРѕ Р·Р°РїСЂРѕСЃСѓ"
+            return "Цена по запросу"
         price =int (float (price_value ))
         if price <=0 :
-            return "Р‘РµСЃРїР»Р°С‚РЅРѕ"
-        return f"{price } в‚Ѕ"
+            return "Бесплатно"
+        return f"{price } ₽"
     except Exception :
-        return "Р¦РµРЅР° РїРѕ Р·Р°РїСЂРѕСЃСѓ"
+        return "Цена по запросу"
 
 
 def _format_catalog_item_card (item :CatalogItem )->str :
-    title =normalize_text_for_telegram (item .title )or "Р‘РµР· РЅР°Р·РІР°РЅРёСЏ"
+    title =normalize_text_for_telegram (item .title )or "Без названия"
     description =_short_text (item .description )
     price_text =_format_catalog_price (item .price )
     return (
     f"{title }\n"
-    f"рџ’і {price_text }\n\n"
+    f"Цена: {price_text }\n\n"
     f"{description }"
     )
 
 GESTALT_SHORT_SCREEN_1 =(
-"🧠 *Гештальт-терапия*\n\n"
-"Помогает:\n"
-"• лучше понимать свои чувства\n"
-"• снижать внутреннее напряжение\n"
-"• жить осознанно «здесь и сейчас»\n\n"
-"Это про живой контакт с собой и людьми,\n"
-"а не про советы «как правильно»."
+"*\u0413\u0435\u0448\u0442\u0430\u043b\u044c\u0442-\u0442\u0435\u0440\u0430\u043f\u0438\u044f*\n\n"
+"\u041f\u043e\u043c\u043e\u0433\u0430\u0435\u0442:\n"
+"- \u043b\u0443\u0447\u0448\u0435 \u043f\u043e\u043d\u0438\u043c\u0430\u0442\u044c \u0441\u0432\u043e\u0438 \u0447\u0443\u0432\u0441\u0442\u0432\u0430\n"
+"- \u0441\u043d\u0438\u0436\u0430\u0442\u044c \u0432\u043d\u0443\u0442\u0440\u0435\u043d\u043d\u0435\u0435 \u043d\u0430\u043f\u0440\u044f\u0436\u0435\u043d\u0438\u0435\n"
+"- \u0436\u0438\u0442\u044c \u043e\u0441\u043e\u0437\u043d\u0430\u043d\u043d\u043e."
 )
 
 GESTALT_SHORT_SCREEN_2 =(
-"🎓 *Форматы и цены*\n\n"
-"👤 *Индивидуальная терапия*\n"
-"Личное пространство для работы с собой.\n"
-"💰 Цена: *уточняется при записи*\n\n"
-"👥 *Групповая терапия*\n"
-"Безопасная группа для поддержки и опыта.\n"
-"💰 Цена: *уточняется при записи*\n\n"
-"В процессе вы:\n"
-"– лучше понимаете себя\n"
-"– учитесь выстраивать границы\n"
-"– становитесь свободнее и честнее"
+"*\u0424\u043e\u0440\u043c\u0430\u0442\u044b \u0438 \u0446\u0435\u043d\u044b*\n\n"
+"*\u0418\u043d\u0434\u0438\u0432\u0438\u0434\u0443\u0430\u043b\u044c\u043d\u0430\u044f \u0442\u0435\u0440\u0430\u043f\u0438\u044f*\n"
+"\u041b\u0438\u0447\u043d\u043e\u0435 \u043f\u0440\u043e\u0441\u0442\u0440\u0430\u043d\u0441\u0442\u0432\u043e \u0434\u043b\u044f \u0440\u0430\u0431\u043e\u0442\u044b \u0441 \u0441\u043e\u0431\u043e\u0439.\n"
+"\u0426\u0435\u043d\u0430: *\u0443\u0442\u043e\u0447\u043d\u044f\u0435\u0442\u0441\u044f \u043f\u0440\u0438 \u0437\u0430\u043f\u0438\u0441\u0438*\n\n"
+"*\u0413\u0440\u0443\u043f\u043f\u043e\u0432\u0430\u044f \u0442\u0435\u0440\u0430\u043f\u0438\u044f*\n"
+"\u0411\u0435\u0437\u043e\u043f\u0430\u0441\u043d\u0430\u044f \u0433\u0440\u0443\u043f\u043f\u0430 \u0434\u043b\u044f \u043f\u043e\u0434\u0434\u0435\u0440\u0436\u043a\u0438 \u0438 \u043e\u043f\u044b\u0442\u0430.\n"
+"\u0426\u0435\u043d\u0430: *\u0443\u0442\u043e\u0447\u043d\u044f\u0435\u0442\u0441\u044f \u043f\u0440\u0438 \u0437\u0430\u043f\u0438\u0441\u0438*."
 )
 
 ASSISTANT_GREETING =(
-"Здравствуйте, я ассистент Ренаты Минаковой, какой у Вас вопрос?"
+"\u0417\u0434\u0440\u0430\u0432\u0441\u0442\u0432\u0443\u0439\u0442\u0435, \u044f \u0430\u0441\u0441\u0438\u0441\u0442\u0435\u043d\u0442 \u0420\u0435\u043d\u0430\u0442\u044b \u041c\u0438\u043d\u0430\u043a\u043e\u0432\u043e\u0439. \u041a\u0430\u043a\u043e\u0439 \u0443 \u0432\u0430\u0441 \u0432\u043e\u043f\u0440\u043e\u0441?"
 )
 
 COURSE_ASSISTANT_GREETING =(
-"Здравствуйте, я ассистент Ренаты Минаковой. Задайте вопросы о курсе — я расскажу программу, кому подойдет и как записаться.\n\n"
-"Примеры вопросов:\n"
-"• Какая программа курса?\n"
-"• Кому подойдет курс и как записаться?"
+"\u0417\u0434\u0440\u0430\u0432\u0441\u0442\u0432\u0443\u0439\u0442\u0435, \u044f \u0430\u0441\u0441\u0438\u0441\u0442\u0435\u043d\u0442 \u0420\u0435\u043d\u0430\u0442\u044b \u041c\u0438\u043d\u0430\u043a\u043e\u0432\u043e\u0439. \u0417\u0430\u0434\u0430\u0439\u0442\u0435 \u0432\u043e\u043f\u0440\u043e\u0441\u044b \u043e \u043a\u0443\u0440\u0441\u0435, \u044f \u0440\u0430\u0441\u0441\u043a\u0430\u0436\u0443 \u043f\u0440\u043e\u0433\u0440\u0430\u043c\u043c\u0443, \u043a\u043e\u043c\u0443 \u043f\u043e\u0434\u043e\u0439\u0434\u0435\u0442 \u0438 \u043a\u0430\u043a \u0437\u0430\u043f\u0438\u0441\u0430\u0442\u044c\u0441\u044f.\n\n"
+"\u041f\u0440\u0438\u043c\u0435\u0440\u044b \u0432\u043e\u043f\u0440\u043e\u0441\u043e\u0432:\n"
+"- \u041a\u0430\u043a\u0430\u044f \u043f\u0440\u043e\u0433\u0440\u0430\u043c\u043c\u0430 \u043a\u0443\u0440\u0441\u0430?\n"
+"- \u041a\u043e\u043c\u0443 \u043f\u043e\u0434\u043e\u0439\u0434\u0435\u0442 \u043a\u0443\u0440\u0441 \u0438 \u043a\u0430\u043a \u0437\u0430\u043f\u0438\u0441\u0430\u0442\u044c\u0441\u044f?"
 )
 
 ONLINE_COURSES_TEXT =(
-"Почему я хожу по кругу? Как выйти из детских сценариев, которые управляют вами\n\n"
-"\"Чувствуешь вину, когда отдыхаешь?\"\n"
-"\"Постоянно спасаешь подруг, а о тебе никто не помнит?\"\n"
-"\"В ссорах всегда оказываешься крайним?\"\n"
-"Это не твой характер. Это роль \"Козла отпущения\" или \"Героя\", которую тебе навязали в 5 лет. Узнай, как её снять, на лекции-практикуме."
+"\u0410\u0432\u0442\u043e\u0440\u0441\u043a\u0438\u0439 \u043a\u0443\u0440\u0441 \u043b\u0435\u043a\u0446\u0438\u0439 \u043e \u043b\u0438\u0447\u043d\u043e\u043c \u0440\u043e\u0441\u0442\u0435 \u0438 \u0441\u0446\u0435\u043d\u0430\u0440\u0438\u044f\u0445 \u043f\u043e\u0432\u0435\u0434\u0435\u043d\u0438\u044f.\n\n"
+"\u0412\u044b \u043f\u043e\u043b\u0443\u0447\u0438\u0442\u0435 \u0441\u0442\u0440\u0443\u043a\u0442\u0443\u0440\u043d\u0443\u044e \u043f\u0440\u043e\u0433\u0440\u0430\u043c\u043c\u0443 \u0438 \u043f\u0440\u0430\u043a\u0442\u0438\u0447\u0435\u0441\u043a\u0438\u0435 \u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442\u044b."
 )
 
 GAME10_SCREEN_TEXT =(
-"\U0001F525 \u00ab\u0418\u0433\u0440\u0430 10:0\u00bb\n\n"
-"\u0422\u044b \u0432 \u0437\u0430\u043a\u0440\u044b\u0442\u043e\u043c \u0441\u043e\u043e\u0431\u0449\u0435\u0441\u0442\u0432\u0435 \u00ab\u0418\u0433\u0440\u0430 10:0\u00bb. \u0417\u0434\u0435\u0441\u044c \u0442\u044b \u043d\u0430\u0447\u043d\u0451\u0448\u044c \u0434\u0435\u0439\u0441\u0442\u0432\u043e\u0432\u0430\u0442\u044c \u0438 \u043f\u043e\u0431\u0435\u0436\u0434\u0430\u0442\u044c. \u0422\u044b \u043f\u043e\u043b\u0443\u0447\u0438\u0448\u044c \u0440\u0430\u0441\u043f\u0430\u043a\u043e\u0432\u043a\u0443 \u0441\u0432\u043e\u0435\u0439 \u0441\u0443\u043f\u0435\u0440-\u0441\u0438\u043b\u044b \u0432 \u043e\u0442\u043d\u043e\u0448\u0435\u043d\u0438\u044f\u0445, \u043a\u0430\u0440\u044c\u0435\u0440\u0435, \u0431\u0438\u0437\u043d\u0435\u0441\u0435, \u0437\u0434\u043e\u0440\u043e\u0432\u044c\u0435. \u042d\u0442\u043e \u0431\u0435\u0440\u0435\u0436\u043d\u0430\u044f \u043c\u0435\u0442\u043e\u0434\u043e\u043b\u043e\u0433\u0438\u044f \u0441\u043e\u0431\u0440\u0430\u043d\u043d\u0430\u044f \u0438\u0437 \u0441\u0438\u0441\u0442\u0435\u043c\u043d\u043e\u0439 \u043f\u0441\u0438\u0445\u043e\u043b\u043e\u0433\u0438\u0438 \u0438 \u043d\u0435\u0439\u0440\u043e\u043f\u0440\u0430\u043a\u0442\u0438\u043a. \n"
-"\u041a\u043e\u0442\u043e\u0440\u0430\u044f \u043f\u043e\u0437\u0432\u043e\u043b\u0438\u0442 \u0442\u0435\u0431\u0435 \u0440\u0430\u0437\u0432\u0438\u0432\u0430\u0442\u044c\u0441\u044f \u0441\u0442\u0430\u0431\u0438\u043b\u044c\u043d\u043e. \u0413\u0430\u0440\u043c\u043e\u043d\u0438\u0447\u043d\u043e \u0441\u0442\u0440\u043e\u0438\u0442\u044c \u043e\u0442\u043d\u043e\u0448\u0435\u043d\u0438\u044f, \u043d\u0430\u043f\u043e\u043b\u043d\u044f\u0442\u044c\u0441\u044f \u044d\u043d\u0435\u0440\u0433\u0438\u0435\u0439, \u0443\u0447\u0430\u0441\u0442\u0432\u043e\u0432\u0430\u0442\u044c \u0432 \u043f\u0440\u044f\u043c\u044b\u0445 \u044d\u0444\u0438\u0440\u0430\u0445 \u0438 \u0440\u0430\u0437\u0431\u043e\u0440\u0430\u0445, \u0441\u043b\u0443\u0448\u0430\u0442\u044c \u043f\u043e\u0434\u043a\u0430\u0441\u0442\u044b, \u043e\u043f\u0440\u0435\u0434\u0435\u043b\u044f\u0442\u044c \u0436\u0435\u043d\u0441\u043a\u0438\u0435 \u0438 \u043f\u0440\u043e\u0444\u0435\u0441\u0441\u0438\u043e\u043d\u0430\u043b\u044c\u043d\u044b\u0435 \u0442\u0440\u0435\u043d\u0434\u044b. \u0418 \u0432\u0441\u0435 \u044d\u0442\u043e \u043f\u0440\u0438 \u0433\u043b\u0443\u0431\u0438\u043d\u043d\u043e\u0439 \u043f\u043e\u0434\u0434\u0435\u0440\u0436\u043a\u0435 \u0420\u0435\u043d\u0430\u0442\u044b, \u043a\u043e\u043c\u0430\u043d\u0434\u044b \u043f\u0441\u0438\u0445\u043e\u043b\u043e\u0433\u043e\u0432 \u0438 \u0434\u0440\u0443\u0433\u0438\u0445 \u044d\u043a\u0441\u043f\u0435\u0440\u0442\u043e\u0432. \u0412\u0441\u0435 \u0432 \u044d\u0442\u043e\u043c \u043f\u0440\u043e\u0441\u0442\u0440\u0430\u043d\u0441\u0442\u0432\u0435 \u0443\u0441\u0442\u0440\u043e\u0435\u043d\u043e \u0442\u0430\u043a, \u0447\u0442\u043e \u0442\u044b \u0431\u0443\u0434\u0435\u0448\u044c \u0441 \u0437\u0430\u0431\u043e\u0442\u043e\u0439 \u043d\u0430 \u043a\u0430\u0436\u0434\u043e\u043c \u044d\u0442\u0430\u043f\u0435. \u042f \u0437\u043d\u0430\u044e \u0447\u0442\u043e \u0442\u044b \u0443\u0441\u0442\u0430\u043b\u0430 \u0431\u044b\u0442\u044c \u043e\u0442\u0432\u0435\u0442\u0441\u0442\u0432\u0435\u043d\u043d\u043e\u0439 \u0438 \u043f\u043e\u044d\u0442\u043e\u043c\u0443 \u043c\u044b \u0441\u0434\u0435\u043b\u0430\u043b\u0438 \u0432\u0441\u0451, \u0447\u0442\u043e\u0431\u044b \u0442\u0435\u0431\u0435 \u0431\u044b\u043b\u043e \u043b\u0435\u0433\u043a\u043e \u043c\u0435\u043d\u044f\u0442\u044c\u0441\u044f."
+"\u00ab\u0418\u0433\u0440\u0430 10:0\u00bb\n\n"
+"\u0422\u044b \u0432 \u0437\u0430\u043a\u0440\u044b\u0442\u043e\u043c \u0441\u043e\u043e\u0431\u0449\u0435\u0441\u0442\u0432\u0435 \u00ab\u0418\u0433\u0440\u0430 10:0\u00bb. \u0417\u0434\u0435\u0441\u044c \u0442\u044b \u043d\u0430\u0447\u043d\u0435\u0448\u044c \u0434\u0435\u0439\u0441\u0442\u0432\u043e\u0432\u0430\u0442\u044c \u0438 \u043f\u043e\u0431\u0435\u0436\u0434\u0430\u0442\u044c. "
+"\u0422\u044b \u043f\u043e\u043b\u0443\u0447\u0438\u0448\u044c \u0440\u0430\u0441\u043f\u0430\u043a\u043e\u0432\u043a\u0443 \u0441\u0432\u043e\u0435\u0439 \u0441\u0443\u043f\u0435\u0440-\u0441\u0438\u043b\u044b \u0432 \u043e\u0442\u043d\u043e\u0448\u0435\u043d\u0438\u044f\u0445, \u043a\u0430\u0440\u044c\u0435\u0440\u0435, \u0431\u0438\u0437\u043d\u0435\u0441\u0435 \u0438 \u0437\u0434\u043e\u0440\u043e\u0432\u044c\u0435. "
+"\u042d\u0442\u043e \u0431\u0435\u0440\u0435\u0436\u043d\u0430\u044f \u043c\u0435\u0442\u043e\u0434\u043e\u043b\u043e\u0433\u0438\u044f, \u0441\u043e\u0431\u0440\u0430\u043d\u043d\u0430\u044f \u0438\u0437 \u0441\u0438\u0441\u0442\u0435\u043c\u043d\u043e\u0439 \u043f\u0441\u0438\u0445\u043e\u043b\u043e\u0433\u0438\u0438 \u0438 \u043d\u0435\u0439\u0440\u043e\u043f\u0440\u0430\u043a\u0442\u0438\u043a."
 )
 
 GAME10_ASSISTANT_GREETING =(
-"*Задайте вопрос про «Игра 10:0»*\n"
-"Например:\n"
-"• С чего начать в «Игра 10:0»?\n"
-"• Что я получу в клубе?\n"
-"• Как проходит работа и поддержка?"
+"\u0417\u0430\u0434\u0430\u0439\u0442\u0435 \u0432\u043e\u043f\u0440\u043e\u0441 \u043f\u0440\u043e \u00ab\u0418\u0433\u0440\u0430 10:0\u00bb.\n"
+"\u041d\u0430\u043f\u0440\u0438\u043c\u0435\u0440:\n"
+"- \u0421 \u0447\u0435\u0433\u043e \u043d\u0430\u0447\u0430\u0442\u044c \u0432 \u00ab\u0418\u0433\u0440\u0430 10:0\u00bb?\n"
+"- \u0427\u0442\u043e \u044f \u043f\u043e\u043b\u0443\u0447\u0443 \u0432 \u0441\u043e\u043e\u0431\u0449\u0435\u0441\u0442\u0432\u0435?\n"
+"- \u041a\u0430\u043a \u043f\u0440\u043e\u0445\u043e\u0434\u0438\u0442 \u0440\u0430\u0431\u043e\u0442\u0430 \u0438 \u043f\u043e\u0434\u0434\u0435\u0440\u0436\u043a\u0430?"
 )
 
 
-GAME10_DESCRIPTION_SCREEN_TEXT ="""Описание программы
+GAME10_DESCRIPTION_SCREEN_TEXT ="""\u041e\u043f\u0438\u0441\u0430\u043d\u0438\u0435 \u043f\u0440\u043e\u0433\u0440\u0430\u043c\u043c\u044b
 
-Формат работы: 4 недели, 4 тематических блока. Отношения, деньги, энергия, таланты.
+\u0424\u043e\u0440\u043c\u0430\u0442 \u0440\u0430\u0431\u043e\u0442\u044b: 4 \u043d\u0435\u0434\u0435\u043b\u0438, 4 \u0442\u0435\u043c\u0430\u0442\u0438\u0447\u0435\u0441\u043a\u0438\u0445 \u0431\u043b\u043e\u043a\u0430. \u041e\u0442\u043d\u043e\u0448\u0435\u043d\u0438\u044f, \u0434\u0435\u043d\u044c\u0433\u0438, \u044d\u043d\u0435\u0440\u0433\u0438\u044f, \u0442\u0430\u043b\u0430\u043d\u0442\u044b.
 
-Что вы получите:
-• Понятные знания по этим темам — никакой воды, только то, что работает
-• Чёткие инструкции, как наладить жизнь в этих четырёх сферах
-• Материалы, которые останутся с вами — сможете пересматривать и пользоваться
-• Для психологов — новые рабочие инструменты
+\u0427\u0442\u043e \u0432\u044b \u043f\u043e\u043b\u0443\u0447\u0438\u0442\u0435:
+- \u041f\u043e\u043d\u044f\u0442\u043d\u044b\u0435 \u0437\u043d\u0430\u043d\u0438\u044f \u043f\u043e \u044d\u0442\u0438\u043c \u0442\u0435\u043c\u0430\u043c, \u0442\u043e\u043b\u044c\u043a\u043e \u0442\u043e, \u0447\u0442\u043e \u0440\u0430\u0431\u043e\u0442\u0430\u0435\u0442
+- \u0427\u0435\u0442\u043a\u0438\u0435 \u0438\u043d\u0441\u0442\u0440\u0443\u043a\u0446\u0438\u0438, \u043a\u0430\u043a \u043d\u0430\u043b\u0430\u0434\u0438\u0442\u044c \u0436\u0438\u0437\u043d\u044c \u0432 \u044d\u0442\u0438\u0445 \u0441\u0444\u0435\u0440\u0430\u0445
+- \u041c\u0430\u0442\u0435\u0440\u0438\u0430\u043b\u044b, \u043a\u043e\u0442\u043e\u0440\u044b\u0435 \u043e\u0441\u0442\u0430\u043d\u0443\u0442\u0441\u044f \u0441 \u0432\u0430\u043c\u0438
+- \u0414\u043b\u044f \u043f\u0441\u0438\u0445\u043e\u043b\u043e\u0433\u043e\u0432: \u043d\u043e\u0432\u044b\u0435 \u0440\u0430\u0431\u043e\u0447\u0438\u0435 \u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442\u044b
 
-Кто ведёт: Я, Рената Минакова.
-25 лет опыта. И команда дипломированных специалистов, которые помогают участницам.
-
-Это уникальная информация, которой больше нигде нет. Она построена на системном подходе.
-
-Разберём:
-• Что влияет на уровень энергии, откуда силы берутся и куда уходят
-• Как закончить отношения, которые вас обесточивают
-• Как восстановить связь с родом и чувствовать поддержку
-• Как работать с родовыми программами (денежные блоки, болезни детей, проблемы в личной жизни и другое)
-
-Лекции и подкасты, где вы получите:
-• Разбор ваших сценариев — почему вы попадаете в одни и те же истории
-• Как поменять жизненный сценарий, который мешает
-• Простые техники из нейролингвистического программирования (НЛП) для работы с собой
-
-Для психологов:
-• Как работать со сценариями клиентов
-• Как применять сказкотерапию в практике
-
-• Как устроен наш мозг, когда мы берёмся за новое дело
-• Прокрастинация с точки зрения работы мозга — почему мы откладываем и как с этим быть
-• Тревога и панические атаки — что происходит и как помочь себе прямо сейчас
-• Простые способы самопомощи, когда накрывает тревога, памятки и рекомендации
-
-Для психологов:
-• Готовые схемы работы с тревожными состояниями и паническими атаками
-
-• Как травма проявляется у взрослых и как себя поддержать
-• Как травма влияет на близких, деньги, энергию, таланты и отношения
-• Что происходит с поведением и эмоциями, если есть непроработанная травма
-
-Для психологов:
-• Особенности работы с травмой
-• Как правильно вести клиента в таких случаях
-
-• Как продвигаться в карьере, чтобы рос доход
-• Как работать с искусственным интеллектом (ИИ) себе в помощь
-• Как вести соцсети и понимать тренды — для личного и профессионального роста
-• Как воспитывать детей разного возраста
-• Как семейные и родовые сценарии влияют на поведение и судьбу ребёнка
-
-Что еще вас ждёт в сообществе:
-• Мастер-классы с приглашёнными специалистами из бьюти-сферы
-• Прямые эфиры с Ренатой Минаковой
-• Встречи с экспертами: врач-невролог и детский психолог ответят на ваши вопросы
-• Списки книг по каждой теме — для тех, кто хочет глубже изучить вопрос
-• Раз в неделю — фокус-группа с дипломированным психологом. В тёплой обстановке разбираем ваши ситуации, поддерживаем и помогаем найти решение"""
+\u041a\u0442\u043e \u0432\u0435\u0434\u0435\u0442: \u0420\u0435\u043d\u0430\u0442\u0430 \u041c\u0438\u043d\u0430\u043a\u043e\u0432\u0430 \u0438 \u043a\u043e\u043c\u0430\u043d\u0434\u0430 \u0434\u0438\u043f\u043b\u043e\u043c\u0438\u0440\u043e\u0432\u0430\u043d\u043d\u044b\u0445 \u0441\u043f\u0435\u0446\u0438\u0430\u043b\u0438\u0441\u0442\u043e\u0432.
+"""
 
 
 # ============ Helpers ============
@@ -1033,8 +979,8 @@ def classify_update_need_db (update :Update ,context :ContextTypes .DEFAULT_TYPE
 
 async def ensure_user (update :Update ,source :str ="bot",ai_increment :int =0 ,notify_ui :bool =True ):
     """
-    Р•РґРёРЅР°СЏ С‚РѕС‡РєР°: СЃРѕР·РґР°С‘Рј/РѕР±РЅРѕРІР»СЏРµРј РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ РІ Р‘Р” РїРѕ tg_id.
-    Р’РѕР·РІСЂР°С‰Р°РµС‚ РѕР±СЉРµРєС‚ User (РёР· Р‘Р”).
+    Единая точка: создаем/обновляем пользователя в БД по tg_id.
+    Возвращает объект User (из БД).
     """
     tg_user =update .effective_user 
     if tg_user is None :
@@ -1091,12 +1037,12 @@ async def ensure_user_on_message (update :Update ,context :ContextTypes .DEFAULT
 
 
 async def start (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
-# РіР°СЂР°РЅС‚РёСЂСѓРµРј РЅР°Р»РёС‡РёРµ user РІ Р‘Р”
+# гарантируем наличие user в БД
 
     screen_manager .clear_screen (context )
     _reset_states (context )
 
-    text ="РђСЃСЃРёСЃС‚РµРЅС‚ РіРѕС‚РѕРІ РїРѕРјРѕС‡СЊ СЃ... рџ‘‡"
+    text ="\u0410\u0441\u0441\u0438\u0441\u0442\u0435\u043d\u0442 \u0433\u043e\u0442\u043e\u0432 \u043f\u043e\u043c\u043e\u0447\u044c \u0441 \u0432\u044b\u0431\u043e\u0440\u043e\u043c \u0440\u0430\u0437\u0434\u0435\u043b\u0430."
     await _show_screen (update ,context ,text ,reply_markup =get_main_menu ())
 
 
@@ -1704,6 +1650,7 @@ async def event_questions (update :Update ,context :ContextTypes .DEFAULT_TYPE )
     context .user_data [AI_MODE_KEY ]=True
     context .user_data [ASSISTANT_SOURCE_KEY ]="event"
     context .user_data [ASSISTANT_EVENT_ID_KEY ]=event_id
+    context .user_data .pop (PRODUCT_FOCUS_KEY ,None )
     event =_find_cached_event (context ,event_id )
     if event is None :
         await _load_events_cache (update ,context ,force_refresh =True )
@@ -2000,12 +1947,13 @@ async def show_ai_chat (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
 
 
     user_id =update .effective_user .id 
-    chat_histories [user_id ]=[]# СЃР±СЂР°СЃС‹РІР°РµРј РёСЃС‚РѕСЂРёСЋ РїСЂРё РІС…РѕРґРµ
+    chat_histories [user_id ]=[]# сбрасываем историю при входе
 
     context .user_data [WAITING_LEAD_KEY ]=None 
     context .user_data [AI_MODE_KEY ]=True 
-    context .user_data .pop (ASSISTANT_SOURCE_KEY ,None )
+    context .user_data [ASSISTANT_SOURCE_KEY ]="consult"
     context .user_data .pop (ASSISTANT_EVENT_ID_KEY ,None )
+    context .user_data [PRODUCT_FOCUS_KEY ]="gestalt"
 
     await _show_screen (update ,context ,
     ASSISTANT_GREETING ,
@@ -2025,6 +1973,7 @@ async def show_course_questions (update :Update ,context :ContextTypes .DEFAULT_
     context .user_data [AI_MODE_KEY ]=True 
     context .user_data [ASSISTANT_SOURCE_KEY ]="course"
     context .user_data .pop (ASSISTANT_EVENT_ID_KEY ,None )
+    context .user_data [PRODUCT_FOCUS_KEY ]="getcourse"
 
     await _show_screen (
     update ,
@@ -2046,6 +1995,7 @@ async def game10_questions (update :Update ,context :ContextTypes .DEFAULT_TYPE 
     context .user_data [AI_MODE_KEY ]=True
     context .user_data [ASSISTANT_SOURCE_KEY ]="game10"
     context .user_data .pop (ASSISTANT_EVENT_ID_KEY ,None )
+    context .user_data [PRODUCT_FOCUS_KEY ]="game10"
 
     await _show_screen (
     update ,
@@ -2085,6 +2035,11 @@ def _auto_ai_rate_limited (context :ContextTypes .DEFAULT_TYPE )->bool :
 def _build_ai_request_message (context :ContextTypes .DEFAULT_TYPE ,user_message :str ,*,response_mode :str ="default")->str :
     assistant_source =str (context .user_data .get (ASSISTANT_SOURCE_KEY )or "").strip ().lower ()
     ai_message =user_message
+    if assistant_source =="consult":
+        ai_message =f"[FOCUS:GESTALT]\n{user_message }"
+        if response_mode =="sales":
+            ai_message =f"[FOCUS:GESTALT]\n[SALES_MODE]\n{user_message }"
+        return ai_message
     if assistant_source =="course":
         ai_message =f"\u041a\u043e\u043d\u0442\u0435\u043a\u0441\u0442: \u0432\u043e\u043f\u0440\u043e\u0441\u044b \u043e \u043a\u0443\u0440\u0441\u0435 GetCourse.\n{user_message }"
         if response_mode =="sales":
@@ -2182,6 +2137,9 @@ reply_markup =None ,
 
 
 async def _route_detected_intent (update :Update ,context :ContextTypes .DEFAULT_TYPE ,intent :str )->bool :
+    context .user_data [AI_MODE_KEY ]=False
+    context .user_data .pop (ASSISTANT_SOURCE_KEY ,None )
+    context .user_data .pop (ASSISTANT_EVENT_ID_KEY ,None )
     _clear_product_focus (context )
     if intent =="MENU":
         await menu_command (update ,context )
@@ -2254,7 +2212,14 @@ async def handle_ai_message (update :Update ,context :ContextTypes .DEFAULT_TYPE
     if intent :
         return
 
-    if not context .user_data .get (ASSISTANT_SOURCE_KEY ):
+    assistant_source =str (context .user_data .get (ASSISTANT_SOURCE_KEY )or "").strip ().lower ()
+    product_focus =str (context .user_data .get (PRODUCT_FOCUS_KEY )or "").strip ().lower ()
+    if not assistant_source and not product_focus :
+        context .user_data [AI_MODE_KEY ]=False
+        await _show_screen (update ,context ,ASSISTANT_ENTRY_HINT_TEXT ,reply_markup =get_back_to_menu_kb ())
+        return
+
+    if not context .user_data .get (ASSISTANT_SOURCE_KEY )and not context .user_data .get (PRODUCT_FOCUS_KEY ):
         focus_candidate =detect_product_focus (user_message )
         if focus_candidate :
             context .user_data [PRODUCT_FOCUS_KEY ]=focus_candidate
@@ -2286,23 +2251,7 @@ async def handle_text_outside_assistant (update :Update ,context :ContextTypes .
     if intent :
         return
 
-    focus_candidate =detect_product_focus (text )
-    if focus_candidate :
-        context .user_data [PRODUCT_FOCUS_KEY ]=focus_candidate
-    product_focus =str (context .user_data .get (PRODUCT_FOCUS_KEY )or "").strip ().lower ()
-    buy_intent =detect_buy_intent (text )
-
-    if _auto_ai_rate_limited (context ):
-        logger .debug ("auto_ai rate limited: user=%s",getattr (update .effective_user ,"id",None ))
-        return
-
-    await _send_ai_response (
-    update ,
-    context ,
-    user_message =text ,
-    response_mode ="sales" if (buy_intent and product_focus )else "auto_lite",
-    reply_markup =get_ai_quick_actions_kb (),
-    )
+    await _show_screen (update ,context ,ASSISTANT_ENTRY_HINT_TEXT ,reply_markup =get_back_to_menu_kb ())
 
 async def show_help (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     query =update .callback_query
@@ -2322,7 +2271,7 @@ async def show_help (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
 
 async def course_link_unavailable (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     query =update .callback_query 
-    await _answer (query ,"РЎСЃС‹Р»РєР° РІСЂРµРјРµРЅРЅРѕ РЅРµРґРѕСЃС‚СѓРїРЅР°, РјС‹ РѕР±РЅРѕРІРёРј РµС‘ РїРѕСЃР»Рµ СЃРёРЅС…СЂРѕРЅРёР·Р°С†РёРё.",show_alert =True )
+    await _answer (query ,"\u0421\u0441\u044b\u043b\u043a\u0430 \u0432\u0440\u0435\u043c\u0435\u043d\u043d\u043e \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0430, \u043c\u044b \u043e\u0431\u043d\u043e\u0432\u0438\u043c \u0435\u0435 \u043f\u043e\u0441\u043b\u0435 \u0441\u0438\u043d\u0445\u0440\u043e\u043d\u0438\u0437\u0430\u0446\u0438\u0438.",show_alert =True )
 
 
     # --------- Errors / Retry ---------
@@ -2436,7 +2385,7 @@ async def event_register (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     try :
         event_id =int (query .data .split (":")[1 ])
     except Exception :
-        await _answer (query ,"РќРµРєРѕСЂСЂРµРєС‚РЅС‹Р№ event_id",show_alert =True )
+        await _answer (query ,"\u041d\u0435\u043a\u043e\u0440\u0440\u0435\u043a\u0442\u043d\u044b\u0439 event_id",show_alert =True )
         return 
 
     try :
@@ -2446,10 +2395,10 @@ async def event_register (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
             tg_id =update .effective_user .id if update .effective_user else user_db .tg_id 
             result =await crm_service .add_attendee_by_tg_id (event_id ,tg_id )
             if not result .get ("ok")and result .get ("error")=="event_not_found":
-                await _answer (query ,"РЎРѕР±С‹С‚РёРµ РЅРµ РЅР°Р№РґРµРЅРѕ",show_alert =True )
+                await _answer (query ,"\u0421\u043e\u0431\u044b\u0442\u0438\u0435 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e",show_alert =True )
                 return 
             if not result .get ("ok")and result .get ("error")=="user_not_found":
-                await _answer (query ,"РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ",show_alert =True )
+                await _answer (query ,"\u041f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044c \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d",show_alert =True )
                 return 
             await session .commit ()
             if str (context .user_data .get (SCREEN_KIND_KEY )or "")=="event_detail"and int (context .user_data .get (SCREEN_EVENT_ID_KEY )or 0 )==event_id :
@@ -2459,7 +2408,7 @@ async def event_register (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
                 query ,
                 reply_markup =get_event_actions_kb (event_id ,registered =True ),
                 )
-            await _answer (query ,"Р’С‹ Р·Р°РїРёСЃР°РЅС‹!"if not result .get ("already")else "Р’С‹ СѓР¶Рµ Р±С‹Р»Рё Р·Р°РїРёСЃР°РЅС‹")
+            await _answer (query ,"\u0412\u044b \u0437\u0430\u043f\u0438\u0441\u0430\u043d\u044b!"if not result .get ("already")else "\u0412\u044b \u0443\u0436\u0435 \u0431\u044b\u043b\u0438 \u0437\u0430\u043f\u0438\u0441\u0430\u043d\u044b")
     except Exception as e :
         _log_db_issue ("event_register",e )
         _remember_pending_event_action (context ,update ,action ="event_register",event_id =event_id )
@@ -2486,7 +2435,7 @@ async def event_cancel (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     try :
         event_id =int (query .data .split (":")[1 ])
     except Exception :
-        await _answer (query ,"РќРµРєРѕСЂСЂРµРєС‚РЅС‹Р№ event_id",show_alert =True )
+        await _answer (query ,"\u041d\u0435\u043a\u043e\u0440\u0440\u0435\u043a\u0442\u043d\u044b\u0439 event_id",show_alert =True )
         return 
 
     try :
@@ -2496,10 +2445,10 @@ async def event_cancel (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
             tg_id =update .effective_user .id if update .effective_user else user_db .tg_id 
             result =await crm_service .remove_attendee_by_tg_id (event_id ,tg_id )
             if not result .get ("ok")and result .get ("error")=="event_not_found":
-                await _answer (query ,"РЎРѕР±С‹С‚РёРµ РЅРµ РЅР°Р№РґРµРЅРѕ",show_alert =True )
+                await _answer (query ,"\u0421\u043e\u0431\u044b\u0442\u0438\u0435 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e",show_alert =True )
                 return 
             if not result .get ("ok")and result .get ("error")=="user_not_found":
-                await _answer (query ,"РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ",show_alert =True )
+                await _answer (query ,"\u041f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044c \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d",show_alert =True )
                 return 
             await session .commit ()
             if str (context .user_data .get (SCREEN_KIND_KEY )or "")=="event_detail"and int (context .user_data .get (SCREEN_EVENT_ID_KEY )or 0 )==event_id :
@@ -2509,7 +2458,7 @@ async def event_cancel (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
                 query ,
                 reply_markup =get_event_actions_kb (event_id ,registered =False ),
                 )
-            await _answer (query ,"Р—Р°РїРёСЃСЊ РѕС‚РјРµРЅРµРЅР°"if result .get ("removed")else "Р’С‹ РЅРµ Р±С‹Р»Рё Р·Р°РїРёСЃР°РЅС‹")
+            await _answer (query ,"\u0417\u0430\u043f\u0438\u0441\u044c \u043e\u0442\u043c\u0435\u043d\u0435\u043d\u0430"if result .get ("removed")else "\u0412\u044b \u043d\u0435 \u0431\u044b\u043b\u0438 \u0437\u0430\u043f\u0438\u0441\u0430\u043d\u044b")
     except Exception as e :
         await _notify_db_unavailable (update ,e ,scope ="event_cancel")
 
@@ -2525,7 +2474,7 @@ async def event_pay (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     try :
         event_id =int (query .data .split (":")[1 ])
     except Exception :
-        await _answer (query ,"РќРµРєРѕСЂСЂРµРєС‚РЅС‹Р№ event_id",show_alert =True )
+        await _answer (query ,"\u041d\u0435\u043a\u043e\u0440\u0440\u0435\u043a\u0442\u043d\u044b\u0439 event_id",show_alert =True )
         return 
 
     try :
@@ -2534,13 +2483,13 @@ async def event_pay (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
             event_service =EventService (session )
             event =await event_service .get_by_id (event_id )
             if not event :
-                await _answer (query ,"РЎРѕР±С‹С‚РёРµ РЅРµ РЅР°Р№РґРµРЅРѕ",show_alert =True )
+                await _answer (query ,"\u0421\u043e\u0431\u044b\u0442\u0438\u0435 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e",show_alert =True )
                 return 
 
             price_value =event .price 
             amount =int (price_value )if price_value is not None else 0 
             if amount <=0 :
-                await _answer (query ,"РћРїР»Р°С‚Р° РґР»СЏ СЌС‚РѕРіРѕ СЃРѕР±С‹С‚РёСЏ РїРѕРєР° РЅРµРґРѕСЃС‚СѓРїРЅР°",show_alert =True )
+                await _answer (query ,"\u041e\u043f\u043b\u0430\u0442\u0430 \u0434\u043b\u044f \u044d\u0442\u043e\u0433\u043e \u0441\u043e\u0431\u044b\u0442\u0438\u044f \u043f\u043e\u043a\u0430 \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0430",show_alert =True )
                 return 
 
             crm_service =CRMService (session )
@@ -2551,28 +2500,28 @@ async def event_pay (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
             source ="yookassa",
             )
             if result is None :
-                await _answer (query ,"РќРµ СѓРґР°Р»РѕСЃСЊ СЃРѕР·РґР°С‚СЊ РїР»Р°С‚С‘Р¶",show_alert =True )
+                await _answer (query ,"\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0441\u043e\u0437\u0434\u0430\u0442\u044c \u043f\u043b\u0430\u0442\u0435\u0436",show_alert =True )
                 return 
 
             await session .commit ()
 
             payment_link =f"https://pay.example.local/yookassa?payment_id={result ['id']}"
             event_link_part =(
-            f"\nРЎС‚СЂР°РЅРёС†Р° РјРµСЂРѕРїСЂРёСЏС‚РёСЏ РЅР° GetCourse: {event .link_getcourse }"
+            f"\n\u0421\u0442\u0440\u0430\u043d\u0438\u0446\u0430 \u043c\u0435\u0440\u043e\u043f\u0440\u0438\u044f\u0442\u0438\u044f \u043d\u0430 GetCourse: {event .link_getcourse }"
             if _is_valid_http_url (event .link_getcourse )
             else ""
             )
             invite_part =(
-            f"\nРџРѕСЃР»Рµ РїРѕРґС‚РІРµСЂР¶РґРµРЅРёСЏ РѕРїР»Р°С‚С‹ РІС‹ РїРѕР»СѓС‡РёС‚Рµ РґРѕСЃС‚СѓРї РІ РєР°РЅР°Р»: {TG_PRIVATE_CHANNEL_INVITE_LINK }"
+            f"\n\u041f\u043e\u0441\u043b\u0435 \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u0438\u044f \u043e\u043f\u043b\u0430\u0442\u044b \u0432\u044b \u043f\u043e\u043b\u0443\u0447\u0438\u0442\u0435 \u0434\u043e\u0441\u0442\u0443\u043f \u0432 \u043a\u0430\u043d\u0430\u043b: {TG_PRIVATE_CHANNEL_INVITE_LINK }"
             if TG_PRIVATE_CHANNEL_INVITE_LINK 
-            else "\nРџРѕСЃР»Рµ РїРѕРґС‚РІРµСЂР¶РґРµРЅРёСЏ РѕРїР»Р°С‚С‹ РјРµРЅРµРґР¶РµСЂ РѕС‚РїСЂР°РІРёС‚ СЃСЃС‹Р»РєСѓ РІ Р·Р°РєСЂС‹С‚С‹Р№ РєР°РЅР°Р»."
+            else "\n\u041f\u043e\u0441\u043b\u0435 \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u0438\u044f \u043e\u043f\u043b\u0430\u0442\u044b \u043c\u0435\u043d\u0435\u0434\u0436\u0435\u0440 \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u0442 \u0441\u0441\u044b\u043b\u043a\u0443 \u0432 \u0437\u0430\u043a\u0440\u044b\u0442\u044b\u0439 \u043a\u0430\u043d\u0430\u043b."
             )
             await _send (context .bot ,
             chat_id =update .effective_chat .id ,
             text =(
-            "РџР»Р°С‚РµР¶ СЃРѕР·РґР°РЅ (pending).\n"
-            f"РЎСЃС‹Р»РєР° РґР»СЏ РѕРїР»Р°С‚С‹: {payment_link }\n"
-            "Р•СЃР»Рё РЅСѓР¶РµРЅ Р°Р»СЊС‚РµСЂРЅР°С‚РёРІРЅС‹Р№ СЃРїРѕСЃРѕР±, РЅР°Р¶РјРёС‚Рµ В«РЎРІСЏР·Р°С‚СЊСЃСЏ СЃ РјРµРЅРµРґР¶РµСЂРѕРјВ»."
+            "\u041f\u043b\u0430\u0442\u0435\u0436 \u0441\u043e\u0437\u0434\u0430\u043d (pending).\n"
+            f"\u0421\u0441\u044b\u043b\u043a\u0430 \u0434\u043b\u044f \u043e\u043f\u043b\u0430\u0442\u044b: {payment_link }\n"
+            "\u0415\u0441\u043b\u0438 \u043d\u0443\u0436\u0435\u043d \u0430\u043b\u044c\u0442\u0435\u0440\u043d\u0430\u0442\u0438\u0432\u043d\u044b\u0439 \u0441\u043f\u043e\u0441\u043e\u0431, \u043d\u0430\u0436\u043c\u0438\u0442\u0435 \u00ab\u0421\u0432\u044f\u0437\u0430\u0442\u044c\u0441\u044f \u0441 \u043c\u0435\u043d\u0435\u0434\u0436\u0435\u0440\u043e\u043c\u00bb."
             f"{event_link_part }"
             f"{invite_part }"
             ),
@@ -2594,7 +2543,7 @@ async def mark_paid_dev (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
         return 
 
     if not ADMIN_CHAT_ID or str (user .id )!=str (ADMIN_CHAT_ID ):
-        await _reply (message ,"РљРѕРјР°РЅРґР° РґРѕСЃС‚СѓРїРЅР° С‚РѕР»СЊРєРѕ Р°РґРјРёРЅРёСЃС‚СЂР°С‚РѕСЂСѓ Р±РѕС‚Р°.")
+        await _reply (message ,"\u041a\u043e\u043c\u0430\u043d\u0434\u0430 \u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0430 \u0442\u043e\u043b\u044c\u043a\u043e \u0430\u0434\u043c\u0438\u043d\u0438\u0441\u0442\u0440\u0430\u0442\u043e\u0440\u0443 \u0431\u043e\u0442\u0430.")
         return 
 
     args =context .args or []
@@ -2606,7 +2555,7 @@ async def mark_paid_dev (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
         tg_id =int (args [0 ])
         event_id =int (args [1 ])
     except ValueError :
-        await _reply (message ,"tg_id Рё event_id РґРѕР»Р¶РЅС‹ Р±С‹С‚СЊ С‡РёСЃР»Р°РјРё.")
+        await _reply (message ,"tg_id \u0438 event_id \u0434\u043e\u043b\u0436\u043d\u044b \u0431\u044b\u0442\u044c \u0447\u0438\u0441\u043b\u0430\u043c\u0438.")
         return 
 
     try :
@@ -2661,13 +2610,13 @@ async def mark_paid_dev (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
             await _send (context .bot ,
             chat_id =tg_id ,
             text =(
-            "РћРїР»Р°С‚Р° РїРѕРґС‚РІРµСЂР¶РґРµРЅР°. Р’РѕС‚ СЃСЃС‹Р»РєР° РІ Р·Р°РєСЂС‹С‚С‹Р№ РєР°РЅР°Р»:\n"
+            "\u041e\u043f\u043b\u0430\u0442\u0430 \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u0430. \u0412\u043e\u0442 \u0441\u0441\u044b\u043b\u043a\u0430 \u0432 \u0437\u0430\u043a\u0440\u044b\u0442\u044b\u0439 \u043a\u0430\u043d\u0430\u043b:\n"
             f"{TG_PRIVATE_CHANNEL_INVITE_LINK }"
             ),
             )
     except Exception as e :
         logger .exception ("РћС€РёР±РєР° РІ /mark_paid: %s",e )
-        await _reply (message ,"РќРµ СѓРґР°Р»РѕСЃСЊ РѕС‚РјРµС‚РёС‚СЊ РѕРїР»Р°С‚Сѓ. РџСЂРѕРІРµСЂСЊС‚Рµ Р»РѕРіРё.")
+        await _reply (message ,"\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0442\u043c\u0435\u0442\u0438\u0442\u044c \u043e\u043f\u043b\u0430\u0442\u0443. \u041f\u0440\u043e\u0432\u0435\u0440\u044c\u0442\u0435 \u043b\u043e\u0433\u0438.")
 
 
 async def pay_debug (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
@@ -2831,7 +2780,7 @@ def main ():
 
     app =build_app ()
     heartbeat_stop =_start_lock_heartbeat (LOCK_FILE_PATH )
-    logger .info ("Renata Bot Р·Р°РїСѓС‰РµРЅ. PID=%s",os .getpid ())
+    logger .info ("Renata Bot started. PID=%s",os .getpid ())
     logger .warning ("Polling mode: run only ONE bot instance, otherwise Telegram getUpdates conflict may occur.")
     try :
         db .init_db ()
