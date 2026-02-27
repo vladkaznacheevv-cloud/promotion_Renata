@@ -783,7 +783,7 @@ After diagnostics, disable test mode again:
 
 ## Runbook: recheck payment by payment_id
 
-Use local internal script inside `web` container (no HTTP auth needed):
+Use local internal script inside `web` container (no HTTP auth needed, no `PYTHONPATH` required):
 
 ```bash
 docker compose -f compose.prod.yml exec -T web python scripts/admin_recheck_yookassa_payment.py <payment_id>

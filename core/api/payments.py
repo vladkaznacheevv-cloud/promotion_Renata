@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
@@ -26,6 +27,8 @@ logger = logging.getLogger(__name__)
 GAME10_PRICE_RUB = 5000
 GAME10_PRODUCT = "game10"
 GAME10_TEST_PRODUCT = "game10_test"
+_YOOKASSA_CONFIGURED = False
+_URL_RE = re.compile(r"https?://\S+")
 
 
 class Game10PaymentCreateIn(BaseModel):
@@ -116,6 +119,33 @@ def _bot_admin_ids() -> set[int]:
 def _require_admin_tg_id(tg_id: int) -> None:
     if int(tg_id) not in _bot_admin_ids():
         raise HTTPException(status_code=403, detail="Admin only")
+
+
+def _sanitize_error_description(value: str | None) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    return _URL_RE.sub("<redacted_url>", text)[:240]
+
+
+def ensure_yookassa_configured() -> bool:
+    global _YOOKASSA_CONFIGURED
+    if _YOOKASSA_CONFIGURED:
+        return True
+
+    shop_id = (os.getenv("YOOKASSA_SHOP_ID") or "").strip()
+    secret_key = (os.getenv("YOOKASSA_SECRET_KEY") or "").strip()
+    if not shop_id or not secret_key:
+        return False
+
+    try:
+        from yookassa import Configuration as YooKassaConfiguration
+    except Exception:
+        return False
+
+    YooKassaConfiguration.configure(shop_id, secret_key)
+    _YOOKASSA_CONFIGURED = True
+    return True
 
 
 def _public_return_url() -> str:
@@ -299,6 +329,10 @@ async def _get_yookassa_payment_status(payment_id: str) -> str | None:
     payment_id = str(payment_id or "").strip()
     if not payment_id:
         return None
+    try:
+        ensure_yookassa_configured()
+    except Exception:
+        pass
     shop_id = (os.getenv("YOOKASSA_SHOP_ID") or "").strip()
     secret_key = (os.getenv("YOOKASSA_SECRET_KEY") or "").strip()
     if not shop_id or not secret_key:
@@ -495,6 +529,7 @@ async def _recheck_yookassa_payment_internal(
     payment_id = str(payment_id or "").strip()
     if not payment_id:
         raise HTTPException(status_code=422, detail="payment_id is required")
+    ensure_yookassa_configured()
 
     row = await db.execute(
         select(YooKassaPayment).where(YooKassaPayment.payment_id == payment_id).limit(1)
@@ -506,6 +541,11 @@ async def _recheck_yookassa_payment_internal(
         raise HTTPException(status_code=409, detail="payment_id does not belong to tg_id")
 
     remote_status = await _get_yookassa_payment_status(payment_id)
+    status_error_type: str | None = None
+    status_error_code: int | None = None
+    status_error_description: str | None = None
+    if remote_status is None:
+        status_error_type = "StatusUnknown"
     status = str(remote_status or payment.status or "unknown").strip().lower() or "unknown"
     previous_status = str(payment.status or "").strip().lower()
     payment.status = status
@@ -552,6 +592,9 @@ async def _recheck_yookassa_payment_internal(
         "already_in_channel": already_in_channel,
         "result": result_label,
         "error_type": error_type,
+        "status_error_type": status_error_type,
+        "status_error_code": status_error_code,
+        "status_error_description": _sanitize_error_description(status_error_description),
     }
 
 
