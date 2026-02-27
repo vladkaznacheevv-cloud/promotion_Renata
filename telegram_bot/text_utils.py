@@ -5,6 +5,8 @@ import os
 import re
 from typing import Iterable
 
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
+
 logger = logging.getLogger(__name__)
 
 _MOJIBAKE_PATTERNS: tuple[str, ...] = (
@@ -23,6 +25,8 @@ _MOJIBAKE_LATIN_RE = re.compile(r"[ÐÑÃ]")
 _TRAILING_SPACES_RE = re.compile(r"[ \t]+\n")
 _TOO_MANY_NEWLINES_RE = re.compile(r"\n{3,}")
 _SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+_MOJIBAKE_BIGRAM_RE = re.compile(r"(?:Р[А-Яа-яA-Za-z]|С[А-Яа-яA-Za-z])")
+_BAD_CYR_CHARS = set("ђѓєіїјљњћќўџ")
 
 
 def _is_russian_cyrillic_char(ch: str) -> bool:
@@ -58,7 +62,7 @@ def looks_like_mojibake(text: str | None) -> bool:
 def _attempt_repairs(text: str) -> Iterable[str]:
     for source_encoding in ("cp1251", "latin1", "cp1252"):
         try:
-            repaired = text.encode(source_encoding, errors="ignore").decode("utf-8", errors="ignore")
+            repaired = text.encode(source_encoding, errors="strict").decode("utf-8", errors="strict")
             if repaired:
                 yield repaired
         except Exception:
@@ -142,11 +146,47 @@ def normalize_telegram_text(text: str | None) -> str | None:
     return value
 
 
+def normalize_ui_text(text: str | None) -> str | None:
+    if text is None:
+        return None
+
+    source = str(text)
+    base = normalize_telegram_text(source) or source
+    suspicious = (
+        "????" in base
+        or bool(_MOJIBAKE_BIGRAM_RE.search(base))
+        or any(ch in _BAD_CYR_CHARS for ch in base)
+        or looks_like_mojibake(base)
+    )
+    if not suspicious:
+        return base
+
+    candidates: list[str] = [base]
+    for source_encoding in ("cp1251", "latin1", "cp1252"):
+        try:
+            fixed = base.encode(source_encoding, errors="strict").decode("utf-8", errors="strict")
+        except Exception:
+            continue
+        if fixed:
+            candidates.append(fixed)
+
+    best = base
+    best_score = _score_text(base) - (base.count("????") * 250)
+    for candidate in candidates[1:]:
+        score = _score_text(candidate) - (candidate.count("????") * 250)
+        if score > best_score:
+            best = candidate
+            best_score = score
+
+    best = best.replace("????", "")
+    return normalize_telegram_text(best) or best
+
+
 def normalize_text_for_telegram(text: str | None, *, label: str | None = None) -> str | None:
     if text is None:
         return None
 
-    repaired = repair_mojibake(text)
+    repaired = normalize_ui_text(text)
     rendered = render_text(repaired)
     rendered = normalize_telegram_text(rendered)
 
@@ -164,3 +204,65 @@ def normalize_text_for_telegram(text: str | None, *, label: str | None = None) -
         if rendered != repaired:
             logger.info("text-debug %s rendered -> %r", marker, rendered)
     return rendered
+
+
+def normalize_ui_reply_markup(reply_markup):
+    if reply_markup is None:
+        return None
+    try:
+        if isinstance(reply_markup, InlineKeyboardMarkup):
+            rows = []
+            for row in reply_markup.inline_keyboard:
+                normalized_row = []
+                for button in row:
+                    if not isinstance(button, InlineKeyboardButton):
+                        normalized_row.append(button)
+                        continue
+                    normalized_row.append(
+                        InlineKeyboardButton(
+                            text=normalize_ui_text(button.text) or button.text,
+                            url=button.url,
+                            callback_data=button.callback_data,
+                            switch_inline_query=button.switch_inline_query,
+                            switch_inline_query_current_chat=button.switch_inline_query_current_chat,
+                            callback_game=button.callback_game,
+                            pay=button.pay,
+                            login_url=button.login_url,
+                            web_app=button.web_app,
+                            switch_inline_query_chosen_chat=button.switch_inline_query_chosen_chat,
+                            copy_text=button.copy_text,
+                        )
+                    )
+                rows.append(normalized_row)
+            return InlineKeyboardMarkup(rows)
+        if isinstance(reply_markup, ReplyKeyboardMarkup):
+            rows = []
+            for row in reply_markup.keyboard:
+                normalized_row = []
+                for button in row:
+                    if isinstance(button, KeyboardButton):
+                        normalized_row.append(
+                            KeyboardButton(
+                                text=normalize_ui_text(button.text) or button.text,
+                                request_contact=button.request_contact,
+                                request_location=button.request_location,
+                                request_poll=button.request_poll,
+                                web_app=button.web_app,
+                                request_user=button.request_user,
+                                request_chat=button.request_chat,
+                            )
+                        )
+                    else:
+                        normalized_row.append(button)
+                rows.append(normalized_row)
+            return ReplyKeyboardMarkup(
+                rows,
+                resize_keyboard=reply_markup.resize_keyboard,
+                one_time_keyboard=reply_markup.one_time_keyboard,
+                selective=reply_markup.selective,
+                input_field_placeholder=reply_markup.input_field_placeholder,
+                is_persistent=reply_markup.is_persistent,
+            )
+    except Exception:
+        return reply_markup
+    return reply_markup

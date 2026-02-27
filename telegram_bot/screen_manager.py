@@ -3,7 +3,7 @@ from __future__ import annotations
 from telegram import Update
 from telegram.error import BadRequest
 
-from telegram_bot.text_utils import normalize_telegram_text, normalize_text_for_telegram
+from telegram_bot.text_utils import normalize_telegram_text, normalize_text_for_telegram, normalize_ui_reply_markup
 
 
 class ScreenManager:
@@ -37,6 +37,7 @@ class ScreenManager:
         normalized_text = normalize_telegram_text(
             normalize_text_for_telegram(text, label="screen")
         ) or ""
+        normalized_reply_markup = normalize_ui_reply_markup(reply_markup)
         last_message_id = context.user_data.get(self.LAST_SCREEN_MESSAGE_ID_KEY)
         is_message_update = getattr(update, "message", None) is not None
 
@@ -44,7 +45,7 @@ class ScreenManager:
             sent = await context.bot.send_message(
                 chat_id=chat_id,
                 text=normalized_text,
-                reply_markup=reply_markup,
+                reply_markup=normalized_reply_markup,
                 parse_mode=parse_mode,
                 **kwargs,
             )
@@ -61,7 +62,7 @@ class ScreenManager:
                     chat_id=chat_id,
                     message_id=last_message_id,
                     text=normalized_text,
-                    reply_markup=reply_markup,
+                    reply_markup=normalized_reply_markup,
                     parse_mode=parse_mode,
                     **kwargs,
                 )
@@ -85,7 +86,7 @@ class ScreenManager:
         sent = await context.bot.send_message(
             chat_id=chat_id,
             text=normalized_text,
-            reply_markup=reply_markup,
+            reply_markup=normalized_reply_markup,
             parse_mode=parse_mode,
             **kwargs,
         )

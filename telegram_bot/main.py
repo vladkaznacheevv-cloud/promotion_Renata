@@ -59,7 +59,7 @@ get_payment_contact_choice_kb ,
 get_game10_payment_link_kb ,
 get_ai_quick_actions_kb ,
 )
-from telegram_bot .text_utils import normalize_text_for_telegram ,looks_like_mojibake 
+from telegram_bot .text_utils import normalize_text_for_telegram ,looks_like_mojibake ,normalize_ui_reply_markup 
 from telegram_bot .text_formatting import format_event_card 
 from telegram_bot .lock_utils import get_lock_path ,touch_lock_heartbeat 
 from telegram_bot .typing_indicator import TypingIndicator 
@@ -230,21 +230,29 @@ def _t (text :str |None ,*,label :str |None =None )->str |None :
 async def _reply (message :Message |None ,text :str |None ,**kwargs ):
     if message is None :
         return None 
+    if "reply_markup" in kwargs :
+        kwargs ["reply_markup"]=normalize_ui_reply_markup (kwargs .get ("reply_markup"))
     return await message .reply_text (_t (text ,label ="reply")or "",**kwargs )
 
 
 async def _edit (query :CallbackQuery |None ,text :str |None ,**kwargs ):
     if query is None :
         return None 
+    if "reply_markup" in kwargs :
+        kwargs ["reply_markup"]=normalize_ui_reply_markup (kwargs .get ("reply_markup"))
     return await query .edit_message_text (_t (text ,label ="edit")or "",**kwargs )
 
 
 async def _send (bot ,chat_id :int ,text :str |None =None ,**kwargs ):
     payload =text if text is not None else kwargs .pop ("text",None )
+    if "reply_markup" in kwargs :
+        kwargs ["reply_markup"]=normalize_ui_reply_markup (kwargs .get ("reply_markup"))
     return await bot .send_message (chat_id =chat_id ,text =_t (payload ,label ="send")or "",**kwargs )
 
 
 async def _send_photo (bot ,chat_id :int ,photo ,caption :str |None =None ,**kwargs ):
+    if "reply_markup" in kwargs :
+        kwargs ["reply_markup"]=normalize_ui_reply_markup (kwargs .get ("reply_markup"))
     return await bot .send_photo (
     chat_id =chat_id ,
     photo =photo ,
@@ -268,6 +276,7 @@ async def _show_main_menu_bottom (update :Update ,context :ContextTypes .DEFAULT
 async def _safe_edit_reply_markup (query :CallbackQuery |None ,*,reply_markup =None ):
     if query is None :
         return None
+    reply_markup =normalize_ui_reply_markup (reply_markup )
     try :
         return await query .edit_message_reply_markup (reply_markup =reply_markup )
     except BadRequest as e :
