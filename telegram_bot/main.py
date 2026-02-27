@@ -22,6 +22,7 @@ CommandHandler ,
 CallbackQueryHandler ,
 ChatJoinRequestHandler,
 MessageHandler ,
+ApplicationHandlerStop ,
 ContextTypes ,
 filters ,
 )
@@ -2206,6 +2207,24 @@ async def _route_detected_intent (update :Update ,context :ContextTypes .DEFAULT
         return True
     return False
 
+def _extract_navigation_intent_from_text_message (update :Update )->str |None :
+    message =update .effective_message
+    if message is None :
+        return None
+    text =(getattr (message ,"text",None )or "").strip ()
+    if not text or text .startswith ("/"):
+        return None
+    return detect_intent (text )
+
+async def handle_navigation_text_message (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    _apply_focus_timeout (context )
+    intent =_extract_navigation_intent_from_text_message (update )
+    if not intent :
+        return
+    routed =await _route_detected_intent (update ,context ,intent )
+    if routed :
+        raise ApplicationHandlerStop
+
 async def handle_ai_message (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     _apply_focus_timeout (context )
     if context .user_data .get (WAITING_LEAD_KEY ):
@@ -2224,13 +2243,7 @@ async def handle_ai_message (update :Update ,context :ContextTypes .DEFAULT_TYPE
 
     intent =detect_intent (user_message )
     if intent :
-        context .user_data [AI_MODE_KEY ]=False
-        context .user_data [WAITING_LEAD_KEY ]=None
-        context .user_data .pop (ASSISTANT_SOURCE_KEY ,None )
-        context .user_data .pop (ASSISTANT_EVENT_ID_KEY ,None )
-        routed =await _route_detected_intent (update ,context ,intent )
-        if routed :
-            return
+        return
 
     if not context .user_data .get (ASSISTANT_SOURCE_KEY ):
         focus_candidate =detect_product_focus (user_message )
@@ -2262,9 +2275,7 @@ async def handle_text_outside_assistant (update :Update ,context :ContextTypes .
 
     intent =detect_intent (text )
     if intent :
-        routed =await _route_detected_intent (update ,context ,intent )
-        if routed :
-            return
+        return
 
     focus_candidate =detect_product_focus (text )
     if focus_candidate :
@@ -2782,10 +2793,11 @@ def build_app ()->Application :
     app .add_handler (MessageHandler (filters .CONTACT ,handle_contact_phone ),group =0 )
     app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,handle_contact_phone_text ),group =1 )
     app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,handle_contact_email_text ),group =2 )
-    app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,handle_lead_message ),group =3 )
-    app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,handle_ai_message ),group =4 )
-    app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,handle_text_outside_assistant ),group =5 )
-    app .add_handler (ChatJoinRequestHandler (handle_chat_join_request ),group =6 )
+    app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,handle_navigation_text_message ),group =3 )
+    app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,handle_lead_message ),group =4 )
+    app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,handle_ai_message ),group =5 )
+    app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,handle_text_outside_assistant ),group =6 )
+    app .add_handler (ChatJoinRequestHandler (handle_chat_join_request ),group =7 )
 
     app .add_error_handler (on_error )
 
