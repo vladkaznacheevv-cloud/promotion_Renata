@@ -79,7 +79,7 @@ load_dotenv ()
 logging .basicConfig (level =logging .INFO )
 logger =logging .getLogger (__name__ )
 
-# РЎРЅРёР¶Р°РµРј СѓСЂРѕРІРµРЅСЊ С€СѓРјР° РІ Р»РѕРіР°С…
+# Р РЋР Р…Р С‘Р В¶Р В°Р ВµР С РЎС“РЎР‚Р С•Р Р†Р ВµР Р…РЎРЉ РЎв‚¬РЎС“Р СР В° Р Р† Р В»Р С•Р С–Р В°РЎвЂ¦
 logging .getLogger ("httpx").setLevel (logging .WARNING )
 logging .getLogger ("telegram").setLevel (logging .WARNING )
 logging .getLogger ("telegram.ext").setLevel (logging .WARNING )
@@ -123,7 +123,7 @@ def _int_env (name :str ,default :int )->int :
 
 BOT_TOKEN =os .getenv ("BOT_TOKEN")
 AI_API_KEY =os .getenv ("OPENROUTER_API_KEY")or os .getenv ("AI_API_KEY")
-ADMIN_CHAT_ID =os .getenv ("ADMIN_CHAT_ID")# опционально
+ADMIN_CHAT_ID =os .getenv ("ADMIN_CHAT_ID")# РѕРїС†РёРѕРЅР°Р»СЊРЅРѕ
 TG_PRIVATE_CHANNEL_INVITE_LINK =os .getenv ("TG_PRIVATE_CHANNEL_INVITE_LINK")
 CRM_API_BASE_URL =(os .getenv ("CRM_API_BASE_URL")or "http://web:8000").rstrip ("/")
 CRM_API_TOKEN =(os .getenv ("CRM_API_TOKEN")or "").strip ()
@@ -143,7 +143,7 @@ logger .info ("AI configured: key=%s model=%s",bool (AI_API_KEY ),ai_service .mo
 screen_manager =ScreenManager ()
 
 
-# In-memory (при необходимости историю можно перенести в Redis/DB)
+# In-memory (РїСЂРё РЅРµРѕР±С…РѕРґРёРјРѕСЃС‚Рё РёСЃС‚РѕСЂРёСЋ РјРѕР¶РЅРѕ РїРµСЂРµРЅРµСЃС‚Рё РІ Redis/DB)
 chat_histories :dict [int ,list [dict ]]={}
 
 # User states
@@ -181,21 +181,21 @@ AUTO_AI_REPLY_TIMESTAMPS_KEY ="auto_ai_reply_timestamps"
 AUTO_AI_RATE_LIMIT_WINDOW_SEC =12
 AUTO_AI_RATE_LIMIT_MAX =3
 
-PAYMENT_CREATING_SCREEN ="Создаю оплату..."
-PAYMENT_NEED_CONTACT_SCREEN ="Для оплаты нужен телефон или email (для отправки чека). Выберите вариант."
-PAYMENT_ASK_PHONE_SCREEN ="Поделитесь номером телефона.\nЭто нужно для отправки чека."
-PAYMENT_ASK_EMAIL_SCREEN ="Напишите email одним сообщением.\nЭто нужно для отправки чека."
-PAYMENT_CONTACT_SAVED_SCREEN ="Контакт получен. Формирую оплату..."
-PAYMENT_CANCELLED_SCREEN ="Ок. Оплату отменил."
-PAYMENT_LINK_READY_SCREEN ="Ссылка на оплату готова.\nОткройте оплату или отсканируйте QR."
-PAYMENT_EXPIRED_HINT ="Ссылка устарела. Создаю новую..."
-PAYMENT_CHECKING_SCREEN ="Проверяю оплату..."
-PAYMENT_STATUS_PENDING_SCREEN ="Оплата пока не подтверждена. Попробуйте позже."
-PAYMENT_STATUS_CANCELED_SCREEN ="Платеж отменен или истек. Нажмите «Обновить ссылку»."
-PAYMENT_STATUS_CONFIRMED_SCREEN ="Оплата подтверждена. Нажмите «Вступить в канал»."
-PAYMENT_ALREADY_IN_CHANNEL_SCREEN ="Вы уже состоите в закрытом канале."
+PAYMENT_CREATING_SCREEN ="РЎРѕР·РґР°СЋ РѕРїР»Р°С‚Сѓ..."
+PAYMENT_NEED_CONTACT_SCREEN ="Р”Р»СЏ РѕРїР»Р°С‚С‹ РЅСѓР¶РµРЅ С‚РµР»РµС„РѕРЅ РёР»Рё email (РґР»СЏ РѕС‚РїСЂР°РІРєРё С‡РµРєР°). Р’С‹Р±РµСЂРёС‚Рµ РІР°СЂРёР°РЅС‚."
+PAYMENT_ASK_PHONE_SCREEN ="РџРѕРґРµР»РёС‚РµСЃСЊ РЅРѕРјРµСЂРѕРј С‚РµР»РµС„РѕРЅР°.\nР­С‚Рѕ РЅСѓР¶РЅРѕ РґР»СЏ РѕС‚РїСЂР°РІРєРё С‡РµРєР°."
+PAYMENT_ASK_EMAIL_SCREEN ="РќР°РїРёС€РёС‚Рµ email РѕРґРЅРёРј СЃРѕРѕР±С‰РµРЅРёРµРј.\nР­С‚Рѕ РЅСѓР¶РЅРѕ РґР»СЏ РѕС‚РїСЂР°РІРєРё С‡РµРєР°."
+PAYMENT_CONTACT_SAVED_SCREEN ="РљРѕРЅС‚Р°РєС‚ РїРѕР»СѓС‡РµРЅ. Р¤РѕСЂРјРёСЂСѓСЋ РѕРїР»Р°С‚Сѓ..."
+PAYMENT_CANCELLED_SCREEN ="РћРє. РћРїР»Р°С‚Сѓ РѕС‚РјРµРЅРёР»."
+PAYMENT_LINK_READY_SCREEN ="РЎСЃС‹Р»РєР° РЅР° РѕРїР»Р°С‚Сѓ РіРѕС‚РѕРІР°.\nРћС‚РєСЂРѕР№С‚Рµ РѕРїР»Р°С‚Сѓ РёР»Рё РѕС‚СЃРєР°РЅРёСЂСѓР№С‚Рµ QR."
+PAYMENT_EXPIRED_HINT ="РЎСЃС‹Р»РєР° СѓСЃС‚Р°СЂРµР»Р°. РЎРѕР·РґР°СЋ РЅРѕРІСѓСЋ..."
+PAYMENT_CHECKING_SCREEN ="РџСЂРѕРІРµСЂСЏСЋ РѕРїР»Р°С‚Сѓ..."
+PAYMENT_STATUS_PENDING_SCREEN ="РћРїР»Р°С‚Р° РїРѕРєР° РЅРµ РїРѕРґС‚РІРµСЂР¶РґРµРЅР°. РџРѕРїСЂРѕР±СѓР№С‚Рµ РїРѕР·Р¶Рµ."
+PAYMENT_STATUS_CANCELED_SCREEN ="РџР»Р°С‚РµР¶ РѕС‚РјРµРЅРµРЅ РёР»Рё РёСЃС‚РµРє. РќР°Р¶РјРёС‚Рµ В«РћР±РЅРѕРІРёС‚СЊ СЃСЃС‹Р»РєСѓВ»."
+PAYMENT_STATUS_CONFIRMED_SCREEN ="РћРїР»Р°С‚Р° РїРѕРґС‚РІРµСЂР¶РґРµРЅР°. РќР°Р¶РјРёС‚Рµ В«Р’СЃС‚СѓРїРёС‚СЊ РІ РєР°РЅР°Р»В»."
+PAYMENT_ALREADY_IN_CHANNEL_SCREEN ="Р’С‹ СѓР¶Рµ СЃРѕСЃС‚РѕРёС‚Рµ РІ Р·Р°РєСЂС‹С‚РѕРј РєР°РЅР°Р»Рµ."
 PAYMENT_VARIANT_MAIN ="game10_main"
-ASSISTANT_ENTRY_HINT_TEXT ="Чтобы задать вопрос ассистенту, откройте раздел и нажмите «Вопросы к ассистенту»."
+ASSISTANT_ENTRY_HINT_TEXT ="Р§С‚РѕР±С‹ Р·Р°РґР°С‚СЊ РІРѕРїСЂРѕСЃ Р°СЃСЃРёСЃС‚РµРЅС‚Сѓ, РѕС‚РєСЂРѕР№С‚Рµ СЂР°Р·РґРµР» Рё РЅР°Р¶РјРёС‚Рµ В«Р’РѕРїСЂРѕСЃС‹ Рє Р°СЃСЃРёСЃС‚РµРЅС‚СѓВ»."
 
 
 def _instance_meta ()->dict [str ,str ]:
@@ -306,7 +306,7 @@ async def _show_screen (update :Update ,context :ContextTypes .DEFAULT_TYPE ,tex
 
 async def _show_main_menu_bottom (update :Update ,context :ContextTypes .DEFAULT_TYPE ,text :str |None =None ):
     if text is None :
-        text ="Главное меню"
+        text ="Р“Р»Р°РІРЅРѕРµ РјРµРЅСЋ"
     screen_manager .clear_screen (context )
     await _show_screen (update ,context ,text ,reply_markup =get_main_menu ())
 
@@ -435,7 +435,7 @@ def _payment_backend_need_contact (result :dict |None )->bool :
     if int (result .get ("status_code")or 0 )!=400:
         return False
     detail =str (result .get ("detail")or "").lower ()
-    return ("email" in detail and "телефон" in detail )or ("phone" in detail and "email" in detail)or ("receipt" in detail and "email" in detail)
+    return ("email" in detail and "С‚РµР»РµС„РѕРЅ" in detail )or ("phone" in detail and "email" in detail)or ("receipt" in detail and "email" in detail)
 
 async def _create_game10_payment_backend (tg_id :int ,*,variant :str =PAYMENT_VARIANT_MAIN )->dict |None :
     if not CRM_API_BASE_URL :
@@ -570,8 +570,8 @@ variant :str =PAYMENT_VARIANT_MAIN ,
     check_callback_data =_payment_check_callback_data (payment_id ),
     )
     caption =(
-    f"Оплатите {amount_rub} ?. После оплаты доступ откроется автоматически.\n"
-    "После оплаты бот пришлет кнопку для вступления в закрытый канал."
+    f"РћРїР»Р°С‚РёС‚Рµ {amount_rub} ?. РџРѕСЃР»Рµ РѕРїР»Р°С‚С‹ РґРѕСЃС‚СѓРї РѕС‚РєСЂРѕРµС‚СЃСЏ Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё.\n"
+    "РџРѕСЃР»Рµ РѕРїР»Р°С‚С‹ Р±РѕС‚ РїСЂРёС€Р»РµС‚ РєРЅРѕРїРєСѓ РґР»СЏ РІСЃС‚СѓРїР»РµРЅРёСЏ РІ Р·Р°РєСЂС‹С‚С‹Р№ РєР°РЅР°Р»."
     )
     await _delete_last_game10_payment_ui_message (update ,context )
     qr =_build_qr_png (confirmation_url )
@@ -625,7 +625,7 @@ refresh_hint :bool =False ,
         await _show_screen (
         update ,
         context ,
-        "Сейчас не удалось создать платёж. Попробуйте ещё раз через минуту или нажмите «Связаться с менеджером».",
+        "РЎРµР№С‡Р°СЃ РЅРµ СѓРґР°Р»РѕСЃСЊ СЃРѕР·РґР°С‚СЊ РїР»Р°С‚С‘Р¶. РџРѕРїСЂРѕР±СѓР№С‚Рµ РµС‰С‘ СЂР°Р· С‡РµСЂРµР· РјРёРЅСѓС‚Сѓ РёР»Рё РЅР°Р¶РјРёС‚Рµ В«РЎРІСЏР·Р°С‚СЊСЃСЏ СЃ РјРµРЅРµРґР¶РµСЂРѕРјВ».",
         reply_markup =_game10_kb_for_update (update ),
         )
         return
@@ -638,7 +638,7 @@ refresh_hint :bool =False ,
         await _show_screen (
         update ,
         context ,
-        "Платёж создан, но ссылка оплаты не получена. Нажмите «Связаться с менеджером».",
+        "РџР»Р°С‚С‘Р¶ СЃРѕР·РґР°РЅ, РЅРѕ СЃСЃС‹Р»РєР° РѕРїР»Р°С‚С‹ РЅРµ РїРѕР»СѓС‡РµРЅР°. РќР°Р¶РјРёС‚Рµ В«РЎРІСЏР·Р°С‚СЊСЃСЏ СЃ РјРµРЅРµРґР¶РµСЂРѕРјВ».",
         reply_markup =_game10_kb_for_update (update ),
         )
         return
@@ -782,7 +782,7 @@ async def _get_last_game10_payment_local (tg_id :int )->dict |None :
 
 def _short_text (value :str |None ,limit :int =420 )->str :
     if not value :
-        return "Описание не указано."
+        return "РћРїРёСЃР°РЅРёРµ РЅРµ СѓРєР°Р·Р°РЅРѕ."
     text =normalize_text_for_telegram (value )or value 
     if len (text )<=limit :
         return text 
@@ -792,22 +792,22 @@ def _short_text (value :str |None ,limit :int =420 )->str :
 def _format_catalog_price (price_value )->str :
     try :
         if price_value is None :
-            return "Цена по запросу"
+            return "Р¦РµРЅР° РїРѕ Р·Р°РїСЂРѕСЃСѓ"
         price =int (float (price_value ))
         if price <=0 :
-            return "Бесплатно"
-        return f"{price } ₽"
+            return "Р‘РµСЃРїР»Р°С‚РЅРѕ"
+        return f"{price } в‚Ѕ"
     except Exception :
-        return "Цена по запросу"
+        return "Р¦РµРЅР° РїРѕ Р·Р°РїСЂРѕСЃСѓ"
 
 
 def _format_catalog_item_card (item :CatalogItem )->str :
-    title =normalize_text_for_telegram (item .title )or "Без названия"
+    title =normalize_text_for_telegram (item .title )or "Р‘РµР· РЅР°Р·РІР°РЅРёСЏ"
     description =_short_text (item .description )
     price_text =_format_catalog_price (item .price )
     return (
     f"{title }\n"
-    f"Цена: {price_text }\n\n"
+    f"Р¦РµРЅР°: {price_text }\n\n"
     f"{description }"
     )
 
@@ -1055,8 +1055,8 @@ def classify_update_need_db (update :Update ,context :ContextTypes .DEFAULT_TYPE
 
 async def ensure_user (update :Update ,source :str ="bot",ai_increment :int =0 ,notify_ui :bool =True ):
     """
-    Единая точка: создаем/обновляем пользователя в БД по tg_id.
-    Возвращает объект User (из БД).
+    Р•РґРёРЅР°СЏ С‚РѕС‡РєР°: СЃРѕР·РґР°РµРј/РѕР±РЅРѕРІР»СЏРµРј РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ РІ Р‘Р” РїРѕ tg_id.
+    Р’РѕР·РІСЂР°С‰Р°РµС‚ РѕР±СЉРµРєС‚ User (РёР· Р‘Р”).
     """
     tg_user =update .effective_user 
     if tg_user is None :
@@ -1113,7 +1113,7 @@ async def ensure_user_on_message (update :Update ,context :ContextTypes .DEFAULT
 
 
 async def start (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
-# гарантируем наличие user в БД
+# РіР°СЂР°РЅС‚РёСЂСѓРµРј РЅР°Р»РёС‡РёРµ user РІ Р‘Р”
 
     screen_manager .clear_screen (context )
     _reset_states (context )
@@ -1270,7 +1270,7 @@ async def handle_contact_phone (update :Update ,context :ContextTypes .DEFAULT_T
         contact =update .message .contact
         phone =(contact .phone_number or "").strip ()
         if not phone :
-            await _show_screen (update ,context ,"Не удалось прочитать номер. Отправьте контакт ещё раз.",reply_markup =get_payment_contact_choice_kb ())
+            await _show_screen (update ,context ,"РќРµ СѓРґР°Р»РѕСЃСЊ РїСЂРѕС‡РёС‚Р°С‚СЊ РЅРѕРјРµСЂ. РћС‚РїСЂР°РІСЊС‚Рµ РєРѕРЅС‚Р°РєС‚ РµС‰С‘ СЂР°Р·.",reply_markup =get_payment_contact_choice_kb ())
             return
         if not await _save_contact_field (update ,context ,phone =phone ):
             return
@@ -1288,13 +1288,13 @@ async def handle_contact_phone (update :Update ,context :ContextTypes .DEFAULT_T
         if snapshot is None :
             return 
         if snapshot .get ("phone")and snapshot .get ("email"):
-            await _show_screen (update ,context ,'Контакты уже получены, спасибо!',reply_markup =get_main_menu ())
+            await _show_screen (update ,context ,'РљРѕРЅС‚Р°РєС‚С‹ СѓР¶Рµ РїРѕР»СѓС‡РµРЅС‹, СЃРїР°СЃРёР±Рѕ!',reply_markup =get_main_menu ())
             return 
 
     contact =update .message .contact 
     phone =(contact .phone_number or "").strip ()
     if not phone :
-        await _show_screen (update ,context ,'Не удалось прочитать номер. Отправьте контакт ещё раз.',reply_markup =get_contact_request_kb ())
+        await _show_screen (update ,context ,'РќРµ СѓРґР°Р»РѕСЃСЊ РїСЂРѕС‡РёС‚Р°С‚СЊ РЅРѕРјРµСЂ. РћС‚РїСЂР°РІСЊС‚Рµ РєРѕРЅС‚Р°РєС‚ РµС‰С‘ СЂР°Р·.',reply_markup =get_contact_request_kb ())
         return 
     if not await _save_contact_field (update ,context ,phone =phone ):
         return 
@@ -1303,7 +1303,7 @@ async def handle_contact_phone (update :Update ,context :ContextTypes .DEFAULT_T
     context .user_data [WAITING_CONTACT_PHONE_KEY ]=False 
     context .user_data [WAITING_CONTACT_EMAIL_KEY ]=True 
     context .user_data [SKIP_NEXT_EMAIL_KEY ]=True 
-    await _show_screen (update ,context ,'Спасибо! Теперь пришлите вашу почту одним сообщением (например: name@example.com).',reply_markup =get_remove_reply_kb ())
+    await _show_screen (update ,context ,'РЎРїР°СЃРёР±Рѕ! РўРµРїРµСЂСЊ РїСЂРёС€Р»РёС‚Рµ РІР°С€Сѓ РїРѕС‡С‚Сѓ РѕРґРЅРёРј СЃРѕРѕР±С‰РµРЅРёРµРј (РЅР°РїСЂРёРјРµСЂ: name@example.com).',reply_markup =get_remove_reply_kb ())
 
 
 async def handle_contact_phone_text (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
@@ -1315,7 +1315,7 @@ async def handle_contact_phone_text (update :Update ,context :ContextTypes .DEFA
             return
         if payment_mode != "phone":
             text =(update .message .text or "").strip ()
-            if text .lower ()=="отмена":
+            if text .lower ()=="РѕС‚РјРµРЅР°":
                 await _send_reply_keyboard_remove (update ,context )
                 _clear_payment_contact_flow (context )
                 await _show_screen (update ,context ,PAYMENT_CANCELLED_SCREEN ,reply_markup =get_back_to_menu_kb ())
@@ -1327,7 +1327,7 @@ async def handle_contact_phone_text (update :Update ,context :ContextTypes .DEFA
         if not update .message or not update .message .text :
             return
         text =(update .message .text or "").strip ()
-        if text .lower ()=="отмена":
+        if text .lower ()=="РѕС‚РјРµРЅР°":
             await _send_reply_keyboard_remove (update ,context )
             _clear_payment_contact_flow (context )
             await _show_screen (update ,context ,PAYMENT_CANCELLED_SCREEN ,reply_markup =get_back_to_menu_kb ())
@@ -1335,7 +1335,7 @@ async def handle_contact_phone_text (update :Update ,context :ContextTypes .DEFA
             return
         normalized =re .sub (r"[^\\d+]","",text )
         if len (re .sub (r"\\D","",normalized ))<10 :
-            await _show_screen (update ,context ,"Номер выглядит некорректно. Нажмите кнопку отправки контакта или введите номер ещё раз.",reply_markup =get_payment_contact_choice_kb ())
+            await _show_screen (update ,context ,"РќРѕРјРµСЂ РІС‹РіР»СЏРґРёС‚ РЅРµРєРѕСЂСЂРµРєС‚РЅРѕ. РќР°Р¶РјРёС‚Рµ РєРЅРѕРїРєСѓ РѕС‚РїСЂР°РІРєРё РєРѕРЅС‚Р°РєС‚Р° РёР»Рё РІРІРµРґРёС‚Рµ РЅРѕРјРµСЂ РµС‰С‘ СЂР°Р·.",reply_markup =get_payment_contact_choice_kb ())
             return
         if not await _save_contact_field (update ,context ,phone =normalized ):
             return
@@ -1349,14 +1349,14 @@ async def handle_contact_phone_text (update :Update ,context :ContextTypes .DEFA
         return 
 
     text =(update .message .text or "").strip ()
-    if text .lower ()=="отмена":
+    if text .lower ()=="РѕС‚РјРµРЅР°":
         _reset_states (context )
-        await _show_screen (update ,context ,'Действие отменено.',reply_markup =get_main_menu ())
+        await _show_screen (update ,context ,'Р”РµР№СЃС‚РІРёРµ РѕС‚РјРµРЅРµРЅРѕ.',reply_markup =get_main_menu ())
         return 
 
     normalized =re .sub (r"[^\\d+]","",text )
     if len (re .sub (r"\\D","",normalized ))<10 :
-        await _show_screen (update ,context ,'Номер выглядит некорректно. Пример: +79991234567',reply_markup =get_contact_request_kb ())
+        await _show_screen (update ,context ,'РќРѕРјРµСЂ РІС‹РіР»СЏРґРёС‚ РЅРµРєРѕСЂСЂРµРєС‚РЅРѕ. РџСЂРёРјРµСЂ: +79991234567',reply_markup =get_contact_request_kb ())
         return 
     if not await _save_contact_field (update ,context ,phone =normalized ):
         return 
@@ -1365,7 +1365,7 @@ async def handle_contact_phone_text (update :Update ,context :ContextTypes .DEFA
     context .user_data [WAITING_CONTACT_PHONE_KEY ]=False 
     context .user_data [WAITING_CONTACT_EMAIL_KEY ]=True 
     context .user_data [SKIP_NEXT_EMAIL_KEY ]=True 
-    await _show_screen (update ,context ,'Спасибо! Теперь пришлите вашу почту одним сообщением (например: name@example.com).',reply_markup =get_remove_reply_kb ())
+    await _show_screen (update ,context ,'РЎРїР°СЃРёР±Рѕ! РўРµРїРµСЂСЊ РїСЂРёС€Р»РёС‚Рµ РІР°С€Сѓ РїРѕС‡С‚Сѓ РѕРґРЅРёРј СЃРѕРѕР±С‰РµРЅРёРµРј (РЅР°РїСЂРёРјРµСЂ: name@example.com).',reply_markup =get_remove_reply_kb ())
 
 
 async def handle_contact_email_text (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
@@ -1373,14 +1373,14 @@ async def handle_contact_email_text (update :Update ,context :ContextTypes .DEFA
         if not update .message or not update .message .text :
             return
         email =(update .message .text or "").strip ().lower ()
-        if email =="отмена":
+        if email =="РѕС‚РјРµРЅР°":
             await _send_reply_keyboard_remove (update ,context )
             _clear_payment_contact_flow (context )
             await _show_screen (update ,context ,PAYMENT_CANCELLED_SCREEN ,reply_markup =get_back_to_menu_kb ())
             await _show_main_menu_bottom (update ,context )
             return
         if not EMAIL_RE .match (email ):
-            await _show_screen (update ,context ,"Некорректный email. Введите ещё раз или нажмите «Отмена».",reply_markup =get_payment_contact_choice_kb ())
+            await _show_screen (update ,context ,"РќРµРєРѕСЂСЂРµРєС‚РЅС‹Р№ email. Р’РІРµРґРёС‚Рµ РµС‰С‘ СЂР°Р· РёР»Рё РЅР°Р¶РјРёС‚Рµ В«РћС‚РјРµРЅР°В».",reply_markup =get_payment_contact_choice_kb ())
             return
         if not await _save_contact_field (update ,context ,email =email ):
             return
@@ -1395,14 +1395,14 @@ async def handle_contact_email_text (update :Update ,context :ContextTypes .DEFA
 
     waiting_email =bool (context .user_data .get (WAITING_CONTACT_EMAIL_KEY ))
     email =(update .message .text or "").strip ().lower ()
-    if waiting_email and email =="отмена":
+    if waiting_email and email =="РѕС‚РјРµРЅР°":
         _reset_states (context )
-        await _show_screen (update ,context ,'Действие отменено.',reply_markup =get_main_menu ())
+        await _show_screen (update ,context ,'Р”РµР№СЃС‚РІРёРµ РѕС‚РјРµРЅРµРЅРѕ.',reply_markup =get_main_menu ())
         return 
 
     if not EMAIL_RE .match (email ):
         if waiting_email :
-            await _show_screen (update ,context ,'Некорректный email. Пример: name@example.com',reply_markup =get_remove_reply_kb ())
+            await _show_screen (update ,context ,'РќРµРєРѕСЂСЂРµРєС‚РЅС‹Р№ email. РџСЂРёРјРµСЂ: name@example.com',reply_markup =get_remove_reply_kb ())
         return 
 
     tg_user =update .effective_user 
@@ -1412,7 +1412,7 @@ async def handle_contact_email_text (update :Update ,context :ContextTypes .DEFA
     snapshot =await _get_contact_snapshot (tg_user .id )
     if snapshot is not None and snapshot .get ("phone")and snapshot .get ("email"):
         _reset_states (context )
-        await _show_screen (update ,context ,'Контакты уже получены, спасибо!',reply_markup =get_main_menu ())
+        await _show_screen (update ,context ,'РљРѕРЅС‚Р°РєС‚С‹ СѓР¶Рµ РїРѕР»СѓС‡РµРЅС‹, СЃРїР°СЃРёР±Рѕ!',reply_markup =get_main_menu ())
         return 
 
     phone =context .user_data .get (CONTACT_PHONE_KEY )
@@ -1422,7 +1422,7 @@ async def handle_contact_email_text (update :Update ,context :ContextTypes .DEFA
         if waiting_email :
             context .user_data [WAITING_CONTACT_EMAIL_KEY ]=False 
             context .user_data [WAITING_CONTACT_PHONE_KEY ]=True 
-        await _show_screen (update ,context ,'Сначала отправьте номер телефона.',reply_markup =get_contact_request_kb ())
+        await _show_screen (update ,context ,'РЎРЅР°С‡Р°Р»Р° РѕС‚РїСЂР°РІСЊС‚Рµ РЅРѕРјРµСЂ С‚РµР»РµС„РѕРЅР°.',reply_markup =get_contact_request_kb ())
         return 
 
     await _save_contacts (update ,context ,phone =phone ,email =email )
@@ -1467,7 +1467,7 @@ def _event_prices_lines (event :dict )->list [str ]:
         if price_rub in (None ,""):
             continue
         note =str (item .get ("note")or "").strip ()
-        line =f"\u2022 {label} — {_format_rub (price_rub )} \u20bd"
+        line =f"\u2022 {label} вЂ” {_format_rub (price_rub )} \u20bd"
         if note :
             line =f"{line} ({note })"
         lines .append (line )
@@ -1475,7 +1475,7 @@ def _event_prices_lines (event :dict )->list [str ]:
         return lines
     fallback_price =event .get ("price")
     if fallback_price not in (None ,""):
-        return [f"\u2022 \u0421\u0442\u043e\u0438\u043c\u043e\u0441\u0442\u044c — {_format_rub (fallback_price )} \u20bd"]
+        return [f"\u2022 \u0421\u0442\u043e\u0438\u043c\u043e\u0441\u0442\u044c вЂ” {_format_rub (fallback_price )} \u20bd"]
     return []
 
 
@@ -1647,7 +1647,7 @@ async def show_events_list_screen (update :Update ,context :ContextTypes .DEFAUL
         page =int (context .user_data .get (EVENTS_LIST_PAGE_KEY )or 0 )
     page =max (0 ,min (int (page ),total_pages -1 ))
     context .user_data [EVENTS_LIST_PAGE_KEY ]=page
-    text ="Выберите мероприятие 👇"
+    text ="Р’С‹Р±РµСЂРёС‚Рµ РјРµСЂРѕРїСЂРёСЏС‚РёРµ рџ‘‡"
     if total_pages >1 :
         text =f"{text }\n\u0421\u0442\u0440\u0430\u043d\u0438\u0446\u0430 {page +1 }/{total_pages }"
     _set_screen_meta (context ,kind ="events_list")
@@ -1835,13 +1835,13 @@ async def game10_pay_check (update :Update ,context :ContextTypes .DEFAULT_TYPE 
     data =str (query .data or "")
     payment_id =data .split (":",1 )[1 ].strip ()if ":" in data else ""
     if not payment_id :
-        await _show_screen (update ,context ,"Не удалось определить платеж.",reply_markup =_game10_kb_for_update (update ))
+        await _show_screen (update ,context ,"РќРµ СѓРґР°Р»РѕСЃСЊ РѕРїСЂРµРґРµР»РёС‚СЊ РїР»Р°С‚РµР¶.",reply_markup =_game10_kb_for_update (update ))
         return
     await _show_screen (update ,context ,PAYMENT_CHECKING_SCREEN ,reply_markup =_get_last_game10_payment_ui_kb (context ,payment_id )or _game10_kb_for_update (update ))
     user =update .effective_user
     result =await _check_game10_payment_status_backend (payment_id ,tg_id =user .id if user else None )
     if not isinstance (result ,dict )or not result .get ("ok"):
-        await _show_screen (update ,context ,"Не удалось проверить оплату. Попробуйте позже.",reply_markup =_get_last_game10_payment_ui_kb (context ,payment_id )or _game10_kb_for_update (update ))
+        await _show_screen (update ,context ,"РќРµ СѓРґР°Р»РѕСЃСЊ РїСЂРѕРІРµСЂРёС‚СЊ РѕРїР»Р°С‚Сѓ. РџРѕРїСЂРѕР±СѓР№С‚Рµ РїРѕР·Р¶Рµ.",reply_markup =_get_last_game10_payment_ui_kb (context ,payment_id )or _game10_kb_for_update (update ))
         return
     status =str (result .get ("status")or "").strip ().lower ()
     if bool (result .get ("already_in_channel")):
@@ -1856,7 +1856,7 @@ async def game10_pay_check (update :Update ,context :ContextTypes .DEFAULT_TYPE 
     if status in {"canceled","cancelled"}:
         await _show_screen (update ,context ,PAYMENT_STATUS_CANCELED_SCREEN ,reply_markup =_get_last_game10_payment_ui_kb (context ,payment_id )or _game10_kb_for_update (update ))
         return
-    await _show_screen (update ,context ,f"Статус платежа: {status or 'unknown'}",reply_markup =_get_last_game10_payment_ui_kb (context ,payment_id )or _game10_kb_for_update (update ))
+    await _show_screen (update ,context ,f"РЎС‚Р°С‚СѓСЃ РїР»Р°С‚РµР¶Р°: {status or 'unknown'}",reply_markup =_get_last_game10_payment_ui_kb (context ,payment_id )or _game10_kb_for_update (update ))
 
 
 async def pay_contact_phone (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
@@ -1871,7 +1871,7 @@ async def pay_contact_phone (update :Update ,context :ContextTypes .DEFAULT_TYPE
     await _show_screen (update ,context ,PAYMENT_ASK_PHONE_SCREEN ,reply_markup =get_payment_contact_choice_kb ())
     chat =update .effective_chat
     if chat is not None :
-        await _send (context .bot ,chat_id =chat .id ,text ="Нажмите кнопку ниже, чтобы отправить номер.",reply_markup =get_contact_request_kb ())
+        await _send (context .bot ,chat_id =chat .id ,text ="РќР°Р¶РјРёС‚Рµ РєРЅРѕРїРєСѓ РЅРёР¶Рµ, С‡С‚РѕР±С‹ РѕС‚РїСЂР°РІРёС‚СЊ РЅРѕРјРµСЂ.",reply_markup =get_contact_request_kb ())
 
 
 async def pay_contact_email (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
@@ -1934,12 +1934,12 @@ async def begin_booking_individual (update :Update ,context :ContextTypes .DEFAU
 
 
     await _show_screen (update ,context ,
-    "📩 *Запись на индивидуальную терапию*\n\n"
-    "Отправьте одним сообщением:\n"
-    "1) Имя\n"
-    "2) Телефон или @username\n"
-    "3) Коротко запрос (по желанию)\n\n"
-    "Пример: Иван, +46..., хочу меньше тревоги",
+    "рџ“© *Р—Р°РїРёСЃСЊ РЅР° РёРЅРґРёРІРёРґСѓР°Р»СЊРЅСѓСЋ С‚РµСЂР°РїРёСЋ*\n\n"
+    "РћС‚РїСЂР°РІСЊС‚Рµ РѕРґРЅРёРј СЃРѕРѕР±С‰РµРЅРёРµРј:\n"
+    "1) РРјСЏ\n"
+    "2) РўРµР»РµС„РѕРЅ РёР»Рё @username\n"
+    "3) РљРѕСЂРѕС‚РєРѕ Р·Р°РїСЂРѕСЃ (РїРѕ Р¶РµР»Р°РЅРёСЋ)\n\n"
+    "РџСЂРёРјРµСЂ: РРІР°РЅ, +46..., С…РѕС‡Сѓ РјРµРЅСЊС€Рµ С‚СЂРµРІРѕРіРё",
     parse_mode ="Markdown",
     reply_markup =get_back_to_menu_kb (),
     )
@@ -1953,12 +1953,12 @@ async def begin_booking_group (update :Update ,context :ContextTypes .DEFAULT_TY
 
 
     await _show_screen (update ,context ,
-    "📩 *Запись в терапевтическую группу*\n\n"
-    "Отправьте одним сообщением:\n"
-    "1) Имя\n"
-    "2) Телефон или @username\n"
-    "3) Коротко ожидания от группы (по желанию)\n\n"
-    "Пример: Анна, @anna, хочу научиться говорить о чувствах",
+    "рџ“© *Р—Р°РїРёСЃСЊ РІ С‚РµСЂР°РїРµРІС‚РёС‡РµСЃРєСѓСЋ РіСЂСѓРїРїСѓ*\n\n"
+    "РћС‚РїСЂР°РІСЊС‚Рµ РѕРґРЅРёРј СЃРѕРѕР±С‰РµРЅРёРµРј:\n"
+    "1) РРјСЏ\n"
+    "2) РўРµР»РµС„РѕРЅ РёР»Рё @username\n"
+    "3) РљРѕСЂРѕС‚РєРѕ РѕР¶РёРґР°РЅРёСЏ РѕС‚ РіСЂСѓРїРїС‹ (РїРѕ Р¶РµР»Р°РЅРёСЋ)\n\n"
+    "РџСЂРёРјРµСЂ: РђРЅРЅР°, @anna, С…РѕС‡Сѓ РЅР°СѓС‡РёС‚СЊСЃСЏ РіРѕРІРѕСЂРёС‚СЊ Рѕ С‡СѓРІСЃС‚РІР°С…",
     parse_mode ="Markdown",
     reply_markup =get_back_to_menu_kb (),
     )
@@ -2023,7 +2023,7 @@ async def show_ai_chat (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
 
 
     user_id =update .effective_user .id 
-    chat_histories [user_id ]=[]# сбрасываем историю при входе
+    chat_histories [user_id ]=[]# СЃР±СЂР°СЃС‹РІР°РµРј РёСЃС‚РѕСЂРёСЋ РїСЂРё РІС…РѕРґРµ
 
     context .user_data [WAITING_LEAD_KEY ]=None 
     context .user_data [AI_MODE_KEY ]=True 
@@ -2086,7 +2086,7 @@ async def _show_consultations_from_text (update :Update ,context :ContextTypes .
     _reset_states (context )
     message =update .effective_message 
     if message is not None :
-        await _show_screen (update ,context ,"Выберите формат консультации 👇",reply_markup =get_consultations_menu ())
+        await _show_screen (update ,context ,"Р’С‹Р±РµСЂРёС‚Рµ С„РѕСЂРјР°С‚ РєРѕРЅСЃСѓР»СЊС‚Р°С†РёРё рџ‘‡",reply_markup =get_consultations_menu ())
 
 
 def _auto_ai_rate_limited (context :ContextTypes .DEFAULT_TYPE )->bool :
@@ -2624,7 +2624,7 @@ async def mark_paid_dev (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
 
     args =context .args or []
     if len (args )!=2 :
-        await _reply (message ,"Р¤РѕСЂРјР°С‚: /mark_paid <tg_id> <event_id>")
+        await _reply (message ,"Р В¤Р С•РЎР‚Р СР В°РЎвЂљ: /mark_paid <tg_id> <event_id>")
         return 
 
     try :
@@ -2640,7 +2640,7 @@ async def mark_paid_dev (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
             crm_service =CRMService (session )
             target_user =await crm_service ._get_user_by_tg_id (tg_id )
             if target_user is None :
-                await _reply (message ,"РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ.")
+                await _reply (message ,"Р СџР С•Р В»РЎРЉР В·Р С•Р Р†Р В°РЎвЂљР ВµР В»РЎРЉ Р Р…Р Вµ Р Р…Р В°Р в„–Р Т‘Р ВµР Р….")
                 return 
 
             has_event_id =await crm_service ._payments_has_event_id ()
@@ -2673,14 +2673,14 @@ async def mark_paid_dev (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
                     payment_id =int (row_map ["id"])
 
             if payment_id is None :
-                await _reply (message ,"РџР»Р°С‚РµР¶ РЅРµ РЅР°Р№РґРµРЅ.")
+                await _reply (message ,"Р СџР В»Р В°РЎвЂљР ВµР В¶ Р Р…Р Вµ Р Р…Р В°Р в„–Р Т‘Р ВµР Р….")
                 return 
 
             await crm_service .mark_payment_status (payment_id ,"paid")
             await session .commit ()
 
         await _reply (message ,
-        f"РџР»Р°С‚РµР¶ #{payment_id } РѕС‚РјРµС‡РµРЅ РєР°Рє paid РґР»СЏ tg_id={tg_id }, event_id={event_id }."
+        f"Р СџР В»Р В°РЎвЂљР ВµР В¶ #{payment_id } Р С•РЎвЂљР СР ВµРЎвЂЎР ВµР Р… Р С”Р В°Р С” paid Р Т‘Р В»РЎРЏ tg_id={tg_id }, event_id={event_id }."
         )
         if TG_PRIVATE_CHANNEL_INVITE_LINK :
             await _send (context .bot ,
@@ -2691,7 +2691,7 @@ async def mark_paid_dev (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
             ),
             )
     except Exception as e :
-        logger .exception ("РћС€РёР±РєР° РІ /mark_paid: %s",e )
+        logger .exception ("Р С›РЎв‚¬Р С‘Р В±Р С”Р В° Р Р† /mark_paid: %s",e )
         await _reply (message ,"\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0442\u043c\u0435\u0442\u0438\u0442\u044c \u043e\u043f\u043b\u0430\u0442\u0443. \u041f\u0440\u043e\u0432\u0435\u0440\u044c\u0442\u0435 \u043b\u043e\u0433\u0438.")
 
 
@@ -2717,15 +2717,35 @@ async def testpay10_command (update :Update ,context :ContextTypes .DEFAULT_TYPE
     if not confirmation_url :
         await _reply (message ,"Платёж создан, но ссылка оплаты не получена.")
         return
-    await _reply (
-    message ,
-    (
-    f"Тестовый платёж {PAYMENTS_TEST_AMOUNT_RUB } ₽.\n"
-    f"payment_id: `{payment_id or '-'}`\n"
+
+    chat =update .effective_chat
+    if chat is None :
+        return
+    text =(
+    f"Тестовый платёж {PAYMENTS_TEST_AMOUNT_RUB } ?.\n"
+    f"payment_id: {payment_id or '-'}\n"
     f"{confirmation_url }"
-    ),
-    parse_mode ="Markdown",
     )
+    try :
+        await _send (
+        context .bot ,
+        chat_id =chat .id ,
+        text =text ,
+        parse_mode =None ,
+        disable_web_page_preview =True ,
+        )
+    except BadRequest :
+        # Safety net: retry plain text explicitly without entity parsing.
+        try :
+            await context .bot .send_message (
+            chat_id =chat .id ,
+            text =text ,
+            parse_mode =None ,
+            disable_web_page_preview =True ,
+            )
+        except Exception :
+            await _reply (message ,"Не удалось отправить ссылку. Попробуйте ещё раз.")
+            return
 
 
 async def pay_debug (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
@@ -2734,13 +2754,13 @@ async def pay_debug (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     if message is None or user is None :
         return 
     if not _is_admin_user_id (user .id ):
-        await _reply (message ,"Команда доступна только админу.")
+        await _reply (message ,"РљРѕРјР°РЅРґР° РґРѕСЃС‚СѓРїРЅР° С‚РѕР»СЊРєРѕ Р°РґРјРёРЅСѓ.")
         return 
     args =context .args or []
     try :
         tg_id =int (args [0 ])if args else int (user .id )
     except Exception :
-        await _reply (message ,"Формат: /pay_debug [tg_id]")
+        await _reply (message ,"Р¤РѕСЂРјР°С‚: /pay_debug [tg_id]")
         return 
     is_paid =await _is_private_channel_paid_local (tg_id )
     last_payment =await _get_last_game10_payment_local (tg_id )
@@ -2791,7 +2811,7 @@ async def handle_chat_join_request (update :Update ,context :ContextTypes .DEFAU
         logger .warning ("Decline chat join request failed: %s",e .__class__ .__name__ )
     try :
         await _send (context .bot ,chat_id =user .id ,
-        text ="Доступ к закрытому каналу открывается после оплаты 5 000 ₽. Нажмите «Оплатить 5 000 ₽».",
+        text ="Р”РѕСЃС‚СѓРї Рє Р·Р°РєСЂС‹С‚РѕРјСѓ РєР°РЅР°Р»Сѓ РѕС‚РєСЂС‹РІР°РµС‚СЃСЏ РїРѕСЃР»Рµ РѕРїР»Р°С‚С‹ 5 000 в‚Ѕ. РќР°Р¶РјРёС‚Рµ В«РћРїР»Р°С‚РёС‚СЊ 5 000 в‚ЅВ».",
         reply_markup =_game10_kb_for_update (update ),
         )
     except Exception as e :
@@ -2913,3 +2933,4 @@ def main ():
 
 if __name__ =="__main__":
     main ()
+
