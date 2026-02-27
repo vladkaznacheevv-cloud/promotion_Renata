@@ -789,6 +789,10 @@ Use local internal script inside `web` container (no HTTP auth needed, no `PYTHO
 docker compose -f compose.prod.yml exec -T web python scripts/admin_recheck_yookassa_payment.py <payment_id>
 ```
 
+```bash
+docker compose -f compose.prod.yml exec -T web python -c "import yookassa; print('yookassa OK')"
+```
+
 Output is safe and limited to:
 - `payment_id`
 - `tg_id`
