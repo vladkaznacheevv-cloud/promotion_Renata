@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 GAME10_PRICE_RUB = 5000
 GAME10_PRODUCT = "game10"
+GAME10_TEST_PRODUCT = "game10_test"
 
 
 class Game10PaymentCreateIn(BaseModel):
@@ -42,6 +43,12 @@ class Game10PaymentCreateOut(BaseModel):
 class YooKassaStatusCheckIn(BaseModel):
     payment_id: str = Field(..., min_length=1, max_length=128)
     tg_id: int | None = Field(default=None, ge=1)
+
+
+class TestPaymentCreateIn(BaseModel):
+    tg_id: int = Field(..., ge=1)
+    product: str = Field(default=GAME10_TEST_PRODUCT, min_length=1, max_length=32)
+    amount_rub: int | None = Field(default=None, ge=1, le=100000)
 
 
 class YooKassaStatusCheckOut(BaseModel):
@@ -71,6 +78,44 @@ def _require_bot_api_token(request: Request) -> None:
     incoming = _extract_internal_token(request)
     if incoming != expected:
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def _is_enabled_env(name: str, default: bool = False) -> bool:
+    raw = str(os.getenv(name, "true" if default else "false") or "").strip().lower()
+    return raw in {"1", "true", "yes", "y", "on"}
+
+
+def _payments_test_enabled() -> bool:
+    return _is_enabled_env("PAYMENTS_TEST_ENABLED", default=False)
+
+
+def _payments_test_amount_rub() -> int:
+    return max(1, _int_env("PAYMENTS_TEST_AMOUNT_RUB", 10))
+
+
+def _bot_admin_ids() -> set[int]:
+    values: set[int] = set()
+    raw = str(os.getenv("BOT_ADMIN_IDS") or "").strip()
+    for item in raw.split(","):
+        candidate = item.strip()
+        if not candidate:
+            continue
+        try:
+            values.add(int(candidate))
+        except Exception:
+            continue
+    admin_chat_id = str(os.getenv("ADMIN_CHAT_ID") or "").strip()
+    if admin_chat_id:
+        try:
+            values.add(int(admin_chat_id))
+        except Exception:
+            pass
+    return values
+
+
+def _require_admin_tg_id(tg_id: int) -> None:
+    if int(tg_id) not in _bot_admin_ids():
+        raise HTTPException(status_code=403, detail="Admin only")
 
 
 def _public_return_url() -> str:
@@ -413,14 +458,41 @@ async def create_game10_payment(
 
 
 
-@router.post("/yookassa/status", response_model=YooKassaStatusCheckOut)
-async def check_yookassa_payment_status(
+@router.post("/test/create", response_model=Game10PaymentCreateOut)
+async def create_test_payment(
     request: Request,
-    body: YooKassaStatusCheckIn,
+    body: TestPaymentCreateIn,
     db: AsyncSession = Depends(get_db),
 ):
     _require_bot_api_token(request)
-    payment_id = str(body.payment_id or "").strip()
+    if not _payments_test_enabled():
+        raise HTTPException(status_code=404, detail="Not found")
+    _require_admin_tg_id(int(body.tg_id))
+
+    product_code = str(body.product or GAME10_TEST_PRODUCT).strip().lower()
+    if product_code not in {GAME10_PRODUCT, GAME10_TEST_PRODUCT}:
+        raise HTTPException(status_code=422, detail="unsupported test product")
+    amount_rub = int(body.amount_rub or _payments_test_amount_rub())
+
+    return await _create_game10_payment_common(
+        request=request,
+        body=Game10PaymentCreateIn(tg_id=int(body.tg_id)),
+        tg_id=None,
+        db=db,
+        product_code=product_code,
+        amount_rub=amount_rub,
+        payment_description="Test payment (admin only)",
+        receipt_item_description="Test payment",
+    )
+
+
+async def _recheck_yookassa_payment_internal(
+    *,
+    db: AsyncSession,
+    payment_id: str,
+    tg_id: int | None = None,
+) -> dict:
+    payment_id = str(payment_id or "").strip()
     if not payment_id:
         raise HTTPException(status_code=422, detail="payment_id is required")
 
@@ -430,7 +502,7 @@ async def check_yookassa_payment_status(
     payment = row.scalar_one_or_none()
     if payment is None:
         raise HTTPException(status_code=404, detail="payment not found")
-    if body.tg_id is not None and int(payment.tg_id or 0) != int(body.tg_id):
+    if tg_id is not None and int(payment.tg_id or 0) != int(tg_id):
         raise HTTPException(status_code=409, detail="payment_id does not belong to tg_id")
 
     remote_status = await _get_yookassa_payment_status(payment_id)
@@ -445,6 +517,7 @@ async def check_yookassa_payment_status(
     processed_success = False
     already_in_channel: bool | None = None
     result_label: str | None = None
+    error_type: str | None = None
     if status == "succeeded" and int(payment.tg_id or 0) > 0:
         success_result = await process_game10_payment_success(
             db=db,
@@ -454,6 +527,7 @@ async def check_yookassa_payment_status(
         processed_success = True
         already_in_channel = bool(success_result.get("already_in_channel"))
         result_label = str(success_result.get("result") or "")
+        error_type = str(success_result.get("error_type") or "").strip() or None
         logger.info(
             "YooKassa status check processed: payment_id=%s tg_id=%s status=%s result=%s",
             payment_id,
@@ -468,14 +542,40 @@ async def check_yookassa_payment_status(
             status,
         )
 
+    return {
+        "ok": True,
+        "payment_id": payment_id,
+        "tg_id": int(payment.tg_id or 0),
+        "status": status,
+        "updated": bool(updated),
+        "processed_success": processed_success,
+        "already_in_channel": already_in_channel,
+        "result": result_label,
+        "error_type": error_type,
+    }
+
+
+@router.post("/yookassa/status", response_model=YooKassaStatusCheckOut)
+async def check_yookassa_payment_status(
+    request: Request,
+    body: YooKassaStatusCheckIn,
+    db: AsyncSession = Depends(get_db),
+):
+    _require_bot_api_token(request)
+    payload = await _recheck_yookassa_payment_internal(
+        db=db,
+        payment_id=str(body.payment_id or ""),
+        tg_id=(int(body.tg_id) if body.tg_id is not None else None),
+    )
+
     return YooKassaStatusCheckOut(
-        ok=True,
-        payment_id=payment_id,
-        status=status,
-        updated=bool(updated),
-        processed_success=processed_success,
-        already_in_channel=already_in_channel,
-        result=result_label,
+        ok=bool(payload.get("ok")),
+        payment_id=str(payload.get("payment_id") or ""),
+        status=str(payload.get("status") or "unknown"),
+        updated=bool(payload.get("updated")),
+        processed_success=bool(payload.get("processed_success")),
+        already_in_channel=payload.get("already_in_channel"),
+        result=(str(payload.get("result") or "") or None),
     )
 
 

@@ -89,6 +89,38 @@ def _env_flag_enabled_default_true (name :str )->bool :
     return raw in {"1","true","yes","y","on"}
 
 
+def _env_flag_enabled_default_false (name :str )->bool :
+    raw =str (os .getenv (name ,"false")or "").strip ().lower ()
+    return raw in {"1","true","yes","y","on"}
+
+
+def _parse_admin_ids ()->set [int ]:
+    values :set [int ]=set ()
+    raw =str (os .getenv ("BOT_ADMIN_IDS")or "").strip ()
+    for item in raw .split (","):
+        candidate =item .strip ()
+        if not candidate :
+            continue
+        try :
+            values .add (int (candidate ))
+        except Exception :
+            continue
+    if ADMIN_CHAT_ID :
+        try :
+            values .add (int (str (ADMIN_CHAT_ID ).strip ()))
+        except Exception :
+            pass
+    return values
+
+
+def _int_env (name :str ,default :int )->int :
+    raw =str (os .getenv (name )or "").strip ()
+    try :
+        return int (raw )if raw else int (default )
+    except Exception :
+        return int (default )
+
+
 BOT_TOKEN =os .getenv ("BOT_TOKEN")
 AI_API_KEY =os .getenv ("OPENROUTER_API_KEY")or os .getenv ("AI_API_KEY")
 ADMIN_CHAT_ID =os .getenv ("ADMIN_CHAT_ID")# опционально
@@ -98,6 +130,12 @@ CRM_API_TOKEN =(os .getenv ("CRM_API_TOKEN")or "").strip ()
 BOT_API_TOKEN =(os .getenv ("BOT_API_TOKEN")or "").strip ()
 YOOMONEY_PAY_URL_PLACEHOLDER =(os .getenv ("YOOMONEY_PAY_URL_PLACEHOLDER")or "").strip ()
 TELEGRAM_PRIVATE_CHANNEL_ID =(os .getenv ("TELEGRAM_PRIVATE_CHANNEL_ID")or "").strip ()
+PAYMENTS_TEST_ENABLED =_env_flag_enabled_default_false ("PAYMENTS_TEST_ENABLED")
+PAYMENTS_TEST_AMOUNT_RUB =max (1 ,_int_env ("PAYMENTS_TEST_AMOUNT_RUB",10 ))
+BOT_ADMIN_ID_SET =set ()
+
+# ADMIN_CHAT_ID is kept for backward compatibility; BOT_ADMIN_IDS is preferred.
+BOT_ADMIN_ID_SET =_parse_admin_ids ()
 
 # Services
 ai_service =AIService (api_key =AI_API_KEY )
@@ -328,9 +366,9 @@ def _payment_variant_endpoint_path (variant :str |None )->str :
 
 
 def _is_admin_user_id (user_id :int |None )->bool :
-    if user_id is None or not ADMIN_CHAT_ID :
+    if user_id is None :
         return False
-    return str (user_id )==str (ADMIN_CHAT_ID )
+    return int (user_id )in BOT_ADMIN_ID_SET
 
 
 def _game10_kb_for_update (update :Update )->InlineKeyboardMarkup :
@@ -429,6 +467,44 @@ async def _create_game10_payment_backend (tg_id :int ,*,variant :str =PAYMENT_VA
         return payload
     except Exception as e :
         logger .warning ("Game10 payment create request failed: %s",e .__class__ .__name__ )
+        return {"ok":False ,"detail":e .__class__ .__name__ }
+
+
+async def _create_test_payment_backend (tg_id :int )->dict |None :
+    if not CRM_API_BASE_URL :
+        return None
+    headers =_bot_api_auth_headers ()
+    if not headers :
+        logger .warning ("Test payment backend token missing")
+        return None
+    payload ={
+    "tg_id":int (tg_id ),
+    "product":"game10_test",
+    "amount_rub":int (PAYMENTS_TEST_AMOUNT_RUB ),
+    }
+    try :
+        async with httpx .AsyncClient (timeout =20.0 )as client :
+            response =await client .post (
+            f"{CRM_API_BASE_URL }/api/payments/test/create",
+            headers =headers ,
+            json =payload ,
+            )
+        if response .status_code !=200 :
+            detail =response .text [:240 ]
+            try :
+                payload =response .json ()
+                if isinstance (payload ,dict )and payload .get ("detail")is not None :
+                    detail =str (payload .get ("detail"))
+            except Exception :
+                pass
+            return {"ok":False ,"status_code":response .status_code ,"detail":detail [:240 ]}
+        payload =response .json ()
+        if not isinstance (payload ,dict ):
+            return {"ok":False ,"detail":"invalid backend payload"}
+        payload ["ok"]=True
+        return payload
+    except Exception as e :
+        logger .warning ("Test payment create request failed: %s",e .__class__ .__name__ )
         return {"ok":False ,"detail":e .__class__ .__name__ }
 
 
@@ -2542,7 +2618,7 @@ async def mark_paid_dev (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     if message is None or user is None :
         return 
 
-    if not ADMIN_CHAT_ID or str (user .id )!=str (ADMIN_CHAT_ID ):
+    if not _is_admin_user_id (user .id ):
         await _reply (message ,"\u041a\u043e\u043c\u0430\u043d\u0434\u0430 \u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0430 \u0442\u043e\u043b\u044c\u043a\u043e \u0430\u0434\u043c\u0438\u043d\u0438\u0441\u0442\u0440\u0430\u0442\u043e\u0440\u0443 \u0431\u043e\u0442\u0430.")
         return 
 
@@ -2619,12 +2695,45 @@ async def mark_paid_dev (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
         await _reply (message ,"\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0442\u043c\u0435\u0442\u0438\u0442\u044c \u043e\u043f\u043b\u0430\u0442\u0443. \u041f\u0440\u043e\u0432\u0435\u0440\u044c\u0442\u0435 \u043b\u043e\u0433\u0438.")
 
 
+async def testpay10_command (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    message =update .effective_message
+    user =update .effective_user
+    if message is None or user is None :
+        return
+    if not PAYMENTS_TEST_ENABLED :
+        await _reply (message ,"Тестовый режим оплаты выключен.")
+        return
+    if not _is_admin_user_id (user .id ):
+        await _reply (message ,"Команда доступна только администратору.")
+        return
+
+    await _reply (message ,"Создаю тестовый платёж...")
+    result =await _create_test_payment_backend (user .id )
+    if not isinstance (result ,dict )or not result .get ("ok"):
+        await _reply (message ,"Не удалось создать тестовый платёж.")
+        return
+    payment_id =str (result .get ("payment_id")or "").strip ()
+    confirmation_url =str (result .get ("confirmation_url")or "").strip ()
+    if not confirmation_url :
+        await _reply (message ,"Платёж создан, но ссылка оплаты не получена.")
+        return
+    await _reply (
+    message ,
+    (
+    f"Тестовый платёж {PAYMENTS_TEST_AMOUNT_RUB } ₽.\n"
+    f"payment_id: `{payment_id or '-'}`\n"
+    f"{confirmation_url }"
+    ),
+    parse_mode ="Markdown",
+    )
+
+
 async def pay_debug (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     message =update .effective_message 
     user =update .effective_user 
     if message is None or user is None :
         return 
-    if not ADMIN_CHAT_ID or str (user .id )!=str (ADMIN_CHAT_ID ):
+    if not _is_admin_user_id (user .id ):
         await _reply (message ,"Команда доступна только админу.")
         return 
     args =context .args or []
@@ -2703,6 +2812,8 @@ def build_app ()->Application :
     app .add_handler (CommandHandler ("courses",show_courses_command ))
     app .add_handler (CommandHandler ("catalog",show_courses_command ))
     app .add_handler (CommandHandler ("mark_paid",mark_paid_dev ))
+    app .add_handler (CommandHandler ("testpay",testpay10_command ))
+    app .add_handler (CommandHandler ("testpay10",testpay10_command ))
     app .add_handler (CommandHandler ("pay_debug",pay_debug ))
     app .add_handler (CommandHandler ("rag_debug",rag_debug_command ))
 

@@ -750,3 +750,48 @@ Interpretation:
 - `BadRequest`: invalid `tg_id`/chat not found or malformed Telegram request.
 - `Timeout`: Telegram API/network timeout.
 - No webhook POST records in nginx: YooKassa webhook URL/delivery issue.
+
+## Runbook: test payment 10 RUB (admin)
+
+Important: test mode must stay disabled in production by default.
+
+Environment flags:
+- `PAYMENTS_TEST_ENABLED=false` (default)
+- `PAYMENTS_TEST_AMOUNT_RUB=10`
+- `BOT_ADMIN_IDS=123,456` (Telegram user ids allowed to run admin test payment)
+
+Enable test mode only for diagnostics:
+
+```bash
+# update .env and restart services
+docker compose -f compose.prod.yml up -d --build
+```
+
+In bot (admin only):
+- run `/testpay10` (alias `/testpay`)
+- bot returns payment link for a test amount
+
+Check backend results without printing invite links:
+
+```bash
+docker compose -f compose.prod.yml logs --since 30m --no-log-prefix web | grep -iE "invite_sent|invite_failed|error_type|payment_id=" | tail -n 200
+```
+
+After diagnostics, disable test mode again:
+- set `PAYMENTS_TEST_ENABLED=false`
+- restart services
+
+## Runbook: recheck payment by payment_id
+
+Use local internal script inside `web` container (no HTTP auth needed):
+
+```bash
+docker compose -f compose.prod.yml exec -T web python scripts/admin_recheck_yookassa_payment.py <payment_id>
+```
+
+Output is safe and limited to:
+- `payment_id`
+- `tg_id`
+- `status`
+- `outcome` (`invite_sent` / `invite_failed` / etc.)
+- `error_type` (if present)
