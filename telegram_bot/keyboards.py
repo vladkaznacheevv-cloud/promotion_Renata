@@ -169,7 +169,7 @@ def get_game10_payment_link_kb(
 ):
     rows = [[InlineKeyboardButton(_ui("Открыть оплату"), url=confirmation_url)]]
     if check_callback_data:
-        rows.append([InlineKeyboardButton(_ui("Проверить оплату"), callback_data=check_callback_data)])
+        rows.append([InlineKeyboardButton(_ui("✅ Я оплатил — проверить"), callback_data=check_callback_data)])
     rows.append([InlineKeyboardButton(_ui("Обновить ссылку"), callback_data=refresh_callback_data)])
     rows.append([InlineKeyboardButton(_ui("В меню"), callback_data="menu")])
     return InlineKeyboardMarkup(rows)

@@ -380,7 +380,7 @@ def _payment_check_callback_data (payment_id :str )->str |None :
     value =str (payment_id or "").strip ()
     if not value :
         return None
-    callback =f"game10_pay_check:{value }"
+    callback =f"pay_check:{value }"
     if len (callback )>64:
         return None
     return callback
@@ -632,6 +632,7 @@ refresh_hint :bool =False ,
     _clear_payment_contact_flow (context )
     confirmation_url =str (result .get ("confirmation_url")or "").strip ()
     payment_id =str (result .get ("payment_id")or "").strip ()
+    context .user_data ["last_payment_id"]=payment_id
     amount_rub =int (result .get ("amount_rub")or 5000 )
     if not confirmation_url :
         _clear_payment_contact_flow (context )
@@ -1831,32 +1832,48 @@ async def game10_pay_check (update :Update ,context :ContextTypes .DEFAULT_TYPE 
     query =update .callback_query
     if query is None :
         return
-    await _answer (query )
+    try :
+        await _answer (query )
+    except Exception :
+        pass
     data =str (query .data or "")
     payment_id =data .split (":",1 )[1 ].strip ()if ":" in data else ""
     if not payment_id :
-        await _show_screen (update ,context ,"РќРµ СѓРґР°Р»РѕСЃСЊ РѕРїСЂРµРґРµР»РёС‚СЊ РїР»Р°С‚РµР¶.",reply_markup =_game10_kb_for_update (update ))
+        payment_id =str (context .user_data .get ("last_payment_id")or "").strip ()
+    if not payment_id :
+        await _show_screen (update ,context ,"Payment id is missing.",reply_markup =_game10_kb_for_update (update ))
         return
-    await _show_screen (update ,context ,PAYMENT_CHECKING_SCREEN ,reply_markup =_get_last_game10_payment_ui_kb (context ,payment_id )or _game10_kb_for_update (update ))
+    context .user_data ["last_payment_id"]=payment_id
+    retry_kb =_get_last_game10_payment_ui_kb (context ,payment_id )or _game10_kb_for_update (update )
+    await _show_screen (update ,context ,PAYMENT_CHECKING_SCREEN ,reply_markup =retry_kb )
     user =update .effective_user
     result =await _check_game10_payment_status_backend (payment_id ,tg_id =user .id if user else None )
     if not isinstance (result ,dict )or not result .get ("ok"):
-        await _show_screen (update ,context ,"РќРµ СѓРґР°Р»РѕСЃСЊ РїСЂРѕРІРµСЂРёС‚СЊ РѕРїР»Р°С‚Сѓ. РџРѕРїСЂРѕР±СѓР№С‚Рµ РїРѕР·Р¶Рµ.",reply_markup =_get_last_game10_payment_ui_kb (context ,payment_id )or _game10_kb_for_update (update ))
+        await _show_screen (update ,context ,"Could not verify payment now. Please retry in a minute.",reply_markup =retry_kb )
         return
     status =str (result .get ("status")or "").strip ().lower ()
-    if bool (result .get ("already_in_channel")):
+    outcome =str (result .get ("result")or "").strip ().lower ()
+    error_type =str (result .get ("error_type")or "").strip ()
+    if bool (result .get ("already_in_channel"))or outcome =="already_member":
         await _show_screen (update ,context ,PAYMENT_ALREADY_IN_CHANNEL_SCREEN ,reply_markup =_game10_kb_for_update (update ))
+        return
+    if status =="succeeded"and outcome =="invite_failed":
+        error_norm =error_type .lower ()
+        if error_norm in {"forbidden","chatnotfound"}:
+            await _show_screen (update ,context ,"Bot cannot message you now. Send /start and check again.",reply_markup =retry_kb )
+            return
+        await _show_screen (update ,context ,"Access delivery failed. Please contact admin and retry.",reply_markup =retry_kb )
         return
     if status =="succeeded":
         await _show_screen (update ,context ,PAYMENT_STATUS_CONFIRMED_SCREEN ,reply_markup =_game10_kb_for_update (update ))
         return
     if status in {"pending","waiting_for_capture","created"}:
-        await _show_screen (update ,context ,PAYMENT_STATUS_PENDING_SCREEN ,reply_markup =_get_last_game10_payment_ui_kb (context ,payment_id )or _game10_kb_for_update (update ))
+        await _show_screen (update ,context ,"Payment is still processing. Please try again in a minute.",reply_markup =retry_kb )
         return
     if status in {"canceled","cancelled"}:
-        await _show_screen (update ,context ,PAYMENT_STATUS_CANCELED_SCREEN ,reply_markup =_get_last_game10_payment_ui_kb (context ,payment_id )or _game10_kb_for_update (update ))
+        await _show_screen (update ,context ,PAYMENT_STATUS_CANCELED_SCREEN ,reply_markup =retry_kb )
         return
-    await _show_screen (update ,context ,f"РЎС‚Р°С‚СѓСЃ РїР»Р°С‚РµР¶Р°: {status or 'unknown'}",reply_markup =_get_last_game10_payment_ui_kb (context ,payment_id )or _game10_kb_for_update (update ))
+    await _show_screen (update ,context ,f"Payment status: {status or 'unknown'}",reply_markup =retry_kb )
 
 
 async def pay_contact_phone (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
@@ -2714,6 +2731,7 @@ async def testpay10_command (update :Update ,context :ContextTypes .DEFAULT_TYPE
         return
     payment_id =str (result .get ("payment_id")or "").strip ()
     confirmation_url =str (result .get ("confirmation_url")or "").strip ()
+    context .user_data ["last_payment_id"]=payment_id
     if not confirmation_url :
         await _reply (message ,"Платёж создан, но ссылка оплаты не получена.")
         return
@@ -2726,6 +2744,10 @@ async def testpay10_command (update :Update ,context :ContextTypes .DEFAULT_TYPE
     f"payment_id: {payment_id or '-'}\n"
     f"{confirmation_url }"
     )
+    kb =InlineKeyboardMarkup ([
+    [InlineKeyboardButton ("\u2705 \u042f \u043e\u043f\u043b\u0430\u0442\u0438\u043b \u2014 \u043f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c",callback_data =f"pay_check:{payment_id }")],
+    [InlineKeyboardButton ("\u21a9\ufe0f \u0412 \u043c\u0435\u043d\u044e",callback_data ="main_menu")],
+    ])
     try :
         await _send (
         context .bot ,
@@ -2733,6 +2755,7 @@ async def testpay10_command (update :Update ,context :ContextTypes .DEFAULT_TYPE
         text =text ,
         parse_mode =None ,
         disable_web_page_preview =True ,
+        reply_markup =kb ,
         )
     except BadRequest :
         # Safety net: retry plain text explicitly without entity parsing.
@@ -2742,6 +2765,7 @@ async def testpay10_command (update :Update ,context :ContextTypes .DEFAULT_TYPE
             text =text ,
             parse_mode =None ,
             disable_web_page_preview =True ,
+            reply_markup =kb ,
             )
         except Exception :
             await _reply (message ,"Не удалось отправить ссылку. Попробуйте ещё раз.")
@@ -2855,7 +2879,7 @@ def build_app ()->Application :
     app .add_handler (CallbackQueryHandler (show_game10_description ,pattern ="^game10_description$"))
     app .add_handler (CallbackQueryHandler (private_channel_payment_info ,pattern ="^private_channel_payment_info$"))
     app .add_handler (CallbackQueryHandler (game10_pay_refresh ,pattern ="^game10_pay_refresh$"))
-    app .add_handler (CallbackQueryHandler (game10_pay_check ,pattern ="^game10_pay_check:"))
+    app .add_handler (CallbackQueryHandler (game10_pay_check ,pattern ="^(?:game10_pay_check|pay_check):"))
     app .add_handler (CallbackQueryHandler (pay_contact_phone ,pattern ="^pay_contact_phone$"))
     app .add_handler (CallbackQueryHandler (pay_contact_email ,pattern ="^pay_contact_email$"))
     app .add_handler (CallbackQueryHandler (pay_contact_cancel ,pattern ="^pay_contact_cancel$"))

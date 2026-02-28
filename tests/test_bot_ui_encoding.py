@@ -62,7 +62,7 @@ def test_keyboards_texts_are_clean_utf8() -> None:
         get_consultations_menu(),
         get_courses_empty_kb(),
         get_game10_kb(),
-        get_game10_payment_link_kb("https://example.com", check_callback_data="game10_pay_check:x"),
+        get_game10_payment_link_kb("https://example.com", check_callback_data="pay_check:x"),
     ]
     for markup in inline_markups:
         for row in markup.inline_keyboard:

@@ -4,6 +4,8 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from telegram import InlineKeyboardMarkup
+
 from telegram_bot import main as bot_main
 
 
@@ -24,7 +26,7 @@ def test_testpay10_command_sends_plain_text_with_parse_mode_none(monkeypatch):
     monkeypatch.setattr(bot_main, "_reply", AsyncMock())
 
     send_mock = AsyncMock()
-    context = SimpleNamespace(bot=SimpleNamespace(send_message=send_mock))
+    context = SimpleNamespace(bot=SimpleNamespace(send_message=send_mock), user_data={})
     update = SimpleNamespace(
         effective_message=SimpleNamespace(),
         effective_user=SimpleNamespace(id=123),
@@ -43,3 +45,12 @@ def test_testpay10_command_sends_plain_text_with_parse_mode_none(monkeypatch):
     assert "`" not in text
     assert "<" not in text
     assert ">" not in text
+    markup = kwargs.get("reply_markup")
+    assert isinstance(markup, InlineKeyboardMarkup)
+    callback_data = [
+        btn.callback_data
+        for row in markup.inline_keyboard
+        for btn in row
+        if getattr(btn, "callback_data", None)
+    ]
+    assert "pay_check:yk_test_1" in callback_data

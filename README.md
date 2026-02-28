@@ -770,6 +770,7 @@ docker compose -f compose.prod.yml up -d --build
 In bot (admin only):
 - run `/testpay10` (alias `/testpay`)
 - bot returns payment link for a test amount
+- after payment, press `✅ Я оплатил — проверить` to trigger status recheck and access delivery without waiting for webhook
 
 Check backend results without printing invite links:
 
