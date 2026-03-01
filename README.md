@@ -66,7 +66,7 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml ps
 - если ссылка оплаты устарела и YooKassa показывает `Время истекло`, используйте кнопку `Обновить ссылку` — backend создаст новый платёж (или переиспользует только свежий `pending` в пределах `YOOKASSA_REUSE_TTL_MINUTES`, по умолчанию 15 минут)
 - если webhook YooKassa задержался, используйте кнопку `Проверить оплату` — бот запросит статус через backend и при подтверждении отправит кнопку вступления в канал
 - если у пользователя нет телефона/email для чека, бот сам запросит контакт (телефон или email), сохранит его и автоматически повторит создание платежа
-- чтобы после оплаты пользователь возвращался в Telegram-бот, задайте `TELEGRAM_BOT_RETURN_URL` (например `https://t.me/<bot_username>?start=paid_game10`)
+- чтобы после оплаты пользователь возвращался в Telegram-бот, задайте `BOT_USERNAME` (или явный `TELEGRAM_BOT_RETURN_URL`); по умолчанию используется deep-link вида `https://t.me/<bot_username>?start=pay_return`
 
 ## Bot Polling: только один экземпляр
 
@@ -751,6 +751,18 @@ Interpretation:
 - `Timeout`: Telegram API/network timeout.
 - No webhook POST records in nginx: YooKassa webhook URL/delivery issue.
 
+5. Check DB request failures in web logs (safe fields only):
+
+```bash
+docker compose -f compose.prod.yml logs --since 30m --no-log-prefix web | grep -iE "db_request_error|error_type|short_message|request_id|path"
+```
+
+6. Check bot action latency and contention symptoms:
+
+```bash
+docker compose -f compose.prod.yml logs --since 30m --no-log-prefix bot | grep -iE "bot_action duration_ms|DB issue" | tail -n 300
+```
+
 ## Runbook: test payment 10 RUB (admin)
 
 Important: test mode must stay disabled in production by default.
@@ -759,6 +771,7 @@ Environment flags:
 - `PAYMENTS_TEST_ENABLED=false` (default)
 - `PAYMENTS_TEST_AMOUNT_RUB=10`
 - `BOT_ADMIN_IDS=123,456` (Telegram user ids allowed to run admin test payment)
+- `BOT_USERNAME=<your_bot_username>` (for payment return deep-link from YooKassa)
 
 Enable test mode only for diagnostics:
 
@@ -771,6 +784,7 @@ In bot (admin only):
 - run `/testpay10` (alias `/testpay`)
 - bot returns payment link for a test amount
 - after payment, press `✅ Я оплатил — проверить` to trigger status recheck and access delivery without waiting for webhook
+- if bank redirects back, bot opens `/start pay_return` and shows the same check step with “В меню”
 
 Check backend results without printing invite links:
 

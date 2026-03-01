@@ -169,6 +169,9 @@ LOCK_FILE_PATH =get_lock_path ()
 _BOT_LOCK_FD =None 
 LOCK_HEARTBEAT_SECONDS =30 
 PRODUCT_FOCUS_TIMEOUT_SEC =30 *60
+USER_BUSY_IDS :set [int ]=set ()
+BUSY_NOTICE_TS_KEY ="busy_notice_ts"
+BUSY_NOTICE_INTERVAL_SEC =4.0
 
 EMAIL_RE =re .compile (r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")
 COURSES_PAGE_SIZE =5 
@@ -338,6 +341,12 @@ def _clear_payment_contact_flow (context :ContextTypes .DEFAULT_TYPE )->None :
     context .user_data .pop (PAYMENT_VARIANT_KEY ,None )
 
 
+def _clear_payment_runtime_state (context :ContextTypes .DEFAULT_TYPE )->None :
+    _clear_payment_contact_flow (context )
+    context .user_data .pop ("last_payment_id",None )
+    context .user_data .pop (LAST_GAME10_PAYMENT_UI_KEY ,None )
+
+
 def _start_payment_contact_flow_state (context :ContextTypes .DEFAULT_TYPE ,*,variant :str )->None :
     context .user_data [PAYMENT_CONTACT_FLOW_KEY ]=True
     context .user_data [PAYMENT_PENDING_ACTION_KEY ]="game10_payment"
@@ -384,6 +393,14 @@ def _payment_check_callback_data (payment_id :str )->str |None :
     if len (callback )>64:
         return None
     return callback
+
+
+def _payment_return_kb (payment_id :str |None )->InlineKeyboardMarkup :
+    check_callback =_payment_check_callback_data (str (payment_id or "").strip ())or "pay_check:"
+    return InlineKeyboardMarkup ([
+    [InlineKeyboardButton ("\u2705 \u042f \u043e\u043f\u043b\u0430\u0442\u0438\u043b \u2014 \u043f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c",callback_data =check_callback )],
+    [InlineKeyboardButton ("\u21a9\ufe0f \u0412 \u043c\u0435\u043d\u044e",callback_data ="main_menu")],
+    ])
 
 
 def _store_last_game10_payment_ui_state (context :ContextTypes .DEFAULT_TYPE ,*,payment_id :str ,confirmation_url :str ,variant :str ,message_id :int |None =None )->None :
@@ -889,6 +906,9 @@ def _reset_states (context :ContextTypes .DEFAULT_TYPE ):
     context .user_data .pop (CONTACT_PHONE_KEY ,None )
     context .user_data .pop (SKIP_NEXT_EMAIL_KEY ,None )
     _clear_payment_contact_flow (context )
+    context .user_data .pop ("last_payment_id",None )
+    context .user_data .pop (LAST_GAME10_PAYMENT_UI_KEY ,None )
+    context .user_data .pop (BUSY_NOTICE_TS_KEY ,None )
     context .user_data .pop (PRODUCT_FOCUS_KEY ,None )
 
 
@@ -904,6 +924,94 @@ def _apply_focus_timeout (context :ContextTypes .DEFAULT_TYPE )->bool :
 
 def _clear_product_focus (context :ContextTypes .DEFAULT_TYPE )->None :
     context .user_data .pop (PRODUCT_FOCUS_KEY ,None )
+
+
+def _is_db_exception (exc :Exception |None )->bool :
+    if exc is None :
+        return False
+    cls =exc .__class__
+    module_name =str (getattr (cls ,"__module__", "")or "").lower ()
+    class_name =str (getattr (cls ,"__name__", "")or "").lower ()
+    if "sqlalchemy" in module_name or "asyncpg" in module_name or "psycopg" in module_name :
+        return True
+    markers =("database","dbapi","operationalerror","interfaceerror","connectionerror","pooltimeout","timeouterror")
+    return any (marker in class_name for marker in markers )
+
+
+def _update_kind (update :Update )->str :
+    if getattr (update ,"callback_query",None )is not None :
+        return "callback"
+    if getattr (update ,"message",None )is not None :
+        return "message"
+    if getattr (update ,"chat_join_request",None )is not None :
+        return "chat_join_request"
+    return "other"
+
+
+def _log_action_duration (action :str ,started_at :float ,update :Update )->None :
+    duration_ms =round ((time .perf_counter ()-started_at )*1000 ,2 )
+    logger .info (
+    "bot_action duration_ms=%s action=%s update_kind=%s",
+    duration_ms ,
+    action ,
+    _update_kind (update ),
+    )
+
+
+def _try_enter_user_busy (user_id :int )->bool :
+    if user_id in USER_BUSY_IDS :
+        return False
+    USER_BUSY_IDS .add (user_id )
+    return True
+
+
+def _leave_user_busy (user_id :int )->None :
+    USER_BUSY_IDS .discard (user_id )
+
+
+async def _handle_busy_update (update :Update ,context :ContextTypes .DEFAULT_TYPE ,*,busy_mode :str )->None :
+    query =getattr (update ,"callback_query",None )
+    if query is not None :
+        try :
+            if busy_mode =="notify":
+                await _answer (query ,"\u042f \u043e\u0442\u0432\u0435\u0447\u0430\u044e, \u043f\u043e\u0434\u043e\u0436\u0434\u0438\u0442\u0435.")
+            else :
+                await _answer (query )
+        except Exception :
+            pass
+        return
+    if busy_mode !="notify":
+        return
+    message =getattr (update ,"effective_message",None )
+    if message is None :
+        return
+    now_ts =time .time ()
+    last_notice =float (context .user_data .get (BUSY_NOTICE_TS_KEY )or 0.0 )
+    if now_ts -last_notice <BUSY_NOTICE_INTERVAL_SEC :
+        return
+    context .user_data [BUSY_NOTICE_TS_KEY ]=now_ts
+    try :
+        await _reply (message ,"\u042f \u043e\u0442\u0432\u0435\u0447\u0430\u044e, \u043f\u043e\u0434\u043e\u0436\u0434\u0438\u0442\u0435.")
+    except Exception :
+        pass
+
+
+def _guard_user_handler (handler ,*,action :str |None =None ,busy_mode :str ="notify"):
+    async def _wrapped (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+        tg_user =getattr (update ,"effective_user",None )
+        user_id =int (tg_user .id )if tg_user is not None else None
+        if user_id is not None and not _try_enter_user_busy (user_id ):
+            await _handle_busy_update (update ,context ,busy_mode =busy_mode )
+            raise ApplicationHandlerStop
+        started_at =time .perf_counter ()
+        try :
+            return await handler (update ,context )
+        finally :
+            if user_id is not None :
+                _leave_user_busy (user_id )
+            _log_action_duration (action or getattr (handler ,"__name__","handler"),started_at ,update )
+    _wrapped .__name__ =getattr (handler ,"__name__","guarded_handler")
+    return _wrapped
 
 
 def _err_name (exc :Exception |None )->str :
@@ -1116,6 +1224,22 @@ async def start (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     screen_manager .clear_screen (context )
     _reset_states (context )
 
+    start_payload =str ((context .args [0 ]if context .args else "")or "").strip ()
+    if start_payload .startswith ("pay_"):
+        payment_id =""
+        if start_payload !="pay_return":
+            payment_id =start_payload [4 :].strip ()
+        if payment_id :
+            context .user_data ["last_payment_id"]=payment_id
+        await _show_screen (
+        update ,
+        context ,
+        "\u0421\u043f\u0430\u0441\u0438\u0431\u043e \u0437\u0430 \u043e\u043f\u043b\u0430\u0442\u0443. \u041d\u0430\u0436\u043c\u0438\u0442\u0435 \u00ab\u2705 \u042f \u043e\u043f\u043b\u0430\u0442\u0438\u043b \u2014 \u043f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c\u00bb.",
+        parse_mode =None ,
+        reply_markup =_payment_return_kb (payment_id ),
+        )
+        return
+
     text ="\u0410\u0441\u0441\u0438\u0441\u0442\u0435\u043d\u0442 \u0433\u043e\u0442\u043e\u0432 \u043f\u043e\u043c\u043e\u0447\u044c \u0441 \u0432\u044b\u0431\u043e\u0440\u043e\u043c \u0440\u0430\u0437\u0434\u0435\u043b\u0430."
     await _show_screen (update ,context ,text ,reply_markup =get_main_menu ())
 
@@ -1123,8 +1247,17 @@ async def start (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
 async def main_menu (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     query =update .callback_query 
     await _answer (query )
-    _reset_states (context )
-    await _show_main_menu_bottom (update ,context )
+    try :
+        _reset_states (context )
+    except Exception as e :
+        _log_db_issue ("main_menu_reset",e )
+    try :
+        await _show_main_menu_bottom (update ,context )
+    except Exception as e :
+        logger .warning ("Main menu render fallback: %s",_err_name (e ))
+        chat =update .effective_chat
+        if chat is not None :
+            await _send (context .bot ,chat_id =chat .id ,text ="\u0413\u043b\u0430\u0432\u043d\u043e\u0435 \u043c\u0435\u043d\u044e",reply_markup =get_main_menu (),parse_mode =None )
 
 
 async def show_contacts_request (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
@@ -1838,7 +1971,7 @@ async def game10_pay_check (update :Update ,context :ContextTypes .DEFAULT_TYPE 
     if not payment_id :
         payment_id =str (context .user_data .get ("last_payment_id")or "").strip ()
     if not payment_id :
-        await _show_screen (update ,context ,"Payment id is missing.",reply_markup =_game10_kb_for_update (update ))
+        await _show_screen (update ,context ,"\u041d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d id \u043f\u043b\u0430\u0442\u0435\u0436\u0430. \u041e\u0442\u043a\u0440\u043e\u0439\u0442\u0435 \u0440\u0430\u0437\u0434\u0435\u043b \u043e\u043f\u043b\u0430\u0442\u044b \u0438 \u043f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u0435\u0449\u0451 \u0440\u0430\u0437.",reply_markup =_game10_kb_for_update (update ))
         return
     context .user_data ["last_payment_id"]=payment_id
     retry_kb =_get_last_game10_payment_ui_kb (context ,payment_id )or _game10_kb_for_update (update )
@@ -1852,6 +1985,7 @@ async def game10_pay_check (update :Update ,context :ContextTypes .DEFAULT_TYPE 
     outcome =str (result .get ("result")or "").strip ().lower ()
     error_type =str (result .get ("error_type")or "").strip ()
     if bool (result .get ("already_in_channel"))or outcome =="already_member":
+        _clear_payment_runtime_state (context )
         await _show_screen (update ,context ,PAYMENT_ALREADY_IN_CHANNEL_SCREEN ,reply_markup =_game10_kb_for_update (update ))
         return
     if status =="succeeded"and outcome =="invite_failed":
@@ -1862,12 +1996,14 @@ async def game10_pay_check (update :Update ,context :ContextTypes .DEFAULT_TYPE 
         await _show_screen (update ,context ,"Access delivery failed. Please contact admin and retry.",reply_markup =retry_kb )
         return
     if status =="succeeded":
+        _clear_payment_runtime_state (context )
         await _show_screen (update ,context ,PAYMENT_STATUS_CONFIRMED_SCREEN ,reply_markup =_game10_kb_for_update (update ))
         return
     if status in {"pending","waiting_for_capture","created"}:
         await _show_screen (update ,context ,"Payment is still processing. Please try again in a minute.",reply_markup =retry_kb )
         return
     if status in {"canceled","cancelled"}:
+        _clear_payment_runtime_state (context )
         await _show_screen (update ,context ,PAYMENT_STATUS_CANCELED_SCREEN ,reply_markup =retry_kb )
         return
     await _show_screen (update ,context ,f"Payment status: {status or 'unknown'}",reply_markup =retry_kb )
@@ -1907,7 +2043,7 @@ async def pay_contact_cancel (update :Update ,context :ContextTypes .DEFAULT_TYP
         return
     await _answer (query )
     await _send_reply_keyboard_remove (update ,context )
-    _clear_payment_contact_flow (context )
+    _clear_payment_runtime_state (context )
     await _show_screen (update ,context ,PAYMENT_CANCELLED_SCREEN ,reply_markup =get_back_to_menu_kb ())
     await _show_main_menu_bottom (update ,context )
 
@@ -2433,9 +2569,19 @@ async def retry_db (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
 
 
 async def on_error (update :object ,context :ContextTypes .DEFAULT_TYPE )->None :
-    logger .exception ("Unhandled error: %s",context .error )
-    if isinstance (update ,Update ):
-        await _notify_db_unavailable (update ,context .error if isinstance (context .error ,Exception )else None ,scope ="on_error")
+    error_obj =context .error if isinstance (context .error ,Exception )else None
+    logger .exception ("Unhandled error type: %s",_err_name (error_obj ))
+    if not isinstance (update ,Update ):
+        return
+    if _is_db_exception (error_obj ):
+        await _notify_db_unavailable (update ,error_obj ,scope ="on_error")
+        return
+    query =getattr (update ,"callback_query",None )
+    if query is not None :
+        try :
+            await _answer (query ,"\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0431\u0440\u0430\u0431\u043e\u0442\u0430\u0442\u044c \u0437\u0430\u043f\u0440\u043e\u0441. \u041d\u0430\u0436\u043c\u0438\u0442\u0435 \u00ab\u0412 \u043c\u0435\u043d\u044e\u00bb.")
+        except Exception :
+            pass
 
 
 async def _send_events_list (
@@ -2621,9 +2767,18 @@ async def event_pay (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
 
 
 async def menu_command (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
-    _reset_states (context )
+    try :
+        _reset_states (context )
+    except Exception as e :
+        _log_db_issue ("menu_command_reset",e )
     if update .effective_message :
-        await _show_main_menu_bottom (update ,context )
+        try :
+            await _show_main_menu_bottom (update ,context )
+        except Exception as e :
+            logger .warning ("Menu command fallback: %s",_err_name (e ))
+            chat =update .effective_chat
+            if chat is not None :
+                await _send (context .bot ,chat_id =chat .id ,text ="\u0413\u043b\u0430\u0432\u043d\u043e\u0435 \u043c\u0435\u043d\u044e",reply_markup =get_main_menu (),parse_mode =None )
 
 
 async def mark_paid_dev (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
@@ -2843,70 +2998,73 @@ async def handle_chat_join_request (update :Update ,context :ContextTypes .DEFAU
 
 def build_app ()->Application :
     app =Application .builder ().token (BOT_TOKEN ).build ()
+    cmd =lambda handler :_guard_user_handler (handler ,busy_mode ="notify")
+    cb =lambda handler :_guard_user_handler (handler ,busy_mode ="ignore")
+    msg =lambda handler :_guard_user_handler (handler ,busy_mode ="notify")
 
     # Commands
-    app .add_handler (CommandHandler ("start",start ))
-    app .add_handler (CommandHandler ("menu",menu_command ))
-    app .add_handler (CommandHandler ("back",menu_command ))
-    app .add_handler (CommandHandler ("cancel",menu_command ))
-    app .add_handler (CommandHandler ("events",show_events_command ))
-    app .add_handler (CommandHandler ("courses",show_courses_command ))
-    app .add_handler (CommandHandler ("catalog",show_courses_command ))
-    app .add_handler (CommandHandler ("mark_paid",mark_paid_dev ))
-    app .add_handler (CommandHandler ("testpay",testpay10_command ))
-    app .add_handler (CommandHandler ("testpay10",testpay10_command ))
-    app .add_handler (CommandHandler ("pay_debug",pay_debug ))
-    app .add_handler (CommandHandler ("rag_debug",rag_debug_command ))
+    app .add_handler (CommandHandler ("start",cmd (start )))
+    app .add_handler (CommandHandler ("menu",cmd (menu_command )))
+    app .add_handler (CommandHandler ("back",cmd (menu_command )))
+    app .add_handler (CommandHandler ("cancel",cmd (menu_command )))
+    app .add_handler (CommandHandler ("events",cmd (show_events_command )))
+    app .add_handler (CommandHandler ("courses",cmd (show_courses_command )))
+    app .add_handler (CommandHandler ("catalog",cmd (show_courses_command )))
+    app .add_handler (CommandHandler ("mark_paid",cmd (mark_paid_dev )))
+    app .add_handler (CommandHandler ("testpay",cmd (testpay10_command )))
+    app .add_handler (CommandHandler ("testpay10",cmd (testpay10_command )))
+    app .add_handler (CommandHandler ("pay_debug",cmd (pay_debug )))
+    app .add_handler (CommandHandler ("rag_debug",cmd (rag_debug_command )))
 
     # Menu callbacks
-    app .add_handler (CallbackQueryHandler (main_menu ,pattern ="^main_menu$"))
-    app .add_handler (CallbackQueryHandler (main_menu ,pattern ="^menu$"))
-    app .add_handler (CallbackQueryHandler (retry_db ,pattern ="^retry_db$"))
+    app .add_handler (CallbackQueryHandler (cb (main_menu ),pattern ="^main_menu$"))
+    app .add_handler (CallbackQueryHandler (cb (main_menu ),pattern ="^menu$"))
+    app .add_handler (CallbackQueryHandler (cb (retry_db ),pattern ="^retry_db$"))
 
     # Sections
-    app .add_handler (CallbackQueryHandler (show_events ,pattern ="^events$"))
-    app .add_handler (CallbackQueryHandler (events_list_callback ,pattern ="^events_list$"))
-    app .add_handler (CallbackQueryHandler (event_list_prev ,pattern ="^event_list_prev$"))
-    app .add_handler (CallbackQueryHandler (event_list_next ,pattern ="^event_list_next$"))
-    app .add_handler (CallbackQueryHandler (event_list_refresh ,pattern ="^event_list_refresh$"))
-    app .add_handler (CallbackQueryHandler (event_open ,pattern ="^event_open:"))
-    app .add_handler (CallbackQueryHandler (show_courses ,pattern ="^courses$"))
-    app .add_handler (CallbackQueryHandler (show_courses_page ,pattern ="^courses_page:"))
-    app .add_handler (CallbackQueryHandler (show_private_channel ,pattern ="^private_channel$"))
-    app .add_handler (CallbackQueryHandler (show_game10_description ,pattern ="^game10_description$"))
-    app .add_handler (CallbackQueryHandler (private_channel_payment_info ,pattern ="^private_channel_payment_info$"))
-    app .add_handler (CallbackQueryHandler (game10_pay_refresh ,pattern ="^game10_pay_refresh$"))
-    app .add_handler (CallbackQueryHandler (game10_pay_check ,pattern ="^(?:game10_pay_check|pay_check):"))
-    app .add_handler (CallbackQueryHandler (pay_contact_phone ,pattern ="^pay_contact_phone$"))
-    app .add_handler (CallbackQueryHandler (pay_contact_email ,pattern ="^pay_contact_email$"))
-    app .add_handler (CallbackQueryHandler (pay_contact_cancel ,pattern ="^pay_contact_cancel$"))
-    app .add_handler (CallbackQueryHandler (course_link_unavailable ,pattern ="^course_link_unavailable$"))
-    app .add_handler (CallbackQueryHandler (show_consultations ,pattern ="^consultations$"))
-    app .add_handler (CallbackQueryHandler (show_formats_and_prices ,pattern ="^consult_formats$"))
-    app .add_handler (CallbackQueryHandler (show_ai_chat ,pattern ="^ai_chat$"))
-    app .add_handler (CallbackQueryHandler (show_course_questions ,pattern ="^course_questions$"))
-    app .add_handler (CallbackQueryHandler (game10_questions ,pattern ="^game10_questions$"))
-    app .add_handler (CallbackQueryHandler (event_questions ,pattern ="^event_questions:"))
-    app .add_handler (CallbackQueryHandler (show_contacts_request ,pattern ="^share_contacts$"))
-    app .add_handler (CallbackQueryHandler (contact_manager ,pattern ="^contact_manager$"))
-    app .add_handler (CallbackQueryHandler (show_help ,pattern ="^help$"))
-    app .add_handler (CallbackQueryHandler (event_register ,pattern ="^event_register:"))
-    app .add_handler (CallbackQueryHandler (event_cancel ,pattern ="^event_cancel:"))
-    app .add_handler (CallbackQueryHandler (event_pay ,pattern ="^event_pay:"))
+    app .add_handler (CallbackQueryHandler (cb (show_events ),pattern ="^events$"))
+    app .add_handler (CallbackQueryHandler (cb (events_list_callback ),pattern ="^events_list$"))
+    app .add_handler (CallbackQueryHandler (cb (event_list_prev ),pattern ="^event_list_prev$"))
+    app .add_handler (CallbackQueryHandler (cb (event_list_next ),pattern ="^event_list_next$"))
+    app .add_handler (CallbackQueryHandler (cb (event_list_refresh ),pattern ="^event_list_refresh$"))
+    app .add_handler (CallbackQueryHandler (cb (event_open ),pattern ="^event_open:"))
+    app .add_handler (CallbackQueryHandler (cb (show_courses ),pattern ="^courses$"))
+    app .add_handler (CallbackQueryHandler (cb (show_courses_page ),pattern ="^courses_page:"))
+    app .add_handler (CallbackQueryHandler (cb (show_private_channel ),pattern ="^private_channel$"))
+    app .add_handler (CallbackQueryHandler (cb (show_game10_description ),pattern ="^game10_description$"))
+    app .add_handler (CallbackQueryHandler (cb (private_channel_payment_info ),pattern ="^private_channel_payment_info$"))
+    app .add_handler (CallbackQueryHandler (cb (game10_pay_refresh ),pattern ="^game10_pay_refresh$"))
+    app .add_handler (CallbackQueryHandler (cb (game10_pay_check ),pattern ="^(?:game10_pay_check|pay_check):"))
+    app .add_handler (CallbackQueryHandler (cb (pay_contact_phone ),pattern ="^pay_contact_phone$"))
+    app .add_handler (CallbackQueryHandler (cb (pay_contact_email ),pattern ="^pay_contact_email$"))
+    app .add_handler (CallbackQueryHandler (cb (pay_contact_cancel ),pattern ="^pay_contact_cancel$"))
+    app .add_handler (CallbackQueryHandler (cb (course_link_unavailable ),pattern ="^course_link_unavailable$"))
+    app .add_handler (CallbackQueryHandler (cb (show_consultations ),pattern ="^consultations$"))
+    app .add_handler (CallbackQueryHandler (cb (show_formats_and_prices ),pattern ="^consult_formats$"))
+    app .add_handler (CallbackQueryHandler (cb (show_ai_chat ),pattern ="^ai_chat$"))
+    app .add_handler (CallbackQueryHandler (cb (show_course_questions ),pattern ="^course_questions$"))
+    app .add_handler (CallbackQueryHandler (cb (game10_questions ),pattern ="^game10_questions$"))
+    app .add_handler (CallbackQueryHandler (cb (event_questions ),pattern ="^event_questions:"))
+    app .add_handler (CallbackQueryHandler (cb (show_contacts_request ),pattern ="^share_contacts$"))
+    app .add_handler (CallbackQueryHandler (cb (contact_manager ),pattern ="^contact_manager$"))
+    app .add_handler (CallbackQueryHandler (cb (show_help ),pattern ="^help$"))
+    app .add_handler (CallbackQueryHandler (cb (event_register ),pattern ="^event_register:"))
+    app .add_handler (CallbackQueryHandler (cb (event_cancel ),pattern ="^event_cancel:"))
+    app .add_handler (CallbackQueryHandler (cb (event_pay ),pattern ="^event_pay:"))
 
     # Booking
-    app .add_handler (CallbackQueryHandler (begin_booking_individual ,pattern ="^book_individual$"))
-    app .add_handler (CallbackQueryHandler (begin_booking_group ,pattern ="^book_group$"))
+    app .add_handler (CallbackQueryHandler (cb (begin_booking_individual ),pattern ="^book_individual$"))
+    app .add_handler (CallbackQueryHandler (cb (begin_booking_group ),pattern ="^book_group$"))
 
     # Messages routing:
-    app .add_handler (MessageHandler (filters .ALL ,ensure_user_on_message ),group =-1 )
-    app .add_handler (MessageHandler (filters .CONTACT ,handle_contact_phone ),group =0 )
-    app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,handle_contact_phone_text ),group =1 )
-    app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,handle_contact_email_text ),group =2 )
-    app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,handle_navigation_text_message ),group =3 )
-    app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,handle_lead_message ),group =4 )
-    app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,handle_ai_message ),group =5 )
-    app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,handle_text_outside_assistant ),group =6 )
+    app .add_handler (MessageHandler (filters .ALL ,msg (ensure_user_on_message )),group =-1 )
+    app .add_handler (MessageHandler (filters .CONTACT ,msg (handle_contact_phone )),group =0 )
+    app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,msg (handle_contact_phone_text )),group =1 )
+    app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,msg (handle_contact_email_text )),group =2 )
+    app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,msg (handle_navigation_text_message )),group =3 )
+    app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,msg (handle_lead_message )),group =4 )
+    app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,msg (handle_ai_message )),group =5 )
+    app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,msg (handle_text_outside_assistant )),group =6 )
     app .add_handler (ChatJoinRequestHandler (handle_chat_join_request ),group =7 )
 
     app .add_error_handler (on_error )

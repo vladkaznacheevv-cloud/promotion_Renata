@@ -148,12 +148,28 @@ def ensure_yookassa_configured() -> bool:
     return True
 
 
-def _public_return_url() -> str:
+def _telegram_return_url(payment_id: str | None = None) -> str | None:
+    username = (
+        (os.getenv("BOT_USERNAME") or "").strip()
+        or (os.getenv("TELEGRAM_BOT_USERNAME") or "").strip()
+    )
+    username = username.lstrip("@").strip()
+    if not username:
+        return None
+    payment_suffix = re.sub(r"[^A-Za-z0-9_-]", "", str(payment_id or "").strip())[:48]
+    start_payload = f"pay_{payment_suffix}" if payment_suffix else "pay_return"
+    return f"https://t.me/{username}?start={start_payload}"
+
+
+def _public_return_url(payment_id: str | None = None) -> str:
     bot_return = (os.getenv("TELEGRAM_BOT_RETURN_URL") or "").strip()
     if bot_return:
         if not bot_return.lower().startswith(("http://", "https://")):
             bot_return = f"https://{bot_return}"
         return bot_return
+    tg_deep_link = _telegram_return_url(payment_id=payment_id)
+    if tg_deep_link:
+        return tg_deep_link
     base = _normalized_public_base_url()
     if base:
         return f"{base}/"

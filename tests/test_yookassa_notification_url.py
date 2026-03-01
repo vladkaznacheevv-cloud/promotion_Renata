@@ -84,3 +84,15 @@ def test_public_return_url_prefers_telegram_bot_return_url(monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_RETURN_URL", "t.me/example_bot?start=paid_game10")
     monkeypatch.setenv("PUBLIC_BASE_URL", "https://api.example.com")
     assert payments_api._public_return_url() == "https://t.me/example_bot?start=paid_game10"
+
+
+def test_public_return_url_uses_bot_username_deep_link(monkeypatch):
+    monkeypatch.delenv("TELEGRAM_BOT_RETURN_URL", raising=False)
+    monkeypatch.setenv("BOT_USERNAME", "@renata_example_bot")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://api.example.com")
+
+    assert payments_api._public_return_url() == "https://t.me/renata_example_bot?start=pay_return"
+    assert (
+        payments_api._public_return_url(payment_id="3133ebe2-abc")
+        == "https://t.me/renata_example_bot?start=pay_3133ebe2-abc"
+    )

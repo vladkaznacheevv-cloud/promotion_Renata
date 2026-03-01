@@ -11,6 +11,19 @@ engine: AsyncEngine | None = None
 async_session: sessionmaker | None = None
 
 
+def _int_env(name: str, default: int, *, minimum: int = 1, maximum: int | None = None) -> int:
+    raw = (os.getenv(name) or "").strip()
+    try:
+        value = int(raw) if raw else int(default)
+    except Exception:
+        value = int(default)
+    if value < minimum:
+        value = minimum
+    if maximum is not None and value > maximum:
+        value = maximum
+    return value
+
+
 def _strip_sslmode(url: str) -> str:
     parts = urlsplit(url)
     if not parts.query:
@@ -48,12 +61,23 @@ def init_db() -> None:
 
     database_url = _build_database_url()
 
-    connect_args = {}
+    statement_timeout_ms = _int_env("DB_STATEMENT_TIMEOUT_MS", 7000, minimum=1000, maximum=60000)
+    connect_timeout_sec = _int_env("DB_CONNECT_TIMEOUT_SEC", 5, minimum=1, maximum=30)
+    connect_args = {
+        "timeout": connect_timeout_sec,
+        "server_settings": {
+            "statement_timeout": str(statement_timeout_ms),
+        },
+    }
     if (os.getenv("DB_SSLMODE") or "").lower() == "require":
         ssl_context = ssl.create_default_context()
         ssl_context.check_hostname = False
         ssl_context.verify_mode = ssl.CERT_NONE
         connect_args["ssl"] = ssl_context
+
+    pool_size = _int_env("DB_POOL_SIZE", 5, minimum=1, maximum=50)
+    max_overflow = _int_env("DB_MAX_OVERFLOW", 10, minimum=0, maximum=100)
+    pool_timeout = _int_env("DB_POOL_TIMEOUT_SEC", 5, minimum=1, maximum=60)
 
     engine = create_async_engine(
         database_url,
@@ -62,6 +86,9 @@ def init_db() -> None:
         connect_args=connect_args,
         pool_pre_ping=True,
         pool_recycle=1800,
+        pool_size=pool_size,
+        max_overflow=max_overflow,
+        pool_timeout=pool_timeout,
     )
     async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 

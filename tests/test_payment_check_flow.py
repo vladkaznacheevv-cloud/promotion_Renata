@@ -66,3 +66,20 @@ def test_game10_pay_check_calls_backend_and_handles_forbidden(monkeypatch):
     assert context.user_data["last_payment_id"] == "yk_forbidden_1"
     shown_texts = [str(call.args[2]) for call in show_screen_mock.await_args_list]
     assert any("/start" in text for text in shown_texts)
+
+
+def test_start_with_pay_deeplink_shows_check_button(monkeypatch):
+    show_screen_mock = AsyncMock()
+    monkeypatch.setattr(bot_main, "_show_screen", show_screen_mock)
+
+    update = SimpleNamespace(effective_user=SimpleNamespace(id=321))
+    context = SimpleNamespace(args=["pay_yk_777"], user_data={})
+
+    asyncio.run(bot_main.start(update, context))
+
+    assert context.user_data["last_payment_id"] == "yk_777"
+    text = str(show_screen_mock.await_args.args[2])
+    assert "Спасибо за оплату" in text
+    markup = show_screen_mock.await_args.kwargs["reply_markup"]
+    assert isinstance(markup, InlineKeyboardMarkup)
+    assert "pay_check:yk_777" in _callbacks(markup)

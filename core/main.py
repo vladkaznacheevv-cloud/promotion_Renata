@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -12,6 +13,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 from core.db import Base
 from core.db import database as db
@@ -57,6 +59,46 @@ def _sanitize_log_message(message: str) -> str:
     return safe
 
 
+def _is_db_exception(exc: Exception) -> bool:
+    if isinstance(exc, SQLAlchemyError):
+        return True
+    cls = exc.__class__
+    module_name = str(getattr(cls, "__module__", "")).lower()
+    class_name = str(getattr(cls, "__name__", "")).lower()
+    if "sqlalchemy" in module_name or "asyncpg" in module_name or "psycopg" in module_name:
+        return True
+    markers = (
+        "database",
+        "dbapi",
+        "operationalerror",
+        "interfaceerror",
+        "connectionerror",
+        "pooltimeout",
+        "timeouterror",
+    )
+    return any(marker in class_name for marker in markers)
+
+
+def _db_error_short_message(exc: Exception) -> str:
+    text_value = str(exc or "").strip().lower()
+    if "timeout" in text_value:
+        return "timeout"
+    if "pool" in text_value:
+        return "pool_timeout"
+    if "connection" in text_value or "connect" in text_value or "closed" in text_value:
+        return "connection_error"
+    return "db_error"
+
+
+def _readyz_db_timeout_seconds() -> float:
+    raw = str(os.getenv("READYZ_DB_TIMEOUT_SEC") or "").strip()
+    try:
+        value = float(raw) if raw else 2.0
+    except Exception:
+        value = 2.0
+    return max(0.5, min(value, 15.0))
+
+
 def _configure_logging() -> None:
     level_name = (os.getenv("LOG_LEVEL") or "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
@@ -86,6 +128,12 @@ def _configure_logging() -> None:
             duration_ms = getattr(record, "duration_ms", None)
             if duration_ms is not None:
                 payload["duration_ms"] = duration_ms
+            error_type = getattr(record, "error_type", None)
+            if error_type:
+                payload["error_type"] = str(error_type)
+            short_message = getattr(record, "short_message", None)
+            if short_message:
+                payload["short_message"] = _sanitize_log_message(str(short_message))
             return json.dumps(payload, ensure_ascii=False)
 
     root = logging.getLogger()
@@ -155,19 +203,34 @@ async def request_context_middleware(request: Request, call_next):
     started = time.perf_counter()
     try:
         response = await call_next(request)
-    except Exception:
+    except Exception as exc:
         duration_ms = round((time.perf_counter() - started) * 1000, 2)
-        logger.exception(
-            "request_failed",
-            extra={
-                "event": "request",
-                "request_id": request_id,
-                "path": request.url.path,
-                "method": request.method,
-                "status_code": 500,
-                "duration_ms": duration_ms,
-            },
-        )
+        if _is_db_exception(exc):
+            logger.warning(
+                "db_request_error",
+                extra={
+                    "event": "db_request_error",
+                    "request_id": request_id,
+                    "path": request.url.path,
+                    "method": request.method,
+                    "status_code": 500,
+                    "duration_ms": duration_ms,
+                    "error_type": exc.__class__.__name__,
+                    "short_message": _db_error_short_message(exc),
+                },
+            )
+        else:
+            logger.exception(
+                "request_failed",
+                extra={
+                    "event": "request",
+                    "request_id": request_id,
+                    "path": request.url.path,
+                    "method": request.method,
+                    "status_code": 500,
+                    "duration_ms": duration_ms,
+                },
+            )
         raise
 
     duration_ms = round((time.perf_counter() - started) * 1000, 2)
@@ -231,7 +294,10 @@ async def readyz():
         if db.async_session is None:
             raise RuntimeError("Database session is not initialized")
         async with db.async_session() as session:
-            await session.execute(text("SELECT 1"))
+            await asyncio.wait_for(
+                session.execute(text("SELECT 1")),
+                timeout=_readyz_db_timeout_seconds(),
+            )
         return {"status": "ready"}
     except Exception:
         return JSONResponse(status_code=503, content={"status": "not_ready"})
