@@ -800,3 +800,11 @@ Output is safe and limited to:
 - `status`
 - `outcome` (`invite_sent` / `invite_failed` / etc.)
 - `error_type` (if present)
+
+## Mojibake diagnostics
+
+Run source check locally:
+
+```bash
+python scripts/mojibake_doctor.py
+```
