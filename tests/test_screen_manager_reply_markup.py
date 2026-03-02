@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
-from telegram.error import TimedOut
+from telegram.error import BadRequest, TimedOut
 
 from telegram_bot import main as bot_main
 from telegram_bot.screen_manager import ScreenManager
@@ -153,3 +153,94 @@ def test_show_screen_send_timeout_does_not_raise():
     )
 
     bot.send_message.assert_awaited_once()
+
+
+def test_show_screen_ui_mode_true_edits_existing_anchor_for_message_update():
+    bot = SimpleNamespace(
+        send_message=AsyncMock(return_value=SimpleNamespace(message_id=200)),
+        edit_message_text=AsyncMock(return_value=None),
+        delete_message=AsyncMock(),
+    )
+    update = SimpleNamespace(
+        effective_chat=SimpleNamespace(id=123456),
+        callback_query=None,
+        message=SimpleNamespace(text="В меню"),
+    )
+    context = _build_context(bot, last_message_id=100)
+    reply_markup = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("В меню", callback_data="main_menu")]]
+    )
+
+    asyncio.run(
+        ScreenManager().show_screen(
+            update,
+            context,
+            "Тест",
+            reply_markup=reply_markup,
+            ui_mode=True,
+        )
+    )
+
+    bot.edit_message_text.assert_awaited_once()
+    bot.send_message.assert_not_called()
+    assert context.user_data[ScreenManager.UI_ANCHOR_MESSAGE_ID_KEY] == 100
+
+
+def test_show_screen_ui_mode_true_fallback_send_and_deletes_old_anchor_on_badrequest():
+    bot = SimpleNamespace(
+        send_message=AsyncMock(return_value=SimpleNamespace(message_id=200)),
+        edit_message_text=AsyncMock(side_effect=BadRequest("message can't be edited")),
+        delete_message=AsyncMock(),
+    )
+    update = SimpleNamespace(
+        effective_chat=SimpleNamespace(id=123456),
+        callback_query=None,
+        message=SimpleNamespace(text="В меню"),
+    )
+    context = _build_context(bot, last_message_id=100)
+    reply_markup = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("В меню", callback_data="main_menu")]]
+    )
+
+    asyncio.run(
+        ScreenManager().show_screen(
+            update,
+            context,
+            "Тест",
+            reply_markup=reply_markup,
+            ui_mode=True,
+        )
+    )
+
+    bot.edit_message_text.assert_awaited_once()
+    bot.send_message.assert_awaited_once()
+    bot.delete_message.assert_awaited_once_with(chat_id=123456, message_id=100)
+    assert context.user_data[ScreenManager.UI_ANCHOR_MESSAGE_ID_KEY] == 200
+
+
+def test_show_screen_ui_mode_false_always_sends_and_keeps_anchor():
+    bot = SimpleNamespace(
+        send_message=AsyncMock(return_value=SimpleNamespace(message_id=200)),
+        edit_message_text=AsyncMock(),
+        delete_message=AsyncMock(),
+    )
+    update = SimpleNamespace(
+        effective_chat=SimpleNamespace(id=123456),
+        callback_query=None,
+        message=SimpleNamespace(text="assistant text"),
+    )
+    context = _build_context(bot, last_message_id=100)
+
+    asyncio.run(
+        ScreenManager().show_screen(
+            update,
+            context,
+            "Ответ ассистента",
+            ui_mode=False,
+        )
+    )
+
+    bot.send_message.assert_awaited_once()
+    bot.edit_message_text.assert_not_called()
+    bot.delete_message.assert_not_called()
+    assert context.user_data[ScreenManager.UI_ANCHOR_MESSAGE_ID_KEY] == 100

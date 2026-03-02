@@ -8,7 +8,7 @@
 
 from telegram_bot.text_utils import normalize_ui_text
 
-GETCOURSE_CABINET_URL = "https://renataminakova.getcourse.ru/"
+GETCOURSE_CABINET_URL = "https://renataminakova.ru"
 
 
 def _ui(text: str) -> str:

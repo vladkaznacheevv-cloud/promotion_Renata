@@ -83,3 +83,31 @@ def test_start_with_pay_deeplink_shows_check_button(monkeypatch):
     markup = show_screen_mock.await_args.kwargs["reply_markup"]
     assert isinstance(markup, InlineKeyboardMarkup)
     assert "pay_check:yk_777" in _callbacks(markup)
+
+
+def test_game10_pay_check_pending_status_is_localized(monkeypatch):
+    monkeypatch.setattr(bot_main, "_answer", AsyncMock())
+    monkeypatch.setattr(
+        bot_main,
+        "_check_game10_payment_status_backend",
+        AsyncMock(return_value={"ok": True, "status": "pending", "result": "pending"}),
+    )
+    monkeypatch.setattr(bot_main, "_get_last_game10_payment_ui_kb", lambda context, payment_id: None)
+    monkeypatch.setattr(bot_main, "_game10_kb_for_update", lambda update: InlineKeyboardMarkup([]))
+    show_screen_mock = AsyncMock()
+    monkeypatch.setattr(bot_main, "_show_screen", show_screen_mock)
+
+    update = SimpleNamespace(
+        callback_query=SimpleNamespace(data="pay_check:yk_pending_1"),
+        effective_user=SimpleNamespace(id=321),
+    )
+    context = SimpleNamespace(user_data={})
+
+    asyncio.run(bot_main.game10_pay_check(update, context))
+
+    pending_call = next(
+        call
+        for call in show_screen_mock.await_args_list
+        if "Платёж ещё обрабатывается" in str(call.args[2])
+    )
+    assert pending_call.kwargs.get("parse_mode") is None

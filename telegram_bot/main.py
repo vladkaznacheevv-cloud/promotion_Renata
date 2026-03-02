@@ -313,8 +313,7 @@ async def _show_screen (update :Update ,context :ContextTypes .DEFAULT_TYPE ,tex
 async def _show_main_menu_bottom (update :Update ,context :ContextTypes .DEFAULT_TYPE ,text :str |None =None ):
     if text is None :
         text ="Главное меню"
-    screen_manager .clear_screen (context )
-    await _show_screen (update ,context ,text ,reply_markup =get_main_menu ())
+    await _show_screen (update ,context ,text ,reply_markup =get_main_menu (),ui_mode =True )
 
 
 async def _safe_edit_reply_markup (query :CallbackQuery |None ,*,reply_markup =None ):
@@ -1534,8 +1533,7 @@ async def handle_contact_phone_text (update :Update ,context :ContextTypes .DEFA
             if text .lower ()=="отмена":
                 await _send_reply_keyboard_remove (update ,context )
                 _clear_payment_contact_flow (context )
-                await _show_screen (update ,context ,PAYMENT_CANCELLED_SCREEN ,reply_markup =get_back_to_menu_kb ())
-                await _show_main_menu_bottom (update ,context )
+                await _show_main_menu_bottom (update ,context ,text =PAYMENT_CANCELLED_SCREEN )
             else :
                 await _request_payment_contact_screen (update ,context ,variant =_payment_variant_normalized (context .user_data .get (PAYMENT_VARIANT_KEY )))
             return
@@ -1546,8 +1544,7 @@ async def handle_contact_phone_text (update :Update ,context :ContextTypes .DEFA
         if text .lower ()=="отмена":
             await _send_reply_keyboard_remove (update ,context )
             _clear_payment_contact_flow (context )
-            await _show_screen (update ,context ,PAYMENT_CANCELLED_SCREEN ,reply_markup =get_back_to_menu_kb ())
-            await _show_main_menu_bottom (update ,context )
+            await _show_main_menu_bottom (update ,context ,text =PAYMENT_CANCELLED_SCREEN )
             return
         normalized =re .sub (r"[^\\d+]","",text )
         if len (re .sub (r"\\D","",normalized ))<10 :
@@ -1595,8 +1592,7 @@ async def handle_contact_email_text (update :Update ,context :ContextTypes .DEFA
         if email =="отмена":
             await _send_reply_keyboard_remove (update ,context )
             _clear_payment_contact_flow (context )
-            await _show_screen (update ,context ,PAYMENT_CANCELLED_SCREEN ,reply_markup =get_back_to_menu_kb ())
-            await _show_main_menu_bottom (update ,context )
+            await _show_main_menu_bottom (update ,context ,text =PAYMENT_CANCELLED_SCREEN )
             raise ApplicationHandlerStop
         if not EMAIL_RE .match (email ):
             await _show_screen (
@@ -2113,7 +2109,13 @@ async def game10_pay_check (update :Update ,context :ContextTypes .DEFAULT_TYPE 
         await _show_screen (update ,context ,PAYMENT_STATUS_CONFIRMED_SCREEN ,reply_markup =_game10_kb_for_update (update ))
         return
     if status in {"pending","waiting_for_capture","created"}:
-        await _show_screen (update ,context ,"Payment is still processing. Please try again in a minute.",reply_markup =retry_kb )
+        await _show_screen (
+        update ,
+        context ,
+        "Платёж ещё обрабатывается. Попробуйте снова через минуту.",
+        parse_mode =None ,
+        reply_markup =retry_kb ,
+        )
         return
     if status in {"canceled","cancelled"}:
         _clear_payment_runtime_state (context )
@@ -2157,8 +2159,7 @@ async def pay_contact_cancel (update :Update ,context :ContextTypes .DEFAULT_TYP
     await _answer (query )
     await _send_reply_keyboard_remove (update ,context )
     _clear_payment_runtime_state (context )
-    await _show_screen (update ,context ,PAYMENT_CANCELLED_SCREEN ,reply_markup =get_back_to_menu_kb ())
-    await _show_main_menu_bottom (update ,context )
+    await _show_main_menu_bottom (update ,context ,text =PAYMENT_CANCELLED_SCREEN )
 
 
     # --------- Consultations / Gestalt ---------
@@ -2689,7 +2690,7 @@ async def handle_ai_message (update :Update ,context :ContextTypes .DEFAULT_TYPE
     product_focus =str (context .user_data .get (PRODUCT_FOCUS_KEY )or "").strip ().lower ()
     if not assistant_source and not product_focus :
         context .user_data [AI_MODE_KEY ]=False
-        await _show_screen (update ,context ,ASSISTANT_ENTRY_HINT_TEXT ,reply_markup =get_back_to_menu_kb ())
+        await _show_screen (update ,context ,ASSISTANT_ENTRY_HINT_TEXT ,reply_markup =get_back_to_menu_kb (),ui_mode =False )
         return
 
     if not context .user_data .get (ASSISTANT_SOURCE_KEY )and not context .user_data .get (PRODUCT_FOCUS_KEY ):
@@ -2724,7 +2725,7 @@ async def handle_text_outside_assistant (update :Update ,context :ContextTypes .
     if intent :
         return
 
-    await _show_screen (update ,context ,ASSISTANT_ENTRY_HINT_TEXT ,reply_markup =get_back_to_menu_kb ())
+    await _show_screen (update ,context ,ASSISTANT_ENTRY_HINT_TEXT ,reply_markup =get_back_to_menu_kb (),ui_mode =False )
 
 async def show_help (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     query =update .callback_query
