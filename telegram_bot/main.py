@@ -313,7 +313,13 @@ async def _show_screen (update :Update ,context :ContextTypes .DEFAULT_TYPE ,tex
 async def _show_main_menu_bottom (update :Update ,context :ContextTypes .DEFAULT_TYPE ,text :str |None =None ):
     if text is None :
         text ="Главное меню"
-    await _show_screen (update ,context ,text ,reply_markup =get_main_menu (),ui_mode =True )
+    await screen_manager .show_main_menu_bottom (
+    update ,
+    context ,
+    text ,
+    reply_markup =get_main_menu (),
+    parse_mode =None ,
+    )
 
 
 async def _safe_edit_reply_markup (query :CallbackQuery |None ,*,reply_markup =None ):

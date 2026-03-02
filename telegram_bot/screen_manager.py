@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 class ScreenManager:
     UI_ANCHOR_MESSAGE_ID_KEY = "ui_anchor_message_id"
+    MENU_ANCHOR_MESSAGE_ID_KEY = "menu_anchor_message_id"
     # Legacy alias kept for compatibility with existing tests/contexts.
     LAST_SCREEN_MESSAGE_ID_KEY = UI_ANCHOR_MESSAGE_ID_KEY
 
@@ -32,13 +33,31 @@ class ScreenManager:
         if context is None:
             return None
         data = getattr(context, "user_data", None) or {}
-        return data.get(self.UI_ANCHOR_MESSAGE_ID_KEY) or data.get("last_screen_message_id")
+        return (
+            data.get(self.UI_ANCHOR_MESSAGE_ID_KEY)
+            or data.get(self.MENU_ANCHOR_MESSAGE_ID_KEY)
+            or data.get("last_screen_message_id")
+        )
+
+    def _get_menu_anchor_message_id(self, context):
+        if context is None:
+            return None
+        data = getattr(context, "user_data", None) or {}
+        return data.get(self.MENU_ANCHOR_MESSAGE_ID_KEY)
 
     def _set_anchor_message_id(self, context, message_id) -> None:
         if context is None:
             return
         try:
             context.user_data[self.UI_ANCHOR_MESSAGE_ID_KEY] = message_id
+        except Exception:
+            pass
+
+    def _set_menu_anchor_message_id(self, context, message_id) -> None:
+        if context is None:
+            return
+        try:
+            context.user_data[self.MENU_ANCHOR_MESSAGE_ID_KEY] = message_id
         except Exception:
             pass
 
@@ -160,6 +179,126 @@ class ScreenManager:
             old_message_id=anchor_message_id,
             new_message_id=sent.message_id,
         )
+        self._set_anchor_message_id(context, sent.message_id)
+        return sent
+
+    async def show_main_menu_bottom(
+        self,
+        update: Update,
+        context,
+        text: str | None,
+        reply_markup=None,
+        parse_mode: str | None = None,
+        **kwargs,
+    ):
+        if context is None or getattr(context, "bot", None) is None:
+            return None
+        chat = getattr(update, "effective_chat", None)
+        if chat is None or getattr(chat, "id", None) is None:
+            return None
+
+        callback_query = getattr(update, "callback_query", None)
+        if callback_query is not None:
+            try:
+                await callback_query.answer()
+            except Exception:
+                pass
+
+        normalized_text = normalize_telegram_text(
+            normalize_text_for_telegram(text, label="menu_bottom")
+        ) or ""
+        normalized_reply_markup = normalize_ui_reply_markup(reply_markup)
+
+        try:
+            sent = await context.bot.send_message(
+                chat_id=chat.id,
+                text=normalized_text,
+                reply_markup=normalized_reply_markup,
+                parse_mode=None,
+                **kwargs,
+            )
+        except TimedOut as exc:
+            logger.warning("NET issue [menu_bottom_send_message]: %s", exc.__class__.__name__)
+            await self._notify_timeout_best_effort(callback_query)
+            return None
+
+        self._set_menu_anchor_message_id(context, sent.message_id)
+        self._set_anchor_message_id(context, sent.message_id)
+        return sent
+
+    async def update_main_menu_anchor(
+        self,
+        update: Update,
+        context,
+        text: str | None,
+        reply_markup=None,
+        parse_mode: str | None = None,
+        **kwargs,
+    ):
+        if context is None or getattr(context, "bot", None) is None:
+            return None
+        chat = getattr(update, "effective_chat", None)
+        if chat is None or getattr(chat, "id", None) is None:
+            return None
+
+        callback_query = getattr(update, "callback_query", None)
+        if callback_query is not None:
+            try:
+                await callback_query.answer()
+            except Exception:
+                pass
+
+        normalized_text = normalize_telegram_text(
+            normalize_text_for_telegram(text, label="menu_anchor")
+        ) or ""
+        normalized_reply_markup = normalize_ui_reply_markup(reply_markup)
+        menu_anchor_message_id = self._get_menu_anchor_message_id(context)
+
+        if menu_anchor_message_id and self._can_edit_message_with_markup(normalized_reply_markup):
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat.id,
+                    message_id=menu_anchor_message_id,
+                    text=normalized_text,
+                    reply_markup=normalized_reply_markup,
+                    parse_mode=None,
+                    **kwargs,
+                )
+                self._set_menu_anchor_message_id(context, menu_anchor_message_id)
+                self._set_anchor_message_id(context, menu_anchor_message_id)
+                return None
+            except TimedOut as exc:
+                logger.warning("NET issue [menu_anchor_edit_message]: %s", exc.__class__.__name__)
+            except BadRequest as e:
+                message = (str(e) or "").lower()
+                if "message is not modified" in message:
+                    self._set_menu_anchor_message_id(context, menu_anchor_message_id)
+                    self._set_anchor_message_id(context, menu_anchor_message_id)
+                    return None
+                recoverable = (
+                    "message to edit not found",
+                    "message can't be edited",
+                    "message_id_invalid",
+                    "there is no text in the message to edit",
+                )
+                if not any(item in message for item in recoverable):
+                    raise
+            except Exception:
+                pass
+
+        try:
+            sent = await context.bot.send_message(
+                chat_id=chat.id,
+                text=normalized_text,
+                reply_markup=normalized_reply_markup,
+                parse_mode=None,
+                **kwargs,
+            )
+        except TimedOut as exc:
+            logger.warning("NET issue [menu_anchor_send_message]: %s", exc.__class__.__name__)
+            await self._notify_timeout_best_effort(callback_query)
+            return None
+        self._set_menu_anchor_message_id(context, sent.message_id)
         self._set_anchor_message_id(context, sent.message_id)
         return sent
 
