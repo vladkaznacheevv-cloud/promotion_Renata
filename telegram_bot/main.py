@@ -30,6 +30,7 @@ filters ,
 from core .users .service import UserService 
 from core .users .models import User 
 from core .events .service import EventService 
+from core .consultations .service import ConsultationService
 from core .crm .service import CRMService 
 from core .crm .models import YooKassaPayment
 from core .ai .ai_service import AIService 
@@ -60,6 +61,7 @@ get_payment_contact_choice_kb ,
 get_game10_payment_link_kb ,
 )
 from telegram_bot .text_utils import normalize_text_for_telegram ,looks_like_mojibake ,normalize_ui_reply_markup 
+from telegram_bot .contact_parser import ParsedContacts ,parse_contacts_from_message
 from telegram_bot .text_formatting import format_event_card 
 from telegram_bot .lock_utils import get_lock_path ,touch_lock_heartbeat 
 from telegram_bot .typing_indicator import TypingIndicator 
@@ -2187,23 +2189,129 @@ async def show_formats_and_prices (update :Update ,context :ContextTypes .DEFAUL
     )
 
 
+async def _has_saved_email_for_user (update :Update )->bool :
+    tg_user =update .effective_user
+    if tg_user is None :
+        return False
+    snapshot =await _get_contact_snapshot (tg_user .id )
+    return bool ((snapshot or {}).get ("email"))
+
+
+async def _save_consultation_lead (
+update :Update ,
+mode :str ,
+raw_text :str ,
+parsed :ParsedContacts ,
+)->dict :
+    tg_user =update .effective_user
+    if tg_user is None :
+        return {"ok":False ,"reason":"no_user"}
+    try :
+        db .init_db ()
+        async with db .async_session ()as session :
+            user_service =UserService (session )
+            user =await user_service .get_or_create_by_tg_id (
+            tg_id =tg_user .id ,
+            first_name =tg_user .first_name ,
+            last_name =tg_user .last_name ,
+            username =tg_user .username ,
+            source ="bot",
+            update_if_exists =True ,
+            )
+            if user is None :
+                return {"ok":False ,"reason":"no_user"}
+
+            had_email_before =bool (user .email )
+            user =await user_service .partial_update_contacts (
+            tg_id =tg_user .id ,
+            name =parsed .name ,
+            phone =parsed .phone ,
+            email =parsed .email ,
+            username =parsed .username ,
+            )
+            if user is None :
+                return {"ok":False ,"reason":"no_user"}
+
+            has_name =bool (user .first_name )
+            has_phone =bool (user .phone )
+            has_email =bool (user .email )
+            has_username =bool (user .username )
+            if not (has_phone or has_email or has_username ):
+                await session .rollback ()
+                return {
+                "ok":False ,
+                "reason":"no_contact_method",
+                "had_email_before":had_email_before ,
+                "has_email":has_email ,
+                "has_phone":has_phone ,
+                "has_name":has_name ,
+                "has_username":has_username ,
+                }
+
+            crm_service =CRMService (session )
+            await crm_service .touch_client_activity_by_tg_id (tg_user .id )
+
+            consultation_service =ConsultationService (session )
+            consultations =await consultation_service .list_active (limit =50 )
+            target_consultation =None
+            if consultations :
+                mode_keywords =(("инд","individual","личн")if mode =="individual"else ("груп","group"))
+                for consultation in consultations :
+                    type_value =str (getattr (consultation ,"type","")or "").lower ()
+                    if any (keyword in type_value for keyword in mode_keywords ):
+                        target_consultation =consultation
+                        break
+                if target_consultation is None :
+                    target_consultation =consultations [0 ]
+
+            lead_saved =False
+            if target_consultation is not None :
+                notes =(raw_text or "").strip ()
+                await consultation_service .book (
+                user_id =int (user .id ),
+                consultation_id =int (target_consultation .id ),
+                status ="consultation_lead",
+                notes =notes [:1000 ]or None ,
+                )
+                lead_saved =True
+
+            await session .commit ()
+            return {
+            "ok":True ,
+            "had_email_before":had_email_before ,
+            "has_email":has_email ,
+            "has_phone":has_phone ,
+            "has_name":has_name ,
+            "has_username":has_username ,
+            "lead_saved":lead_saved ,
+            }
+    except Exception as e :
+        _ =e
+        _log_db_issue ("consultation_lead_save")
+        return {"ok":False ,"reason":"db_error"}
+
+
 async def begin_booking_individual (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     query =update .callback_query 
     await _answer (query )
     context .user_data [AI_MODE_KEY ]=False 
     context .user_data [WAITING_LEAD_KEY ]="individual"
+    has_email =await _has_saved_email_for_user (update )
 
-
-    await _show_screen (update ,context ,
-    "\U0001f4e9 *\u0417\u0430\u043f\u0438\u0441\u044c \u043d\u0430 \u0438\u043d\u0434\u0438\u0432\u0438\u0434\u0443\u0430\u043b\u044c\u043d\u0443\u044e \u0442\u0435\u0440\u0430\u043f\u0438\u044e*\n\n"
-    "\u041e\u0442\u043f\u0440\u0430\u0432\u044c\u0442\u0435 \u043e\u0434\u043d\u0438\u043c \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u0435\u043c:\n"
-    "1) \u0418\u043c\u044f\n"
-    "2) \u0422\u0435\u043b\u0435\u0444\u043e\u043d \u0438\u043b\u0438 @username\n"
-    "3) \u041a\u043e\u0440\u043e\u0442\u043a\u043e \u0437\u0430\u043f\u0440\u043e\u0441 (\u043f\u043e \u0436\u0435\u043b\u0430\u043d\u0438\u044e)\n\n"
-    "\u041f\u0440\u0438\u043c\u0435\u0440: \u0418\u0432\u0430\u043d, +7..., \u0445\u043e\u0447\u0443 \u043c\u0435\u043d\u044c\u0448\u0435 \u0442\u0440\u0435\u0432\u043e\u0433\u0438",
-    parse_mode ="Markdown",
-    reply_markup =get_back_to_menu_kb (),
-    )
+    lines =[
+    "📩 *Запись на индивидуальную терапию*",
+    "",
+    "Отправьте одним сообщением:",
+    "1) Имя",
+    "2) Телефон или @username",
+    "3) Почта (email)",
+    "",
+    "Пример: Иван, +7..., name@example.com",
+    ]
+    if has_email :
+        lines .append ("")
+        lines .append ("Email уже сохранён, повторно указывать не нужно.")
+    await _show_screen (update ,context ,"\n".join (lines ),parse_mode ="Markdown",reply_markup =get_back_to_menu_kb ())
 
 
 async def begin_booking_group (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
@@ -2211,18 +2319,22 @@ async def begin_booking_group (update :Update ,context :ContextTypes .DEFAULT_TY
     await _answer (query )
     context .user_data [AI_MODE_KEY ]=False 
     context .user_data [WAITING_LEAD_KEY ]="group"
+    has_email =await _has_saved_email_for_user (update )
 
-
-    await _show_screen (update ,context ,
-    "\U0001f4e9 *\u0417\u0430\u043f\u0438\u0441\u044c \u0432 \u0442\u0435\u0440\u0430\u043f\u0435\u0432\u0442\u0438\u0447\u0435\u0441\u043a\u0443\u044e \u0433\u0440\u0443\u043f\u043f\u0443*\n\n"
-    "\u041e\u0442\u043f\u0440\u0430\u0432\u044c\u0442\u0435 \u043e\u0434\u043d\u0438\u043c \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u0435\u043c:\n"
-    "1) \u0418\u043c\u044f\n"
-    "2) \u0422\u0435\u043b\u0435\u0444\u043e\u043d \u0438\u043b\u0438 @username\n"
-    "3) \u041a\u043e\u0440\u043e\u0442\u043a\u043e \u043e\u0436\u0438\u0434\u0430\u043d\u0438\u044f \u043e\u0442 \u0433\u0440\u0443\u043f\u043f\u044b (\u043f\u043e \u0436\u0435\u043b\u0430\u043d\u0438\u044e)\n\n"
-    "\u041f\u0440\u0438\u043c\u0435\u0440: \u0410\u043d\u043d\u0430, @anna, \u0445\u043e\u0447\u0443 \u043d\u0430\u0443\u0447\u0438\u0442\u044c\u0441\u044f \u0433\u043e\u0432\u043e\u0440\u0438\u0442\u044c \u043e \u0447\u0443\u0432\u0441\u0442\u0432\u0430\u0445",
-    parse_mode ="Markdown",
-    reply_markup =get_back_to_menu_kb (),
-    )
+    lines =[
+    "📩 *Запись в терапевтическую группу*",
+    "",
+    "Отправьте одним сообщением:",
+    "1) Имя",
+    "2) Телефон или @username",
+    "3) Почта (email)",
+    "",
+    "Пример: Анна, @anna, name@example.com",
+    ]
+    if has_email :
+        lines .append ("")
+        lines .append ("Email уже сохранён, повторно указывать не нужно.")
+    await _show_screen (update ,context ,"\n".join (lines ),parse_mode ="Markdown",reply_markup =get_back_to_menu_kb ())
 
 
 async def handle_lead_message (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
@@ -2234,43 +2346,65 @@ async def handle_lead_message (update :Update ,context :ContextTypes .DEFAULT_TY
     if not mode :
         return 
 
-    text =(update .message .text or "").strip ()
+    message =update .message
+    if message is None :
+        return
+    text =(message .text or "").strip ()
     if not text :
-        await _reply (update .message ,"\u041d\u0430\u043f\u0438\u0448\u0438\u0442\u0435 \u0442\u0435\u043a\u0441\u0442\u043e\u043c, \u043f\u043e\u0436\u0430\u043b\u0443\u0439\u0441\u0442\u0430.")
+        await _reply (message ,"\u041d\u0430\u043f\u0438\u0448\u0438\u0442\u0435 \u0442\u0435\u043a\u0441\u0442\u043e\u043c, \u043f\u043e\u0436\u0430\u043b\u0443\u0439\u0441\u0442\u0430.")
         return 
-
 
     user =update .effective_user 
     if user is None :
         return 
 
-    lead_type ="\u0418\u043d\u0434\u0438\u0432\u0438\u0434\u0443\u0430\u043b\u044c\u043d\u043e"if mode =="individual"else "\u0413\u0440\u0443\u043f\u043f\u0430"
+    parsed =parse_contacts_from_message (text ,email_re =EMAIL_RE )
+    if not parsed .has_any :
+        await _show_screen (
+        update ,
+        context ,
+        "Не удалось распознать контакты. Пришлите одним сообщением имя и телефон/@username/email.",
+        reply_markup =get_back_to_menu_kb (),
+        )
+        return
 
+    result =await _save_consultation_lead (update ,mode =str (mode ),raw_text =text ,parsed =parsed )
+    if not result .get ("ok"):
+        if result .get ("reason")=="no_contact_method":
+            await _show_screen (
+            update ,
+            context ,
+            "Нужен хотя бы один контакт: телефон, @username или email. Пришлите ещё раз.",
+            reply_markup =get_back_to_menu_kb (),
+            )
+            return
+        await _show_screen (
+        update ,
+        context ,
+        "Не удалось сохранить заявку, попробуйте ещё раз.",
+        reply_markup =get_back_to_menu_kb (),
+        )
+        return
+
+    lead_type ="\u0418\u043d\u0434\u0438\u0432\u0438\u0434\u0443\u0430\u043b\u044c\u043d\u043e"if mode =="individual"else "\u0413\u0440\u0443\u043f\u043f\u0430"
     lead_payload =(
-    f"NEW lead: *{lead_type }*\n"
-    f"user: {user .first_name } {user .last_name or ''} (@{user .username or '-'})\n"
-    f"tg_id: `{user .id }`\n\n"
-    f"message:\n{text }"
+    f"NEW lead: {lead_type }\n"
+    f"has_name={bool (result .get ('has_name'))}\n"
+    f"has_phone={bool (result .get ('has_phone'))}\n"
+    f"has_email={bool (result .get ('has_email'))}"
     )
 
     context .user_data [WAITING_LEAD_KEY ]=None 
-
     if ADMIN_CHAT_ID :
         try :
-            await _send (context .bot ,
-            chat_id =int (ADMIN_CHAT_ID ),
-            text =lead_payload ,
-            parse_mode ="Markdown",
-            )
+            await _send (context .bot ,chat_id =int (ADMIN_CHAT_ID ),text =lead_payload ,parse_mode =None )
         except Exception as e :
-            logger .exception ("Lead notify admin failed: %s",e )
+            _log_net_issue ("lead_notify_admin",e )
 
-    await _show_screen (
-    update ,
-    context ,
-    "\u2705 \u0421\u043f\u0430\u0441\u0438\u0431\u043e! \u0417\u0430\u044f\u0432\u043a\u0430 \u043f\u0440\u0438\u043d\u044f\u0442\u0430. \u041c\u044b \u0441\u043a\u043e\u0440\u043e \u0441\u0432\u044f\u0436\u0435\u043c\u0441\u044f.",
-    reply_markup =get_back_to_menu_kb (),
-    )
+    success_lines =["\u2705 Спасибо! Заявка принята. Менеджер свяжется с вами в ближайшее время."]
+    if bool (result .get ("had_email_before"))and not bool (parsed .email ):
+        success_lines .append ("Email уже сохранён.")
+    await _show_screen (update ,context ,"\n".join (success_lines ),reply_markup =get_back_to_menu_kb ())
 
 
 
@@ -2522,6 +2656,8 @@ def _extract_navigation_intent_from_text_message (update :Update )->str |None :
 
 async def handle_navigation_text_message (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     _apply_focus_timeout (context )
+    if context .user_data .get (WAITING_LEAD_KEY ):
+        return
     intent =_extract_navigation_intent_from_text_message (update )
     if not intent :
         return
