@@ -31,40 +31,42 @@ def _build_app():
 
 
 def test_get_clients_smoke(monkeypatch):
+    list_clients_mock = AsyncMock(
+        return_value={
+            "items": [
+                {
+                    "id": 1,
+                    "tg_id": 10001,
+                    "name": "Test",
+                    "telegram": "@test",
+                    "status": "New",
+                    "stage": "NEW",
+                    "phone": None,
+                    "email": None,
+                    "registered": "2026-01-01",
+                    "interested": None,
+                    "aiChats": 0,
+                    "lastActivity": None,
+                    "revenue": 0,
+                    "flags": {"readyToPay": False, "needsManager": False},
+                }
+            ],
+            "total": 1,
+        }
+    )
     monkeypatch.setattr(
         CRMService,
         "list_clients",
-        AsyncMock(
-            return_value={
-                "items": [
-                    {
-                        "id": 1,
-                        "tg_id": 10001,
-                        "name": "Test",
-                        "telegram": "@test",
-                        "status": "New",
-                        "stage": "NEW",
-                        "phone": None,
-                        "email": None,
-                        "registered": "2026-01-01",
-                        "interested": None,
-                        "aiChats": 0,
-                        "lastActivity": None,
-                        "revenue": 0,
-                        "flags": {"readyToPay": False, "needsManager": False},
-                    }
-                ],
-                "total": 1,
-            }
-        ),
+        list_clients_mock,
     )
     app = _build_app()
     client = TestClient(app)
-    response = client.get("/api/crm/clients?stage=NEW&search=test")
+    response = client.get("/api/crm/clients?stage=NEW&search=test&limit=25&offset=50")
     assert response.status_code == 200
     data = response.json()
     assert data["total"] == 1
     assert data["items"][0]["stage"] == "NEW"
+    list_clients_mock.assert_awaited_once_with(limit=25, offset=50, stage="NEW", search="test")
 
 
 def test_patch_client_smoke(monkeypatch):
@@ -78,7 +80,7 @@ def test_patch_client_smoke(monkeypatch):
                 "name": "Test",
                 "telegram": "@test",
                 "status": "New",
-                "stage": "MANAGER_FOLLOWUP",
+                "stage": "READY_TO_PAY",
                 "phone": "+79991234567",
                 "email": "test@example.com",
                 "registered": "2026-01-01",
@@ -86,7 +88,7 @@ def test_patch_client_smoke(monkeypatch):
                 "aiChats": 3,
                 "lastActivity": "2026-02-10T10:00:00",
                 "revenue": 0,
-                "flags": {"readyToPay": True, "needsManager": True},
+                "flags": {"readyToPay": True, "needsManager": False},
             }
         ),
     )
@@ -94,10 +96,10 @@ def test_patch_client_smoke(monkeypatch):
     client = TestClient(app)
     response = client.patch(
         "/api/crm/clients/1",
-        json={"stage": "MANAGER_FOLLOWUP", "phone": "+79991234567", "email": "test@example.com"},
+        json={"stage": "READY_TO_PAY", "phone": "+79991234567", "email": "test@example.com"},
     )
     assert response.status_code == 200
-    assert response.json()["stage"] == "MANAGER_FOLLOWUP"
+    assert response.json()["stage"] == "READY_TO_PAY"
 
 
 def test_create_payment_then_mark_paid_smoke(monkeypatch):

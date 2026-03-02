@@ -49,13 +49,14 @@ async def ping():
 @router.get("/clients", response_model=ClientsOut)
 async def get_clients(
     limit: int = Query(10, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     stage: str | None = Query(None),
     search: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
     _: object = Depends(require_roles("admin", "manager", "viewer")),
 ):
     service = CRMService(db)
-    return await service.list_clients(limit=limit, stage=stage, search=search)
+    return await service.list_clients(limit=limit, offset=offset, stage=stage, search=search)
 
 
 @router.post("/clients", response_model=ClientOut)

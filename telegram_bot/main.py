@@ -174,7 +174,7 @@ USER_BUSY_IDS :set [int ]=set ()
 BUSY_NOTICE_TS_KEY ="busy_notice_ts"
 BUSY_NOTICE_INTERVAL_SEC =4.0
 
-EMAIL_RE =re .compile (r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")
+EMAIL_RE =re .compile (r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 COURSES_PAGE_SIZE =5 
 EVENTS_LIST_PAGE_SIZE =6
 EVENTS_CACHE_KEY ="events_cache"
@@ -1411,15 +1411,9 @@ async def _save_contacts (update :Update ,context :ContextTypes .DEFAULT_TYPE ,p
             await session .commit ()
     except Exception as e :
         _log_db_issue ("save_contacts",e )
-        pending =_remember_pending_contacts (context ,update ,phone =phone ,email =email )
-        await _notify_admin_pending_contacts (context ,pending )
-        _reset_states (context )
-        await _show_screen (
-        update ,
-        context ,
-        "\u2705 \u041a\u043e\u043d\u0442\u0430\u043a\u0442\u044b \u043f\u0440\u0438\u043d\u044f\u0442\u044b. \u041c\u0435\u043d\u0435\u0434\u0436\u0435\u0440 \u0441\u0432\u044f\u0436\u0435\u0442\u0441\u044f \u0441 \u0432\u0430\u043c\u0438 \u0432 \u0431\u043b\u0438\u0436\u0430\u0439\u0448\u0435\u0435 \u0432\u0440\u0435\u043c\u044f.",
-        reply_markup =get_back_to_menu_kb (),
-        )
+        context .user_data [WAITING_CONTACT_PHONE_KEY ]=False
+        context .user_data [WAITING_CONTACT_EMAIL_KEY ]=True
+        await _show_screen (update ,context ,"Не удалось сохранить email, попробуйте ещё раз.",reply_markup =get_remove_reply_kb ())
         return 
 
     _reset_states (context )
@@ -1481,7 +1475,7 @@ async def _save_contact_field (update :Update ,context :ContextTypes .DEFAULT_TY
     except Exception as e :
         _log_db_issue ("save_contact_field",e )
         _remember_pending_contacts (context ,update ,phone =phone ,email =email )
-        return True 
+        return False 
 
 
 async def handle_contact_phone (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
@@ -1523,7 +1517,6 @@ async def handle_contact_phone (update :Update ,context :ContextTypes .DEFAULT_T
     context .user_data [CONTACT_PHONE_KEY ]=phone 
     context .user_data [WAITING_CONTACT_PHONE_KEY ]=False 
     context .user_data [WAITING_CONTACT_EMAIL_KEY ]=True 
-    context .user_data [SKIP_NEXT_EMAIL_KEY ]=True 
     await _show_screen (update ,context ,"Спасибо! Теперь пришлите вашу почту одним сообщением (например: name@example.com).",reply_markup =get_remove_reply_kb ())
 
 
@@ -1585,12 +1578,15 @@ async def handle_contact_phone_text (update :Update ,context :ContextTypes .DEFA
     context .user_data [CONTACT_PHONE_KEY ]=normalized 
     context .user_data [WAITING_CONTACT_PHONE_KEY ]=False 
     context .user_data [WAITING_CONTACT_EMAIL_KEY ]=True 
-    context .user_data [SKIP_NEXT_EMAIL_KEY ]=True 
     await _show_screen (update ,context ,"Спасибо! Теперь пришлите вашу почту одним сообщением (например: name@example.com).",reply_markup =get_remove_reply_kb ())
 
 
 async def handle_contact_email_text (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
-    if context .user_data .get (PAYMENT_CONTACT_FLOW_KEY )and str (context .user_data .get (PAYMENT_CONTACT_MODE_KEY )or "")=="email":
+    in_payment_email_flow =bool (
+    context .user_data .get (PAYMENT_CONTACT_FLOW_KEY )
+    and str (context .user_data .get (PAYMENT_CONTACT_MODE_KEY )or "")=="email"
+    )
+    if in_payment_email_flow :
         if not update .message or not update .message .text :
             return
         email =(update .message .text or "").strip ().lower ()
@@ -1599,56 +1595,80 @@ async def handle_contact_email_text (update :Update ,context :ContextTypes .DEFA
             _clear_payment_contact_flow (context )
             await _show_screen (update ,context ,PAYMENT_CANCELLED_SCREEN ,reply_markup =get_back_to_menu_kb ())
             await _show_main_menu_bottom (update ,context )
-            return
+            raise ApplicationHandlerStop
         if not EMAIL_RE .match (email ):
-            await _show_screen (update ,context ,"Некорректный email. Введите ещё раз или нажмите «Отмена».",reply_markup =get_payment_contact_choice_kb ())
-            return
+            await _show_screen (
+            update ,
+            context ,
+            "Похоже, это не email. Пришлите, пожалуйста, в формате name@example.com",
+            reply_markup =get_payment_contact_choice_kb (),
+            )
+            raise ApplicationHandlerStop
         if not await _save_contact_field (update ,context ,email =email ):
-            return
+            await _show_screen (
+            update ,
+            context ,
+            "Не удалось сохранить email, попробуйте ещё раз.",
+            reply_markup =get_payment_contact_choice_kb (),
+            )
+            raise ApplicationHandlerStop
         await _send_reply_keyboard_remove (update ,context )
-        await _show_screen (update ,context ,PAYMENT_CONTACT_SAVED_SCREEN ,reply_markup =get_back_to_menu_kb ())
+        await _show_screen (
+        update ,
+        context ,
+        "Спасибо! Email сохранён. Теперь можно оплатить.",
+        reply_markup =get_back_to_menu_kb (),
+        )
         await _run_game10_payment_create_flow (update ,context )
-        return
-    if context .user_data .pop (SKIP_NEXT_EMAIL_KEY ,False ):
-        return 
+        raise ApplicationHandlerStop
+
     if not update .message or not update .message .text :
-        return 
+        return
 
     waiting_email =bool (context .user_data .get (WAITING_CONTACT_EMAIL_KEY ))
+    if not waiting_email :
+        return
     email =(update .message .text or "").strip ().lower ()
-    if waiting_email and email =="отмена":
+    if email =="отмена":
         _reset_states (context )
         await _show_screen (update ,context ,"Действие отменено.",reply_markup =get_main_menu ())
-        return 
+        raise ApplicationHandlerStop
 
     if not EMAIL_RE .match (email ):
-        if waiting_email :
-            await _show_screen (update ,context ,"Некорректный email. Пример: name@example.com",reply_markup =get_remove_reply_kb ())
-        return 
+        await _show_screen (
+        update ,
+        context ,
+        "Похоже, это не email. Пришлите, пожалуйста, в формате name@example.com",
+        reply_markup =get_remove_reply_kb (),
+        )
+        raise ApplicationHandlerStop
 
-    tg_user =update .effective_user 
+    tg_user =update .effective_user
     if tg_user is None :
-        return 
+        raise ApplicationHandlerStop
 
     snapshot =await _get_contact_snapshot (tg_user .id )
     if snapshot is not None and snapshot .get ("phone")and snapshot .get ("email"):
         _reset_states (context )
         await _show_screen (update ,context ,"Контакты уже получены, спасибо!",reply_markup =get_main_menu ())
-        return 
+        raise ApplicationHandlerStop
 
     phone =context .user_data .get (CONTACT_PHONE_KEY )
     if not phone and snapshot is not None :
         phone =snapshot .get ("phone")
     if not phone :
-        if waiting_email :
-            context .user_data [WAITING_CONTACT_EMAIL_KEY ]=False 
-            context .user_data [WAITING_CONTACT_PHONE_KEY ]=True 
+        context .user_data [WAITING_CONTACT_EMAIL_KEY ]=False
+        context .user_data [WAITING_CONTACT_PHONE_KEY ]=True
         await _show_screen (update ,context ,"Сначала отправьте номер телефона.",reply_markup =get_contact_request_kb ())
-        return 
+        raise ApplicationHandlerStop
 
-    await _save_contacts (update ,context ,phone =phone ,email =email )
+    if not await _save_contact_field (update ,context ,email =email ):
+        await _show_screen (update ,context ,"Не удалось сохранить email, попробуйте ещё раз.",reply_markup =get_remove_reply_kb ())
+        raise ApplicationHandlerStop
 
-
+    _reset_states (context )
+    await _show_screen (update ,context ,"Спасибо! Email сохранён.",reply_markup =get_back_to_menu_kb ())
+    raise ApplicationHandlerStop
 def _set_screen_meta (context :ContextTypes .DEFAULT_TYPE ,*,kind :str ,event_id :int |None =None )->None :
     context .user_data [SCREEN_KIND_KEY ]=kind
     if event_id is None :
@@ -3208,4 +3228,3 @@ def main ():
 
 if __name__ =="__main__":
     main ()
-

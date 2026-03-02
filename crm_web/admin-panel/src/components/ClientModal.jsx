@@ -11,7 +11,6 @@ const STAGE_OPTIONS = [
   "NEW",
   "ENGAGED",
   "READY_TO_PAY",
-  "MANAGER_FOLLOWUP",
   "PAID",
   "INACTIVE",
 ];

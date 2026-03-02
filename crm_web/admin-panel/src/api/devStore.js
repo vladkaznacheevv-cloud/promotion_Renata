@@ -372,8 +372,30 @@ const deriveClient = (client) => {
   };
 };
 
-export function getClients() {
-  return { items: clone(clients.map(deriveClient)), total: clients.length };
+export function getClients(params = {}) {
+  const stage = typeof params.stage === "string" ? params.stage.trim() : "";
+  const search = typeof params.search === "string" ? params.search.trim().toLowerCase() : "";
+  const rawLimit = Number(params.limit);
+  const rawOffset = Number(params.offset);
+  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.trunc(rawLimit) : null;
+  const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? Math.trunc(rawOffset) : 0;
+
+  let items = clients.map(deriveClient);
+  if (stage) {
+    items = items.filter((item) => item.stage === stage);
+  }
+  if (search) {
+    items = items.filter((item) =>
+      [item.name, item.telegram, item.phone, item.email, item.tg_id ? String(item.tg_id) : ""]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .includes(search)
+    );
+  }
+  const total = items.length;
+  const paged = limit === null ? items.slice(offset) : items.slice(offset, offset + limit);
+  return { items: clone(paged), total };
 }
 
 export function createClient(payload) {

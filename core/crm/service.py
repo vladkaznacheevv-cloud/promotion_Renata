@@ -408,6 +408,7 @@ class CRMService:
     async def list_clients(
         self,
         limit: int = 10,
+        offset: int = 0,
         stage: str | None = None,
         search: str | None = None,
     ) -> dict[str, Any]:
@@ -433,7 +434,7 @@ class CRMService:
         total = await self.db.scalar(select(func.count()).select_from(query.subquery()))
 
         result = await self.db.execute(
-            query.order_by(User.created_at.desc()).limit(limit)
+            query.order_by(User.created_at.desc()).limit(limit).offset(offset)
         )
         users = result.scalars().all()
         items = await self._build_client_items(users)

@@ -29,7 +29,7 @@
     markPaid: "Отметить как оплаченный",
     markFailed: "Отметить как ошибку",
     markCancelled: "Отменить",
-    markManagerFollowup: "Пометить: менеджер",
+    loadMore: "Загрузить ещё",
     requestContacts: "Запросить контакты",
     sync: "Синхронизировать",
     forceSync: "Форсировать",

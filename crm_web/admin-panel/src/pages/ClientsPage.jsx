@@ -17,10 +17,10 @@ const STAGE_OPTIONS = [
   "NEW",
   "ENGAGED",
   "READY_TO_PAY",
-  "MANAGER_FOLLOWUP",
   "PAID",
   "INACTIVE",
 ];
+const CLIENTS_PAGE_SIZE = 25;
 
 function humanizeRequestContactsError(err) {
   const detail = err?.payload?.detail;
@@ -50,7 +50,11 @@ export default function ClientsPage() {
   const canManage = role === "admin" || role === "manager";
 
   const [clients, setClients] = useState([]);
+  const [clientsTotal, setClientsTotal] = useState(0);
+  const [offset, setOffset] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
@@ -61,17 +65,44 @@ export default function ClientsPage() {
   const [editingClient, setEditingClient] = useState(null);
   const [modalError, setModalError] = useState("");
 
+  const loadClientsPage = async (nextOffset, { append }) => {
+    const data = await getClients({ limit: CLIENTS_PAGE_SIZE, offset: nextOffset });
+    const items = data?.items ?? data ?? [];
+    const total = Number(data?.total ?? items.length);
+    const loaded = nextOffset + items.length;
+    setClientsTotal(total);
+    setOffset(loaded);
+    setHasMore(loaded < total && items.length > 0);
+    if (append) {
+      setClients((prev) => [...prev, ...items]);
+      return;
+    }
+    setClients(items);
+  };
+
   const fetchClients = async () => {
     try {
       setLoading(true);
       setError("");
       setSuccess("");
-      const data = await getClients();
-      setClients(data.items ?? data ?? []);
+      await loadClientsPage(0, { append: false });
     } catch (err) {
       setError(err?.message || RU.messages.clientsLoadError);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleLoadMore = async () => {
+    if (!hasMore || loadingMore) return;
+    try {
+      setLoadingMore(true);
+      setError("");
+      await loadClientsPage(offset, { append: true });
+    } catch (err) {
+      setError(err?.message || RU.messages.clientsLoadError);
+    } finally {
+      setLoadingMore(false);
     }
   };
 
@@ -143,22 +174,12 @@ export default function ClientsPage() {
       } else {
         const created = await createClient(payload);
         setClients((prev) => [created, ...prev]);
+        setClientsTotal((prev) => prev + 1);
       }
 
       closeModal();
     } catch (err) {
       setModalError(err?.message || RU.messages.clientSaveError);
-    }
-  };
-
-  const handleMarkManager = async (client) => {
-    if (!canManage) return;
-    try {
-      setSuccess("");
-      const updated = await updateClient(client.id, { stage: "MANAGER_FOLLOWUP" });
-      setClients((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
-    } catch (err) {
-      setError(err?.payload?.detail || err?.message || RU.messages.stageUpdateError);
     }
   };
 
@@ -248,70 +269,81 @@ export default function ClientsPage() {
             onAction={canManage ? openCreateModal : undefined}
           />
         ) : (
-          <Table>
-            <THead>
-              <TR>
-                <TH>{RU.labels.client}</TH>
-                <TH>{RU.labels.stage}</TH>
-                <TH>{RU.labels.status}</TH>
-                <TH>{RU.labels.telegram}</TH>
-                <TH>{RU.labels.phone}</TH>
-                <TH>{RU.labels.email}</TH>
-                <TH>{RU.labels.aiChats}</TH>
-                <TH>{RU.labels.lastActivity}</TH>
-                <TH className="text-right">{RU.labels.revenue}</TH>
-                <TH className="text-right">{RU.labels.actions}</TH>
-              </TR>
-            </THead>
-            <TBody>
-              {filteredClients.map((client) => (
-                <TR key={client.id}>
-                  <TD>
-                    <div className="font-medium text-slate-900">{client.name}</div>
-                    <div className="text-xs text-slate-500">tg_id: {client.tg_id ?? RU.messages.notSet}</div>
-                    <div className="text-xs text-slate-500">
-                      {RU.labels.readyToPay}: {client.flags?.readyToPay ? "Да" : "Нет"} · {RU.labels.needsManager}: {client.flags?.needsManager ? "Да" : "Нет"}
-                    </div>
-                  </TD>
-                  <TD>
-                    <Badge variant="default">{stageLabel(client.stage || "NEW")}</Badge>
-                  </TD>
-                  <TD>
-                    <Badge variant={client.status === "VIP Клиент" ? "vip" : "default"}>{client.status}</Badge>
-                  </TD>
-                  <TD>{client.telegram || RU.messages.notSet}</TD>
-                  <TD>{client.phone || RU.messages.notSet}</TD>
-                  <TD>{client.email || RU.messages.notSet}</TD>
-                  <TD>{client.aiChats ?? 0}</TD>
-                  <TD>{client.lastActivity ? formatDateRu(client.lastActivity, { day: "2-digit", month: "2-digit", year: "numeric" }) : RU.messages.notSet}</TD>
-                  <TD className="text-right font-semibold">{formatCurrencyRub(client.revenue)}</TD>
-                  <TD className="text-right">
-                    {canManage ? (
-                      <div className="flex justify-end gap-2">
-                        <Button variant="secondary" onClick={() => openEditModal(client)}>
-                          {RU.buttons.edit}
-                        </Button>
-                        <Button variant="secondary" onClick={() => handleMarkManager(client)}>
-                          {RU.buttons.markManagerFollowup}
-                        </Button>
-                        <Button
-                          variant="secondary"
-                          onClick={() => handleRequestContacts(client)}
-                        >
-                          {RU.buttons.requestContacts}
-                        </Button>
-                        <Button variant="danger" onClick={() => handleDeleteClient(client)}>
-                          {RU.buttons.delete}
-                        </Button>
-                      </div>
-                    ) : (
-                      <span className="text-xs text-slate-400">{RU.labels.noAccess}</span>
-                    )}
-                  </TD>
-                </TR>
-              ))}
-            </TBody>
-          </Table>
+          <div className="space-y-3">
+            <div className="text-xs text-slate-500">
+              {filteredClients.length} / {clientsTotal || filteredClients.length}
+            </div>
+            <div className="max-h-[calc(100vh-18rem)] overflow-y-auto overflow-x-auto">
+              <Table>
+                <THead>
+                  <TR>
+                    <TH>{RU.labels.client}</TH>
+                    <TH>{RU.labels.stage}</TH>
+                    <TH>{RU.labels.status}</TH>
+                    <TH>{RU.labels.telegram}</TH>
+                    <TH>{RU.labels.phone}</TH>
+                    <TH>{RU.labels.email}</TH>
+                    <TH>{RU.labels.aiChats}</TH>
+                    <TH>{RU.labels.lastActivity}</TH>
+                    <TH className="text-right">{RU.labels.revenue}</TH>
+                    <TH className="text-right">{RU.labels.actions}</TH>
+                  </TR>
+                </THead>
+                <TBody>
+                  {filteredClients.map((client) => (
+                    <TR key={client.id}>
+                      <TD>
+                        <div className="font-medium text-slate-900">{client.name}</div>
+                        <div className="text-xs text-slate-500">tg_id: {client.tg_id ?? RU.messages.notSet}</div>
+                        <div className="text-xs text-slate-500">
+                          {RU.labels.readyToPay}: {client.flags?.readyToPay ? "Да" : "Нет"}
+                        </div>
+                      </TD>
+                      <TD>
+                        <Badge variant="default">{stageLabel(client.stage || "NEW")}</Badge>
+                      </TD>
+                      <TD>
+                        <Badge variant={client.status === "VIP Клиент" ? "vip" : "default"}>{client.status}</Badge>
+                      </TD>
+                      <TD>{client.telegram || RU.messages.notSet}</TD>
+                      <TD>{client.phone || RU.messages.notSet}</TD>
+                      <TD>{client.email || RU.messages.notSet}</TD>
+                      <TD>{client.aiChats ?? 0}</TD>
+                      <TD>{client.lastActivity ? formatDateRu(client.lastActivity, { day: "2-digit", month: "2-digit", year: "numeric" }) : RU.messages.notSet}</TD>
+                      <TD className="text-right font-semibold">{formatCurrencyRub(client.revenue)}</TD>
+                      <TD className="text-right">
+                        {canManage ? (
+                          <div className="flex justify-end gap-2">
+                            <Button variant="secondary" onClick={() => openEditModal(client)}>
+                              {RU.buttons.edit}
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              onClick={() => handleRequestContacts(client)}
+                            >
+                              {RU.buttons.requestContacts}
+                            </Button>
+                            <Button variant="danger" onClick={() => handleDeleteClient(client)}>
+                              {RU.buttons.delete}
+                            </Button>
+                          </div>
+                        ) : (
+                          <span className="text-xs text-slate-400">{RU.labels.noAccess}</span>
+                        )}
+                      </TD>
+                    </TR>
+                  ))}
+                </TBody>
+              </Table>
+            </div>
+            {hasMore && (
+              <div className="flex justify-center">
+                <Button variant="secondary" onClick={handleLoadMore} disabled={loadingMore}>
+                  {loadingMore ? RU.messages.loading : RU.buttons.loadMore}
+                </Button>
+              </div>
+            )}
+          </div>
         )}
       </CardContent>
 
