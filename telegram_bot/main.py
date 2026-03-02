@@ -13,6 +13,7 @@ from datetime import datetime
 import httpx 
 from dotenv import load_dotenv 
 from sqlalchemy import select ,text ,func 
+from sqlalchemy .exc import SQLAlchemyError
 import core .models 
 import core .db .database as db 
 from telegram import Update ,InlineKeyboardButton ,InlineKeyboardMarkup 
@@ -36,7 +37,7 @@ from core .crm .activity_service import ActivityService
 from core .payments .models import Payment 
 from core .catalog .models import CatalogItem 
 from core .integrations .getcourse .url_utils import normalize_getcourse_url 
-from telegram .error import Conflict ,BadRequest
+from telegram .error import Conflict ,BadRequest ,TimedOut
 from telegram import Message ,CallbackQuery 
 
 from telegram_bot .keyboards import (
@@ -929,13 +930,26 @@ def _clear_product_focus (context :ContextTypes .DEFAULT_TYPE )->None :
 def _is_db_exception (exc :Exception |None )->bool :
     if exc is None :
         return False
+    if isinstance (exc ,SQLAlchemyError ):
+        return True
+    cls =exc .__class__
+    module_name =str (getattr (cls ,"__module__", "")or "").lower ()
+    return module_name .startswith ("sqlalchemy")or module_name .startswith ("asyncpg")or module_name .startswith ("psycopg")
+
+
+def _is_network_timeout_exception (exc :Exception |None )->bool :
+    if exc is None :
+        return False
+    if _is_db_exception (exc ):
+        return False
+    if isinstance (exc ,(TimedOut ,httpx .TimeoutException ,asyncio .TimeoutError ,TimeoutError )):
+        return True
     cls =exc .__class__
     module_name =str (getattr (cls ,"__module__", "")or "").lower ()
     class_name =str (getattr (cls ,"__name__", "")or "").lower ()
-    if "sqlalchemy" in module_name or "asyncpg" in module_name or "psycopg" in module_name :
-        return True
-    markers =("database","dbapi","operationalerror","interfaceerror","connectionerror","pooltimeout","timeouterror")
-    return any (marker in class_name for marker in markers )
+    if "timeout" not in class_name :
+        return False
+    return any (part in module_name for part in ("telegram","httpx","httpcore"))
 
 
 def _update_kind (update :Update )->str :
@@ -1039,6 +1053,31 @@ def _log_db_issue (scope :str ,exc :Exception |None =None )->None :
         logger .warning ("DB issue [%s]: %s",scope ,_err_name (exc ))
 
 
+def _log_net_issue (scope :str ,exc :Exception |None =None )->None :
+    short =_err_short (exc )
+    if short :
+        logger .warning ("NET issue [%s]: %s: %s",scope ,_err_name (exc ),short )
+    else :
+        logger .warning ("NET issue [%s]: %s",scope ,_err_name (exc ))
+
+
+async def _notify_network_timeout (update :Update )->None :
+    text ="\u0422\u0435\u043b\u0435\u0433\u0440\u0430\u043c \u0432\u0440\u0435\u043c\u0435\u043d\u043d\u043e \u043d\u0435 \u043e\u0442\u0432\u0435\u0447\u0430\u0435\u0442, \u043f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u0435\u0449\u0451 \u0440\u0430\u0437."
+    query =getattr (update ,"callback_query",None )
+    if query is not None :
+        try :
+            await _answer (query ,text )
+        except Exception :
+            pass
+        return
+    message =getattr (update ,"effective_message",None )
+    if message is not None :
+        try :
+            await _reply (message ,text )
+        except Exception :
+            pass
+
+
 
 def _remember_pending_event_action (context :ContextTypes .DEFAULT_TYPE ,update :Update ,*,action :str ,event_id :int )->None :
     pending =list (context .user_data .get (PENDING_EVENT_ACTIONS_KEY )or [])
@@ -1107,7 +1146,10 @@ async def _notify_db_unavailable (update :Update ,exc :Exception |None =None ,*,
             await _edit (update .callback_query ,text ,reply_markup =keyboard )
             return 
         except Exception as notify_exc :
-            _log_db_issue ("notify_db_unavailable_edit",notify_exc )
+            if _is_network_timeout_exception (notify_exc ):
+                _log_net_issue ("notify_db_unavailable_edit",notify_exc )
+            else :
+                _log_db_issue ("notify_db_unavailable_edit",notify_exc )
 
     if update .effective_message :
         await _reply (update .effective_message ,text ,reply_markup =keyboard )
@@ -2570,6 +2612,11 @@ async def retry_db (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
 
 async def on_error (update :object ,context :ContextTypes .DEFAULT_TYPE )->None :
     error_obj =context .error if isinstance (context .error ,Exception )else None
+    if _is_network_timeout_exception (error_obj ):
+        _log_net_issue ("on_error",error_obj )
+        if isinstance (update ,Update ):
+            await _notify_network_timeout (update )
+        return
     logger .exception ("Unhandled error type: %s",_err_name (error_obj ))
     if not isinstance (update ,Update ):
         return

@@ -763,6 +763,14 @@ docker compose -f compose.prod.yml logs --since 30m --no-log-prefix web | grep -
 docker compose -f compose.prod.yml logs --since 30m --no-log-prefix bot | grep -iE "bot_action duration_ms|DB issue" | tail -n 300
 ```
 
+7. Runtime env/DB probes inside containers (no `PYTHONPATH` required):
+
+```bash
+docker compose -f compose.prod.yml exec -T web python scripts/runtime_env_probe.py
+docker compose -f compose.prod.yml exec -T bot python scripts/runtime_env_probe.py
+docker compose -f compose.prod.yml exec -T web python scripts/db_activity_probe.py
+```
+
 ## Runbook: test payment 10 RUB (admin)
 
 Important: test mode must stay disabled in production by default.

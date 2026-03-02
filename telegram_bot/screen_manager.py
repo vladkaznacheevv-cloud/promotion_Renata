@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import logging
+
 from telegram import InlineKeyboardMarkup, Update
-from telegram.error import BadRequest
+from telegram.error import BadRequest, TimedOut
 
 from telegram_bot.text_utils import normalize_telegram_text, normalize_text_for_telegram, normalize_ui_reply_markup
+
+logger = logging.getLogger(__name__)
 
 
 class ScreenManager:
@@ -53,13 +57,18 @@ class ScreenManager:
                 pass
 
         if prefer_new_on_message and is_message_update:
-            sent = await context.bot.send_message(
-                chat_id=chat_id,
-                text=normalized_text,
-                reply_markup=normalized_reply_markup,
-                parse_mode=parse_mode,
-                **kwargs,
-            )
+            try:
+                sent = await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=normalized_text,
+                    reply_markup=normalized_reply_markup,
+                    parse_mode=parse_mode,
+                    **kwargs,
+                )
+            except TimedOut as exc:
+                logger.warning("NET issue [screen_send_message]: %s", exc.__class__.__name__)
+                await self._notify_timeout_best_effort(callback_query)
+                return None
             await self._delete_old_screen_best_effort(context, chat_id=chat_id, old_message_id=last_message_id, new_message_id=sent.message_id)
             try:
                 context.user_data[self.LAST_SCREEN_MESSAGE_ID_KEY] = sent.message_id
@@ -78,6 +87,8 @@ class ScreenManager:
                     **kwargs,
                 )
                 return None
+            except TimedOut as exc:
+                logger.warning("NET issue [screen_edit_message]: %s", exc.__class__.__name__)
             except BadRequest as e:
                 message = (str(e) or "").lower()
                 if "message is not modified" in message:
@@ -94,19 +105,32 @@ class ScreenManager:
                 # Fallback to send_message on any edit-related issue.
                 pass
 
-        sent = await context.bot.send_message(
-            chat_id=chat_id,
-            text=normalized_text,
-            reply_markup=normalized_reply_markup,
-            parse_mode=parse_mode,
-            **kwargs,
-        )
+        try:
+            sent = await context.bot.send_message(
+                chat_id=chat_id,
+                text=normalized_text,
+                reply_markup=normalized_reply_markup,
+                parse_mode=parse_mode,
+                **kwargs,
+            )
+        except TimedOut as exc:
+            logger.warning("NET issue [screen_send_message_fallback]: %s", exc.__class__.__name__)
+            await self._notify_timeout_best_effort(callback_query)
+            return None
         await self._delete_old_screen_best_effort(context, chat_id=chat_id, old_message_id=last_message_id, new_message_id=sent.message_id)
         try:
             context.user_data[self.LAST_SCREEN_MESSAGE_ID_KEY] = sent.message_id
         except Exception:
             pass
         return sent
+
+    async def _notify_timeout_best_effort(self, callback_query) -> None:
+        if callback_query is None:
+            return
+        try:
+            await callback_query.answer("Telegram временно не отвечает, попробуйте ещё раз.")
+        except Exception:
+            pass
 
     async def _delete_old_screen_best_effort(self, context, *, chat_id: int, old_message_id, new_message_id: int) -> None:
         if context is None or getattr(context, "bot", None) is None:
