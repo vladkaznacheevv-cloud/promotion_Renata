@@ -216,18 +216,18 @@ export default function ClientsPage() {
 
   return (
     <Card>
-      <CardHeader className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+      <CardHeader className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
         <div>
           <h2 className="text-lg font-semibold">{RU.labels.clientsTitle}</h2>
           <p className="text-sm text-slate-500">{RU.labels.clientsSubtitle}</p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex w-full flex-wrap items-center gap-2 xl:w-auto xl:flex-nowrap xl:justify-end">
           <Input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder={RU.labels.searchByClient}
-            className="min-w-[240px]"
+            className="w-full min-w-[260px] xl:w-[360px] 2xl:w-[440px]"
           />
 
           <select
@@ -289,7 +289,7 @@ export default function ClientsPage() {
                     <TH>{RU.labels.aiChats}</TH>
                     <TH>{RU.labels.lastActivity}</TH>
                     <TH className="text-right">{RU.labels.revenue}</TH>
-                    <TH className="text-right">{RU.labels.actions}</TH>
+                    <TH className="w-[1%] whitespace-nowrap text-right">{RU.labels.actions}</TH>
                   </TR>
                 </THead>
                 <TBody>
@@ -316,17 +316,18 @@ export default function ClientsPage() {
                       <TD className="text-right font-semibold">{formatCurrencyRub(client.revenue)}</TD>
                       <TD className="text-right">
                         {canManage ? (
-                          <div className="flex justify-end gap-2">
-                            <Button variant="secondary" onClick={() => openEditModal(client)}>
+                          <div className="flex flex-nowrap justify-end gap-1.5">
+                            <Button variant="secondary" className="h-8 whitespace-nowrap px-2.5 text-xs" onClick={() => openEditModal(client)}>
                               {RU.buttons.edit}
                             </Button>
                             <Button
                               variant="secondary"
+                              className="h-8 whitespace-nowrap px-2.5 text-xs"
                               onClick={() => handleRequestContacts(client)}
                             >
                               {RU.buttons.requestContacts}
                             </Button>
-                            <Button variant="danger" onClick={() => handleDeleteClient(client)}>
+                            <Button variant="danger" className="h-8 whitespace-nowrap px-2.5 text-xs" onClick={() => handleDeleteClient(client)}>
                               {RU.buttons.delete}
                             </Button>
                           </div>

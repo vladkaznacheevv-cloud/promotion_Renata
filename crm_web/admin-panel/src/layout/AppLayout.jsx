@@ -133,17 +133,17 @@ export default function AppLayout({ children }) {
 
       <div className={`${collapsed ? "pl-20" : "pl-64"} transition-all`}>
         <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/80 backdrop-blur">
-          <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-            <div className="flex items-center gap-4 w-full max-w-xl">
-              <Input placeholder={RU.labels.search} />
+          <div className="mx-auto flex w-full max-w-[1760px] flex-wrap items-center justify-between gap-3 px-4 py-3.5 lg:px-5">
+            <div className="flex min-w-[260px] flex-1 items-center gap-3">
+              <Input placeholder={RU.labels.search} className="max-w-[560px]" />
               <Badge variant="default">
                 <UserCircle2 className="h-4 w-4" />
                 {RU.labels.user}: {userDisplay}
               </Badge>
             </div>
-            <div className="flex items-stretch gap-3">
+            <div className="flex shrink-0 items-stretch gap-2">
               {quickActions.length > 0 && (
-                <div className="grid grid-cols-1 gap-2 min-w-[240px] sm:grid-cols-2">
+                <div className="grid min-w-[220px] grid-cols-1 gap-2 sm:grid-cols-2">
                   {quickActions.map((item) => (
                     <NavLink key={item.to} to={item.to}>
                       <Button variant="secondary" className="h-10 w-full justify-center">
@@ -160,7 +160,7 @@ export default function AppLayout({ children }) {
           </div>
         </header>
 
-        <main className="max-w-7xl mx-auto px-6 py-8">{children}</main>
+        <main className="mx-auto w-full max-w-[1760px] px-4 py-6 lg:px-5 lg:py-7">{children}</main>
       </div>
     </div>
   );
