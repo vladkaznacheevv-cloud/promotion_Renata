@@ -273,8 +273,11 @@ export default function ClientsPage() {
             <div className="text-xs text-slate-500">
               {filteredClients.length} / {clientsTotal || filteredClients.length}
             </div>
-            <div className="max-h-[calc(100vh-18rem)] overflow-y-auto overflow-x-auto">
-              <Table>
+            <div className="clients-table-scroll max-h-[calc(100vh-18rem)] overflow-y-auto overflow-x-auto pb-2">
+              <Table
+                wrapperClassName="w-max min-w-full overflow-visible"
+                tableClassName="min-w-[1400px]"
+              >
                 <THead>
                   <TR>
                     <TH>{RU.labels.client}</TH>

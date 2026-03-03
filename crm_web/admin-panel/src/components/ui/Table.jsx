@@ -1,7 +1,9 @@
-export function Table({ children }) {
+export function Table({ children, wrapperClassName = "", tableClassName = "" }) {
+  const hasOverflowOverride = /\boverflow(?:-[xy])?-/.test(wrapperClassName);
+  const overflowClass = hasOverflowOverride ? "" : "overflow-hidden";
   return (
-    <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-      <table className="min-w-full text-sm">{children}</table>
+    <div className={`${overflowClass} rounded-2xl border border-slate-200 bg-white ${wrapperClassName}`.trim()}>
+      <table className={`min-w-full text-sm ${tableClassName}`}>{children}</table>
     </div>
   );
 }
