@@ -15,8 +15,8 @@ import {
 import { RU } from "../i18n/ru";
 import { useAuth } from "../auth/AuthContext";
 import Input from "../components/ui/Input";
-import Button from "../components/ui/Button";
 import Badge from "../components/ui/Badge";
+import HeaderActions from "./HeaderActions";
 
 const navGroups = [
   {
@@ -133,30 +133,15 @@ export default function AppLayout({ children }) {
 
       <div className={`${collapsed ? "pl-20" : "pl-64"} transition-all`}>
         <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/80 backdrop-blur">
-          <div className="mx-auto flex w-full max-w-[1760px] flex-wrap items-center justify-between gap-3 px-4 py-3.5 lg:px-5">
-            <div className="flex min-w-[260px] flex-1 items-center gap-3">
+          <div className="mx-auto flex w-full max-w-[1760px] flex-col gap-3 px-4 py-3.5 lg:flex-row lg:items-center lg:justify-between lg:px-5">
+            <div className="flex min-w-0 flex-1 items-center gap-3">
               <Input placeholder={RU.labels.search} className="max-w-[560px]" />
               <Badge variant="default">
                 <UserCircle2 className="h-4 w-4" />
                 {RU.labels.user}: {userDisplay}
               </Badge>
             </div>
-            <div className="flex shrink-0 items-stretch gap-2">
-              {quickActions.length > 0 && (
-                <div className="grid min-w-[220px] grid-cols-1 gap-2 sm:grid-cols-2">
-                  {quickActions.map((item) => (
-                    <NavLink key={item.to} to={item.to}>
-                      <Button variant="secondary" className="h-10 w-full justify-center">
-                        {item.label}
-                      </Button>
-                    </NavLink>
-                  ))}
-                </div>
-              )}
-              <Button variant="ghost" onClick={logout}>
-                {RU.buttons.logout}
-              </Button>
-            </div>
+            <HeaderActions items={quickActions} onLogout={logout} />
           </div>
         </header>
 

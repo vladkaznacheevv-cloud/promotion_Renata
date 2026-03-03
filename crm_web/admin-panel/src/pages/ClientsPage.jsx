@@ -275,9 +275,21 @@ export default function ClientsPage() {
             </div>
             <div className="clients-table-scroll max-h-[calc(100vh-18rem)] overflow-y-auto overflow-x-auto pb-2">
               <Table
-                wrapperClassName="w-max min-w-full overflow-visible"
-                tableClassName="min-w-[1400px]"
+                wrapperClassName="w-[1670px] max-w-none overflow-visible"
+                tableClassName="w-[1670px] min-w-[1670px] table-fixed"
               >
+                <colgroup>
+                  <col className="w-[280px]" />
+                  <col className="w-[130px]" />
+                  <col className="w-[110px]" />
+                  <col className="w-[150px]" />
+                  <col className="w-[150px]" />
+                  <col className="w-[240px]" />
+                  <col className="w-[80px]" />
+                  <col className="w-[140px]" />
+                  <col className="w-[110px]" />
+                  <col className="w-[280px]" />
+                </colgroup>
                 <THead>
                   <TR>
                     <TH>{RU.labels.client}</TH>
@@ -289,16 +301,16 @@ export default function ClientsPage() {
                     <TH>{RU.labels.aiChats}</TH>
                     <TH>{RU.labels.lastActivity}</TH>
                     <TH className="text-right">{RU.labels.revenue}</TH>
-                    <TH className="w-[1%] whitespace-nowrap text-right">{RU.labels.actions}</TH>
+                    <TH className="w-[280px] min-w-[280px] whitespace-nowrap text-right">{RU.labels.actions}</TH>
                   </TR>
                 </THead>
                 <TBody>
                   {filteredClients.map((client) => (
                     <TR key={client.id}>
                       <TD>
-                        <div className="font-medium text-slate-900">{client.name}</div>
-                        <div className="text-xs text-slate-500">tg_id: {client.tg_id ?? RU.messages.notSet}</div>
-                        <div className="text-xs text-slate-500">
+                        <div className="truncate font-medium text-slate-900">{client.name || RU.messages.notSet}</div>
+                        <div className="truncate text-xs text-slate-500">tg_id: {client.tg_id ?? RU.messages.notSet}</div>
+                        <div className="truncate text-xs text-slate-500">
                           {RU.labels.readyToPay}: {client.flags?.readyToPay ? "Да" : "Нет"}
                         </div>
                       </TD>
@@ -308,13 +320,23 @@ export default function ClientsPage() {
                       <TD>
                         <Badge variant={client.status === "VIP Клиент" ? "vip" : "default"}>{client.status}</Badge>
                       </TD>
-                      <TD>{client.telegram || RU.messages.notSet}</TD>
-                      <TD>{client.phone || RU.messages.notSet}</TD>
-                      <TD>{client.email || RU.messages.notSet}</TD>
-                      <TD>{client.aiChats ?? 0}</TD>
-                      <TD>{client.lastActivity ? formatDateRu(client.lastActivity, { day: "2-digit", month: "2-digit", year: "numeric" }) : RU.messages.notSet}</TD>
-                      <TD className="text-right font-semibold">{formatCurrencyRub(client.revenue)}</TD>
-                      <TD className="text-right">
+                      <TD>
+                        <div className="truncate whitespace-nowrap" title={client.telegram || ""}>
+                          {client.telegram || RU.messages.notSet}
+                        </div>
+                      </TD>
+                      <TD className="whitespace-nowrap">{client.phone || RU.messages.notSet}</TD>
+                      <TD>
+                        <div className="truncate whitespace-nowrap" title={client.email || ""}>
+                          {client.email || RU.messages.notSet}
+                        </div>
+                      </TD>
+                      <TD className="whitespace-nowrap">{client.aiChats ?? 0}</TD>
+                      <TD className="whitespace-nowrap">
+                        {client.lastActivity ? formatDateRu(client.lastActivity, { day: "2-digit", month: "2-digit", year: "numeric" }) : RU.messages.notSet}
+                      </TD>
+                      <TD className="whitespace-nowrap text-right font-semibold">{formatCurrencyRub(client.revenue)}</TD>
+                      <TD className="w-[280px] min-w-[280px] text-right">
                         {canManage ? (
                           <div className="flex flex-nowrap justify-end gap-1.5">
                             <Button variant="secondary" className="h-8 whitespace-nowrap px-2.5 text-xs" onClick={() => openEditModal(client)}>
