@@ -255,6 +255,16 @@ class AiStatsOut(BaseModel):
     topQuestions: List[AiTopQuestion]
 
 
+class DashboardSummaryOut(BaseModel):
+    days: Literal[7, 30, 90]
+    start_ts: datetime
+    end_ts: datetime
+    ai_answers: int
+    new_clients: int
+    payments_count: int
+    revenue_total: int
+
+
 class PaymentStatus(BaseModel):
     value: Literal["pending", "paid", "failed", "cancelled"]
 

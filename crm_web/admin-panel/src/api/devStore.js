@@ -523,6 +523,42 @@ export function getAiStats() {
   return clone(aiStats);
 }
 
+export function getDashboardSummary(days = 7) {
+  const safeDays = [7, 30, 90].includes(Number(days)) ? Number(days) : 7;
+  const now = new Date();
+  const start = new Date(now.getTime() - safeDays * 24 * 60 * 60 * 1000);
+  const paidStatuses = new Set(["paid", "succeeded"]);
+  const inRange = (value) => {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return false;
+    return date >= start && date <= now;
+  };
+
+  const aiAnswers = clients
+    .filter((client) => inRange(client.lastActivity))
+    .reduce((sum, client) => sum + Number(client.aiChats || 0), 0);
+
+  const newClients = clients.filter((client) => inRange(client.registered)).length;
+
+  const paidInRange = payments.filter((payment) => {
+    const status = String(payment.status || "").toLowerCase();
+    if (!paidStatuses.has(status)) return false;
+    return inRange(payment.paid_at || payment.created_at);
+  });
+
+  const revenueTotal = paidInRange.reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+
+  return {
+    days: safeDays,
+    start_ts: start.toISOString(),
+    end_ts: now.toISOString(),
+    ai_answers: aiAnswers,
+    new_clients: newClients,
+    payments_count: paidInRange.length,
+    revenue_total: revenueTotal,
+  };
+}
+
 export function getEventAttendees(eventId) {
   const attendeeIds = eventAttendees[eventId] || [];
   const items = attendeeIds

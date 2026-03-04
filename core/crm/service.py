@@ -7,7 +7,7 @@ import json
 import logging
 import os
 from uuid import uuid4
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from sqlalchemy import String, and_, cast, func, or_, select, text
@@ -107,6 +107,27 @@ class CRMService:
     def stage_after_payment_paid(cls, current_stage: str | None) -> str:
         _ = cls.normalize_stage(current_stage)
         return User.CRM_STAGE_PAID
+
+    @staticmethod
+    def _utc_now() -> datetime:
+        return datetime.now(timezone.utc)
+
+    @classmethod
+    def _dashboard_bounds(
+        cls,
+        days: Literal[7, 30, 90],
+        *,
+        now_utc: datetime | None = None,
+    ) -> tuple[datetime, datetime]:
+        end_ts = now_utc or cls._utc_now()
+        if end_ts.tzinfo is None:
+            end_ts = end_ts.replace(tzinfo=timezone.utc)
+        start_ts = end_ts - timedelta(days=int(days))
+        return start_ts, end_ts
+
+    @staticmethod
+    def _dashboard_paid_statuses() -> tuple[str, str]:
+        return ("paid", "succeeded")
 
     @staticmethod
     def _normalize_schedule_type(value: str | None) -> str:
@@ -546,6 +567,57 @@ class CRMService:
             "avgRating": 0.0,
             "responseTime": 0.0,
             "topQuestions": [],
+        }
+
+    async def get_dashboard_summary(self, days: Literal[7, 30, 90] = 7) -> dict[str, Any]:
+        start_ts, end_ts = self._dashboard_bounds(days)
+
+        activity_ts = func.coalesce(
+            CRMUserActivity.last_activity_at,
+            CRMUserActivity.updated_at,
+            CRMUserActivity.created_at,
+        )
+        ai_answers = await self.db.scalar(
+            select(func.coalesce(func.sum(CRMUserActivity.ai_chats), 0)).where(
+                activity_ts >= start_ts,
+                activity_ts <= end_ts,
+            )
+        )
+
+        user_created_ts = func.coalesce(User.created_at, User.updated_at)
+        new_clients = await self.db.scalar(
+            select(func.count(User.id)).where(
+                user_created_ts >= start_ts,
+                user_created_ts <= end_ts,
+            )
+        )
+
+        paid_statuses = self._dashboard_paid_statuses()
+        paid_status_filter = func.lower(func.coalesce(Payment.status, "")).in_(paid_statuses)
+        paid_ts = func.coalesce(Payment.paid_at, Payment.updated_at, Payment.created_at)
+        payments_count = await self.db.scalar(
+            select(func.count(Payment.id)).where(
+                paid_status_filter,
+                paid_ts >= start_ts,
+                paid_ts <= end_ts,
+            )
+        )
+        revenue_total = await self.db.scalar(
+            select(func.coalesce(func.sum(Payment.amount), 0)).where(
+                paid_status_filter,
+                paid_ts >= start_ts,
+                paid_ts <= end_ts,
+            )
+        )
+
+        return {
+            "days": int(days),
+            "start_ts": start_ts,
+            "end_ts": end_ts,
+            "ai_answers": int(ai_answers or 0),
+            "new_clients": int(new_clients or 0),
+            "payments_count": int(payments_count or 0),
+            "revenue_total": int(revenue_total or 0),
         }
 
     async def create_client(self, data: ClientCreate) -> dict[str, Any]:
