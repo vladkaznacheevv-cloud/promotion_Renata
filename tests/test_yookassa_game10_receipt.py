@@ -1,0 +1,252 @@
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from core.api.deps import get_db
+from core.api import payments as payments_api
+from core.api.payments import router as payments_router
+
+
+class _DummyResponse:
+    def __init__(self, payload: dict, status_code: int = 200) -> None:
+        self._payload = payload
+        self.status_code = status_code
+
+    def json(self):
+        return self._payload
+
+
+class _DummyAsyncClient:
+    def __init__(self, *, response: _DummyResponse, capture: dict) -> None:
+        self._response = response
+        self._capture = capture
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def post(self, url, json=None, headers=None, auth=None):
+        self._capture["url"] = url
+        self._capture["json"] = json
+        self._capture["headers"] = headers
+        self._capture["auth"] = auth
+        return self._response
+
+
+def test_create_yookassa_payment_payload_contains_receipt(monkeypatch):
+    monkeypatch.setenv("YOOKASSA_SHOP_ID", "shop")
+    monkeypatch.setenv("YOOKASSA_SECRET_KEY", "secret")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://example.com")
+    monkeypatch.delenv("YOOKASSA_TAX_SYSTEM_CODE", raising=False)
+    monkeypatch.delenv("YOOKASSA_VAT_CODE", raising=False)
+
+    capture: dict = {}
+    response = _DummyResponse(
+        {
+            "id": "yk_test_1",
+            "status": "pending",
+            "confirmation": {"confirmation_url": "https://pay.example/1"},
+        }
+    )
+    monkeypatch.setattr(
+        payments_api.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: _DummyAsyncClient(response=response, capture=capture),
+    )
+
+    result = asyncio.run(
+        payments_api._create_yookassa_payment(
+            tg_id=123456,
+            customer_email="test@example.com",
+            customer_phone=None,
+        )
+    )
+    assert result["payment_id"] == "yk_test_1"
+    payload = capture["json"]
+    assert payload["receipt"]["tax_system_code"] == 2
+    assert payload["receipt"]["items"][0]["vat_code"] == 1
+    assert payload["receipt"]["items"][0]["payment_subject"] == "service"
+    assert payload["receipt"]["items"][0]["payment_mode"] == "full_payment"
+    assert payload["receipt"]["customer"]["email"] == "test@example.com"
+
+
+def test_create_yookassa_payment_payload_contains_notification_url(monkeypatch):
+    monkeypatch.setenv("YOOKASSA_SHOP_ID", "shop")
+    monkeypatch.setenv("YOOKASSA_SECRET_KEY", "secret")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://api.example.com")
+    monkeypatch.setenv("YOOKASSA_WEBHOOK_TOKEN", "whsec_test")
+
+    capture: dict = {}
+    response = _DummyResponse(
+        {
+            "id": "yk_test_2",
+            "status": "pending",
+            "confirmation": {"confirmation_url": "https://pay.example/2"},
+        }
+    )
+    monkeypatch.setattr(
+        payments_api.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: _DummyAsyncClient(response=response, capture=capture),
+    )
+
+    asyncio.run(
+        payments_api._create_yookassa_payment(
+            tg_id=123456,
+            customer_email="test@example.com",
+            customer_phone=None,
+        )
+    )
+    payload = capture["json"]
+    assert payload["notification_url"] == "https://api.example.com/api/webhooks/yookassa/whsec_test"
+
+def test_game10_create_returns_400_when_no_receipt_contacts(monkeypatch):
+    monkeypatch.setenv("BOT_API_TOKEN", "bot-token")
+    monkeypatch.setattr(
+        payments_api,
+        "_get_receipt_customer_contact",
+        AsyncMock(return_value=(None, None)),
+    )
+
+    class _ScalarNoneResult:
+        def scalar_one_or_none(self):
+            return None
+
+    class _FakeDB:
+        async def execute(self, *args, **kwargs):
+            return _ScalarNoneResult()
+
+        def add(self, *_args, **_kwargs):
+            raise AssertionError("db.add should not be called when contacts are missing")
+
+        async def flush(self):
+            raise AssertionError("db.flush should not be called when contacts are missing")
+
+    fake_db = _FakeDB()
+
+    async def _override_db():
+        yield fake_db
+
+    app = FastAPI()
+    app.include_router(payments_router, prefix="/api/payments")
+    app.dependency_overrides[get_db] = _override_db
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/payments/game10/create",
+        headers={"X-Bot-Api-Token": "bot-token"},
+        json={"tg_id": 123456},
+    )
+    assert response.status_code == 400
+    detail = response.json()["detail"].lower()
+    assert "email" in detail
+    assert ("phone" in detail) or ("телефон" in detail)
+
+
+
+def test_should_reuse_existing_payment_when_fresh_and_pending(monkeypatch):
+    monkeypatch.setenv("YOOKASSA_REUSE_TTL_MINUTES", "15")
+    existing = SimpleNamespace(
+        payment_id="pay_1",
+        confirmation_url="https://pay.example/1",
+        created_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+    )
+    monkeypatch.setattr(
+        payments_api,
+        "_get_yookassa_payment_status",
+        AsyncMock(return_value="pending"),
+    )
+    can_reuse, reason = asyncio.run(payments_api._should_reuse_existing_game10_payment(existing))
+    assert can_reuse is True
+    assert reason == "fresh"
+
+
+def test_should_not_reuse_existing_payment_when_expired_ttl(monkeypatch):
+    monkeypatch.setenv("YOOKASSA_REUSE_TTL_MINUTES", "15")
+    existing = SimpleNamespace(
+        payment_id="pay_2",
+        confirmation_url="https://pay.example/2",
+        created_at=datetime.now(timezone.utc) - timedelta(minutes=20),
+    )
+    status_mock = AsyncMock(return_value="pending")
+    monkeypatch.setattr(payments_api, "_get_yookassa_payment_status", status_mock)
+    can_reuse, reason = asyncio.run(payments_api._should_reuse_existing_game10_payment(existing))
+    assert can_reuse is False
+    assert reason == "expired_ttl"
+    assert status_mock.await_count == 0
+
+
+def test_should_not_reuse_existing_payment_when_status_canceled(monkeypatch):
+    monkeypatch.setenv("YOOKASSA_REUSE_TTL_MINUTES", "15")
+    existing = SimpleNamespace(
+        payment_id="pay_3",
+        confirmation_url="https://pay.example/3",
+        created_at=datetime.now(timezone.utc) - timedelta(minutes=3),
+    )
+    monkeypatch.setattr(
+        payments_api,
+        "_get_yookassa_payment_status",
+        AsyncMock(return_value="canceled"),
+    )
+    can_reuse, reason = asyncio.run(payments_api._should_reuse_existing_game10_payment(existing))
+    assert can_reuse is False
+    assert reason == "status_not_pending"
+
+
+def test_yookassa_status_endpoint_checks_remote_status_and_processes_success(monkeypatch):
+    monkeypatch.setenv("BOT_API_TOKEN", "bot-token")
+    payment_obj = SimpleNamespace(
+        payment_id="yk_status_1",
+        tg_id=123456,
+        status="pending",
+        paid_at=None,
+    )
+
+    class _ScalarPaymentResult:
+        def scalar_one_or_none(self):
+            return payment_obj
+
+    class _FakeDB:
+        async def execute(self, *args, **kwargs):
+            return _ScalarPaymentResult()
+
+        async def flush(self):
+            return None
+
+    fake_db = _FakeDB()
+    monkeypatch.setattr(payments_api, "_get_yookassa_payment_status", AsyncMock(return_value="succeeded"))
+    monkeypatch.setattr(
+        payments_api,
+        "process_game10_payment_success",
+        AsyncMock(return_value={"result": "invite_sent", "already_in_channel": False}),
+    )
+
+    async def _override_db():
+        yield fake_db
+
+    app = FastAPI()
+    app.include_router(payments_router, prefix="/api/payments")
+    app.dependency_overrides[get_db] = _override_db
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/payments/yookassa/status",
+        headers={"X-Bot-Api-Token": "bot-token"},
+        json={"payment_id": "yk_status_1"},
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["payment_id"] == "yk_status_1"
+    assert payload["status"] == "succeeded"
+    assert payload["updated"] is True
+    assert payload["processed_success"] is True
+    assert payload["result"] == "invite_sent"

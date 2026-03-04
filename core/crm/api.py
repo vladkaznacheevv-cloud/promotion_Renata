@@ -15,6 +15,7 @@ from core.crm.schemas import (
     ClientsOut,
     CatalogItemOut,
     CatalogListOut,
+    DashboardSummaryOut,
     EventCreate,
     EventOut,
     EventUpdate,
@@ -49,13 +50,14 @@ async def ping():
 @router.get("/clients", response_model=ClientsOut)
 async def get_clients(
     limit: int = Query(10, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     stage: str | None = Query(None),
     search: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
     _: object = Depends(require_roles("admin", "manager", "viewer")),
 ):
     service = CRMService(db)
-    return await service.list_clients(limit=limit, stage=stage, search=search)
+    return await service.list_clients(limit=limit, offset=offset, stage=stage, search=search)
 
 
 @router.post("/clients", response_model=ClientOut)
@@ -301,6 +303,18 @@ async def get_ai_stats(
 ):
     service = CRMService(db)
     return await service.get_ai_stats()
+
+
+@router.get("/dashboard", response_model=DashboardSummaryOut)
+async def get_dashboard_summary(
+    days: int = Query(7),
+    db: AsyncSession = Depends(get_db),
+    _: object = Depends(require_roles("admin", "manager", "viewer")),
+):
+    if days not in {7, 30, 90}:
+        raise HTTPException(status_code=422, detail="days must be one of: 7, 30, 90")
+    service = CRMService(db)
+    return await service.get_dashboard_summary(days=int(days))
 
 
 @router.get("/payments", response_model=PaymentsOut)

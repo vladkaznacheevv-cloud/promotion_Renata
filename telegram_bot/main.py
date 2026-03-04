@@ -8,10 +8,12 @@ import hashlib
 import atexit 
 import threading 
 import time
+from io import BytesIO
 from datetime import datetime
 import httpx 
 from dotenv import load_dotenv 
 from sqlalchemy import select ,text ,func 
+from sqlalchemy .exc import SQLAlchemyError
 import core .models 
 import core .db .database as db 
 from telegram import Update ,InlineKeyboardButton ,InlineKeyboardMarkup 
@@ -19,20 +21,24 @@ from telegram .ext import (
 Application ,
 CommandHandler ,
 CallbackQueryHandler ,
+ChatJoinRequestHandler,
 MessageHandler ,
+ApplicationHandlerStop ,
 ContextTypes ,
 filters ,
 )
 from core .users .service import UserService 
 from core .users .models import User 
 from core .events .service import EventService 
+from core .consultations .service import ConsultationService
 from core .crm .service import CRMService 
+from core .crm .models import YooKassaPayment
 from core .ai .ai_service import AIService 
 from core .crm .activity_service import ActivityService 
 from core .payments .models import Payment 
 from core .catalog .models import CatalogItem 
 from core .integrations .getcourse .url_utils import normalize_getcourse_url 
-from telegram .error import Conflict ,BadRequest
+from telegram .error import Conflict ,BadRequest ,TimedOut
 from telegram import Message ,CallbackQuery 
 
 from telegram_bot .keyboards import (
@@ -50,14 +56,22 @@ get_retry_kb ,
 get_private_channel_pending_kb ,
 get_private_channel_paid_kb ,
 get_game10_kb ,
-get_ai_quick_actions_kb ,
+get_game10_description_kb ,
+get_payment_contact_choice_kb ,
+get_game10_payment_link_kb ,
 )
-from telegram_bot .text_utils import normalize_text_for_telegram ,looks_like_mojibake 
+from telegram_bot .text_utils import normalize_text_for_telegram ,looks_like_mojibake ,normalize_ui_reply_markup 
+from telegram_bot .contact_parser import ParsedContacts ,parse_contacts_from_message
 from telegram_bot .text_formatting import format_event_card 
 from telegram_bot .lock_utils import get_lock_path ,touch_lock_heartbeat 
 from telegram_bot .typing_indicator import TypingIndicator 
 from telegram_bot .screen_manager import ScreenManager
-from telegram_bot .utils import detect_intent ,detect_product_focus ,detect_buy_intent ,apply_focus_timeout_state
+from telegram_bot .utils import detect_intent ,detect_product_focus ,apply_focus_timeout_state
+from telegram_bot .private_channel_gate import decide_private_channel_join_action
+try:
+    import qrcode
+except Exception:  # pragma: no cover - optional runtime dependency
+    qrcode = None
 
 try :
     import fcntl # Linux/WSL containers
@@ -68,18 +82,63 @@ load_dotenv ()
 logging .basicConfig (level =logging .INFO )
 logger =logging .getLogger (__name__ )
 
-# РЎРЅРёР¶Р°РµРј СѓСЂРѕРІРµРЅСЊ С€СѓРјР° РІ Р»РѕРіР°С…
+# Reduce noisy logs.
 logging .getLogger ("httpx").setLevel (logging .WARNING )
 logging .getLogger ("telegram").setLevel (logging .WARNING )
 logging .getLogger ("telegram.ext").setLevel (logging .WARNING )
 
+def _env_flag_enabled_default_true (name :str )->bool :
+    raw =str (os .getenv (name ,"true")or "").strip ().lower ()
+    return raw in {"1","true","yes","y","on"}
+
+
+def _env_flag_enabled_default_false (name :str )->bool :
+    raw =str (os .getenv (name ,"false")or "").strip ().lower ()
+    return raw in {"1","true","yes","y","on"}
+
+
+def _parse_admin_ids ()->set [int ]:
+    values :set [int ]=set ()
+    raw =str (os .getenv ("BOT_ADMIN_IDS")or "").strip ()
+    for item in raw .split (","):
+        candidate =item .strip ()
+        if not candidate :
+            continue
+        try :
+            values .add (int (candidate ))
+        except Exception :
+            continue
+    if ADMIN_CHAT_ID :
+        try :
+            values .add (int (str (ADMIN_CHAT_ID ).strip ()))
+        except Exception :
+            pass
+    return values
+
+
+def _int_env (name :str ,default :int )->int :
+    raw =str (os .getenv (name )or "").strip ()
+    try :
+        return int (raw )if raw else int (default )
+    except Exception :
+        return int (default )
+
+
 BOT_TOKEN =os .getenv ("BOT_TOKEN")
 AI_API_KEY =os .getenv ("OPENROUTER_API_KEY")or os .getenv ("AI_API_KEY")
-ADMIN_CHAT_ID =os .getenv ("ADMIN_CHAT_ID")# опционально
+ADMIN_CHAT_ID =os .getenv ("ADMIN_CHAT_ID")# optional
 TG_PRIVATE_CHANNEL_INVITE_LINK =os .getenv ("TG_PRIVATE_CHANNEL_INVITE_LINK")
 CRM_API_BASE_URL =(os .getenv ("CRM_API_BASE_URL")or "http://web:8000").rstrip ("/")
 CRM_API_TOKEN =(os .getenv ("CRM_API_TOKEN")or "").strip ()
+BOT_API_TOKEN =(os .getenv ("BOT_API_TOKEN")or "").strip ()
 YOOMONEY_PAY_URL_PLACEHOLDER =(os .getenv ("YOOMONEY_PAY_URL_PLACEHOLDER")or "").strip ()
+TELEGRAM_PRIVATE_CHANNEL_ID =(os .getenv ("TELEGRAM_PRIVATE_CHANNEL_ID")or "").strip ()
+PAYMENTS_TEST_ENABLED =_env_flag_enabled_default_false ("PAYMENTS_TEST_ENABLED")
+PAYMENTS_TEST_AMOUNT_RUB =max (1 ,_int_env ("PAYMENTS_TEST_AMOUNT_RUB",10 ))
+BOT_ADMIN_ID_SET =set ()
+
+# ADMIN_CHAT_ID is kept for backward compatibility; BOT_ADMIN_IDS is preferred.
+BOT_ADMIN_ID_SET =_parse_admin_ids ()
 
 # Services
 ai_service =AIService (api_key =AI_API_KEY )
@@ -87,7 +146,7 @@ logger .info ("AI configured: key=%s model=%s",bool (AI_API_KEY ),ai_service .mo
 screen_manager =ScreenManager ()
 
 
-# In-memory (РїРѕР·Р¶Рµ РјРѕР¶РЅРѕ РІС‹РЅРµСЃС‚Рё РёСЃС‚РѕСЂРёСЋ РІ Redis/DB)
+# In-memory (history can be moved to Redis/DB if needed)
 chat_histories :dict [int ,list [dict ]]={}
 
 # User states
@@ -102,14 +161,22 @@ CONTACT_FLOW_KEY ="contact_flow"
 PENDING_CONTACTS_KEY ="pending_contacts"
 PENDING_EVENT_ACTIONS_KEY ="pending_event_actions"
 SKIP_NEXT_EMAIL_KEY ="skip_next_email"
+PAYMENT_CONTACT_FLOW_KEY ="payment_contact_flow"
+PAYMENT_PENDING_ACTION_KEY ="payment_pending_action"
+PAYMENT_CONTACT_MODE_KEY ="payment_contact_mode"
+PAYMENT_VARIANT_KEY ="payment_variant"
+LAST_GAME10_PAYMENT_UI_KEY ="last_game10_payment_ui"
 PRODUCT_FOCUS_KEY ="product_focus"
 LAST_USER_ACTIVITY_TS_KEY ="last_user_activity_ts"
 LOCK_FILE_PATH =get_lock_path ()
 _BOT_LOCK_FD =None 
 LOCK_HEARTBEAT_SECONDS =30 
 PRODUCT_FOCUS_TIMEOUT_SEC =30 *60
+USER_BUSY_IDS :set [int ]=set ()
+BUSY_NOTICE_TS_KEY ="busy_notice_ts"
+BUSY_NOTICE_INTERVAL_SEC =4.0
 
-EMAIL_RE =re .compile (r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")
+EMAIL_RE =re .compile (r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 COURSES_PAGE_SIZE =5 
 EVENTS_LIST_PAGE_SIZE =6
 EVENTS_CACHE_KEY ="events_cache"
@@ -119,6 +186,22 @@ SCREEN_EVENT_ID_KEY ="screen_event_id"
 AUTO_AI_REPLY_TIMESTAMPS_KEY ="auto_ai_reply_timestamps"
 AUTO_AI_RATE_LIMIT_WINDOW_SEC =12
 AUTO_AI_RATE_LIMIT_MAX =3
+
+PAYMENT_CREATING_SCREEN ="Создаю оплату..."
+PAYMENT_NEED_CONTACT_SCREEN ="Для оплаты нужен телефон или email (для отправки чека). Выберите вариант."
+PAYMENT_ASK_PHONE_SCREEN ="Поделитесь номером телефона.\nЭто нужно для отправки чека."
+PAYMENT_ASK_EMAIL_SCREEN ="Напишите email одним сообщением.\nЭто нужно для отправки чека."
+PAYMENT_CONTACT_SAVED_SCREEN ="Контакт получен. Формирую оплату..."
+PAYMENT_CANCELLED_SCREEN ="Ок. Оплату отменил."
+PAYMENT_LINK_READY_SCREEN ="Ссылка на оплату готова.\nОткройте оплату или отсканируйте QR."
+PAYMENT_EXPIRED_HINT ="Ссылка устарела. Создаю новую..."
+PAYMENT_CHECKING_SCREEN ="Проверяю оплату..."
+PAYMENT_STATUS_PENDING_SCREEN ="Оплата пока не подтверждена. Попробуйте позже."
+PAYMENT_STATUS_CANCELED_SCREEN ="Платеж отменен или истек. Нажмите «Обновить ссылку»."
+PAYMENT_STATUS_CONFIRMED_SCREEN ="Оплата подтверждена. Нажмите «Вступить в канал»."
+PAYMENT_ALREADY_IN_CHANNEL_SCREEN ="Вы уже состоите в закрытом канале."
+PAYMENT_VARIANT_MAIN ="game10_main"
+ASSISTANT_ENTRY_HINT_TEXT ="Чтобы задать вопрос ассистенту, откройте раздел и нажмите «Вопросы к ассистенту»."
 
 
 def _instance_meta ()->dict [str ,str ]:
@@ -191,18 +274,35 @@ def _t (text :str |None ,*,label :str |None =None )->str |None :
 async def _reply (message :Message |None ,text :str |None ,**kwargs ):
     if message is None :
         return None 
+    if "reply_markup" in kwargs :
+        kwargs ["reply_markup"]=normalize_ui_reply_markup (kwargs .get ("reply_markup"))
     return await message .reply_text (_t (text ,label ="reply")or "",**kwargs )
 
 
 async def _edit (query :CallbackQuery |None ,text :str |None ,**kwargs ):
     if query is None :
         return None 
+    if "reply_markup" in kwargs :
+        kwargs ["reply_markup"]=normalize_ui_reply_markup (kwargs .get ("reply_markup"))
     return await query .edit_message_text (_t (text ,label ="edit")or "",**kwargs )
 
 
 async def _send (bot ,chat_id :int ,text :str |None =None ,**kwargs ):
     payload =text if text is not None else kwargs .pop ("text",None )
+    if "reply_markup" in kwargs :
+        kwargs ["reply_markup"]=normalize_ui_reply_markup (kwargs .get ("reply_markup"))
     return await bot .send_message (chat_id =chat_id ,text =_t (payload ,label ="send")or "",**kwargs )
+
+
+async def _send_photo (bot ,chat_id :int ,photo ,caption :str |None =None ,**kwargs ):
+    if "reply_markup" in kwargs :
+        kwargs ["reply_markup"]=normalize_ui_reply_markup (kwargs .get ("reply_markup"))
+    return await bot .send_photo (
+    chat_id =chat_id ,
+    photo =photo ,
+    caption =_t (caption ,label ="send_photo")or None ,
+    **kwargs ,
+    )
 
 
 async def _show_screen (update :Update ,context :ContextTypes .DEFAULT_TYPE ,text :str |None ,**kwargs ):
@@ -210,9 +310,22 @@ async def _show_screen (update :Update ,context :ContextTypes .DEFAULT_TYPE ,tex
     return await screen_manager .show_screen (update ,context ,text ,**kwargs )
 
 
+async def _show_main_menu_bottom (update :Update ,context :ContextTypes .DEFAULT_TYPE ,text :str |None =None ):
+    if text is None :
+        text ="Главное меню"
+    await screen_manager .show_main_menu_bottom (
+    update ,
+    context ,
+    text ,
+    reply_markup =get_main_menu (),
+    parse_mode =None ,
+    )
+
+
 async def _safe_edit_reply_markup (query :CallbackQuery |None ,*,reply_markup =None ):
     if query is None :
         return None
+    reply_markup =normalize_ui_reply_markup (reply_markup )
     try :
         return await query .edit_message_reply_markup (reply_markup =reply_markup )
     except BadRequest as e :
@@ -220,6 +333,366 @@ async def _safe_edit_reply_markup (query :CallbackQuery |None ,*,reply_markup =N
         if "message is not modified" in message :
             return None
         raise
+
+
+def _bot_api_auth_headers ()->dict [str ,str ]:
+    token =(BOT_API_TOKEN or "").strip ()
+    if not token :
+        return {}
+    return {"X-Bot-Api-Token":token }
+
+
+def _clear_payment_contact_flow (context :ContextTypes .DEFAULT_TYPE )->None :
+    context .user_data .pop (PAYMENT_CONTACT_FLOW_KEY ,None )
+    context .user_data .pop (PAYMENT_PENDING_ACTION_KEY ,None )
+    context .user_data .pop (PAYMENT_CONTACT_MODE_KEY ,None )
+    context .user_data .pop (PAYMENT_VARIANT_KEY ,None )
+
+
+def _clear_payment_runtime_state (context :ContextTypes .DEFAULT_TYPE )->None :
+    _clear_payment_contact_flow (context )
+    context .user_data .pop ("last_payment_id",None )
+    context .user_data .pop (LAST_GAME10_PAYMENT_UI_KEY ,None )
+
+
+def _start_payment_contact_flow_state (context :ContextTypes .DEFAULT_TYPE ,*,variant :str )->None :
+    context .user_data [PAYMENT_CONTACT_FLOW_KEY ]=True
+    context .user_data [PAYMENT_PENDING_ACTION_KEY ]="game10_payment"
+    context .user_data [PAYMENT_VARIANT_KEY ]=variant
+    context .user_data .pop (PAYMENT_CONTACT_MODE_KEY ,None )
+
+
+def _payment_variant_normalized (variant :str |None )->str :
+    _ =variant
+    return PAYMENT_VARIANT_MAIN
+
+
+def _payment_variant_amount_rub (variant :str |None )->int :
+    _ =variant
+    return 5000
+
+
+def _payment_variant_refresh_callback (variant :str |None )->str :
+    _ =variant
+    return "game10_pay_refresh"
+
+
+def _payment_variant_endpoint_path (variant :str |None )->str :
+    _ =variant
+    return "/api/payments/game10/create"
+
+
+def _is_admin_user_id (user_id :int |None )->bool :
+    if user_id is None :
+        return False
+    return int (user_id )in BOT_ADMIN_ID_SET
+
+
+def _game10_kb_for_update (update :Update )->InlineKeyboardMarkup :
+    _ =update
+    return get_game10_kb (_private_channel_payment_url ())
+
+
+def _payment_check_callback_data (payment_id :str )->str |None :
+    value =str (payment_id or "").strip ()
+    if not value :
+        return None
+    callback =f"pay_check:{value }"
+    if len (callback )>64:
+        return None
+    return callback
+
+
+def _payment_return_kb (payment_id :str |None )->InlineKeyboardMarkup :
+    check_callback =_payment_check_callback_data (str (payment_id or "").strip ())or "pay_check:"
+    return InlineKeyboardMarkup ([
+    [InlineKeyboardButton ("\u2705 \u042f \u043e\u043f\u043b\u0430\u0442\u0438\u043b \u2014 \u043f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c",callback_data =check_callback )],
+    [InlineKeyboardButton ("\u21a9\ufe0f \u0412 \u043c\u0435\u043d\u044e",callback_data ="main_menu")],
+    ])
+
+
+def _store_last_game10_payment_ui_state (context :ContextTypes .DEFAULT_TYPE ,*,payment_id :str ,confirmation_url :str ,variant :str ,message_id :int |None =None )->None :
+    context .user_data [LAST_GAME10_PAYMENT_UI_KEY ]={
+    "payment_id":str (payment_id or ""),
+    "confirmation_url":str (confirmation_url or ""),
+    "variant":_payment_variant_normalized (variant ),
+    "message_id":int (message_id )if message_id is not None else None,
+    }
+
+
+async def _delete_last_game10_payment_ui_message (update :Update ,context :ContextTypes .DEFAULT_TYPE )->None :
+    chat =update .effective_chat
+    if chat is None :
+        return
+    data =context .user_data .get (LAST_GAME10_PAYMENT_UI_KEY )
+    if not isinstance (data ,dict ):
+        return
+    message_id =data .get ("message_id")
+    if not message_id :
+        return
+    try :
+        await context .bot .delete_message (chat_id =chat .id ,message_id =int (message_id ))
+    except Exception :
+        pass
+
+
+def _get_last_game10_payment_ui_kb (context :ContextTypes .DEFAULT_TYPE ,payment_id :str |None )->InlineKeyboardMarkup |None :
+    data =context .user_data .get (LAST_GAME10_PAYMENT_UI_KEY )
+    if not isinstance (data ,dict ):
+        return None
+    saved_payment_id =str (data .get ("payment_id")or "").strip ()
+    if payment_id and saved_payment_id and saved_payment_id !=str (payment_id ).strip ():
+        return None
+    confirmation_url =str (data .get ("confirmation_url")or "").strip ()
+    if not confirmation_url :
+        return None
+    variant =_payment_variant_normalized (str (data .get ("variant")or ""))
+    return get_game10_payment_link_kb (
+    confirmation_url ,
+    refresh_callback_data =_payment_variant_refresh_callback (variant ),
+    check_callback_data =_payment_check_callback_data (saved_payment_id ),
+    )
+
+
+def _payment_backend_need_contact (result :dict |None )->bool :
+    if not isinstance (result ,dict ):
+        return False
+    if int (result .get ("status_code")or 0 )!=400:
+        return False
+    detail =str (result .get ("detail")or "").lower ()
+    return ("email" in detail and "телефон" in detail )or ("phone" in detail and "email" in detail)or ("receipt" in detail and "email" in detail)
+
+async def _create_game10_payment_backend (tg_id :int ,*,variant :str =PAYMENT_VARIANT_MAIN )->dict |None :
+    if not CRM_API_BASE_URL :
+        return None
+    headers =_bot_api_auth_headers ()
+    if not headers :
+        logger .warning ("Game10 payment backend token missing")
+        return None
+    try :
+        async with httpx .AsyncClient (timeout =20.0 )as client :
+            response =await client .post (
+            f"{CRM_API_BASE_URL }{_payment_variant_endpoint_path (variant )}",
+            headers =headers ,
+            json ={"tg_id":int (tg_id )},
+            )
+        if response .status_code !=200 :
+            detail =response .text [:240 ]
+            try :
+                payload =response .json ()
+                if isinstance (payload ,dict )and payload .get ("detail")is not None :
+                    detail =str (payload .get ("detail"))
+            except Exception :
+                pass
+            return {"ok":False ,"status_code":response .status_code ,"detail":detail [:240 ]}
+        payload =response .json ()
+        if not isinstance (payload ,dict ):
+            return {"ok":False ,"detail":"invalid backend payload"}
+        payload ["ok"]=True
+        return payload
+    except Exception as e :
+        logger .warning ("Game10 payment create request failed: %s",e .__class__ .__name__ )
+        return {"ok":False ,"detail":e .__class__ .__name__ }
+
+
+async def _create_test_payment_backend (tg_id :int )->dict |None :
+    if not CRM_API_BASE_URL :
+        return None
+    headers =_bot_api_auth_headers ()
+    if not headers :
+        logger .warning ("Test payment backend token missing")
+        return None
+    payload ={
+    "tg_id":int (tg_id ),
+    "product":"game10_test",
+    "amount_rub":int (PAYMENTS_TEST_AMOUNT_RUB ),
+    }
+    try :
+        async with httpx .AsyncClient (timeout =20.0 )as client :
+            response =await client .post (
+            f"{CRM_API_BASE_URL }/api/payments/test/create",
+            headers =headers ,
+            json =payload ,
+            )
+        if response .status_code !=200 :
+            detail =response .text [:240 ]
+            try :
+                payload =response .json ()
+                if isinstance (payload ,dict )and payload .get ("detail")is not None :
+                    detail =str (payload .get ("detail"))
+            except Exception :
+                pass
+            return {"ok":False ,"status_code":response .status_code ,"detail":detail [:240 ]}
+        payload =response .json ()
+        if not isinstance (payload ,dict ):
+            return {"ok":False ,"detail":"invalid backend payload"}
+        payload ["ok"]=True
+        return payload
+    except Exception as e :
+        logger .warning ("Test payment create request failed: %s",e .__class__ .__name__ )
+        return {"ok":False ,"detail":e .__class__ .__name__ }
+
+
+async def _check_game10_payment_status_backend (payment_id :str ,*,tg_id :int |None =None )->dict |None :
+    payment_id =str (payment_id or "").strip ()
+    if not payment_id or not CRM_API_BASE_URL :
+        return None
+    headers =_bot_api_auth_headers ()
+    if not headers :
+        logger .warning ("Game10 payment status backend token missing")
+        return None
+    try :
+        async with httpx .AsyncClient (timeout =20.0 )as client :
+            response =await client .post (
+            f"{CRM_API_BASE_URL }/api/payments/yookassa/status",
+            headers =headers ,
+            json ={"payment_id":payment_id ,"tg_id":int (tg_id )}if tg_id else {"payment_id":payment_id },
+            )
+        if response .status_code !=200:
+            detail =response .text [:240 ]
+            try :
+                payload =response .json ()
+                if isinstance (payload ,dict )and payload .get ("detail")is not None :
+                    detail =str (payload .get ("detail"))
+            except Exception :
+                pass
+            return {"ok":False ,"status_code":response .status_code ,"detail":detail [:240 ]}
+        payload =response .json ()
+        if not isinstance (payload ,dict ):
+            return {"ok":False ,"detail":"invalid backend payload"}
+        payload ["ok"]=True
+        return payload
+    except Exception as e :
+        logger .warning ("Game10 payment status request failed: %s",e .__class__ .__name__ )
+        return {"ok":False ,"detail":e .__class__ .__name__ }
+
+
+async def _send_reply_keyboard_remove (update :Update ,context :ContextTypes .DEFAULT_TYPE )->None :
+    chat =update .effective_chat
+    if chat is None :
+        return
+    try :
+        await _send (context .bot ,chat_id =chat .id ,text ="\u200b",reply_markup =get_remove_reply_kb ())
+    except Exception :
+        return
+
+
+async def _send_game10_payment_qr_and_screen (
+update :Update ,
+context :ContextTypes .DEFAULT_TYPE ,
+*,
+confirmation_url :str ,
+payment_id :str ,
+amount_rub :int ,
+variant :str =PAYMENT_VARIANT_MAIN ,
+)->None :
+    chat =update .effective_chat
+    if chat is None :
+        return
+    pay_kb =get_game10_payment_link_kb (
+    confirmation_url ,
+    refresh_callback_data =_payment_variant_refresh_callback (variant ),
+    check_callback_data =_payment_check_callback_data (payment_id ),
+    )
+    caption =(
+    f"\u041e\u043f\u043b\u0430\u0442\u0438\u0442\u0435 {amount_rub} \u20bd. \u041f\u043e\u0441\u043b\u0435 \u043e\u043f\u043b\u0430\u0442\u044b \u0434\u043e\u0441\u0442\u0443\u043f \u043e\u0442\u043a\u0440\u043e\u0435\u0442\u0441\u044f \u0430\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0447\u0435\u0441\u043a\u0438.\n"
+    "\u041f\u043e\u0441\u043b\u0435 \u043e\u043f\u043b\u0430\u0442\u044b \u0431\u043e\u0442 \u043f\u0440\u0438\u0448\u043b\u0435\u0442 \u043a\u043d\u043e\u043f\u043a\u0443 \u0434\u043b\u044f \u0432\u0441\u0442\u0443\u043f\u043b\u0435\u043d\u0438\u044f \u0432 \u0437\u0430\u043a\u0440\u044b\u0442\u044b\u0439 \u043a\u0430\u043d\u0430\u043b."
+    )
+    await _delete_last_game10_payment_ui_message (update ,context )
+    qr =_build_qr_png (confirmation_url )
+    if qr is not None :
+        sent =await _send_photo (context .bot ,chat .id ,qr ,caption =caption ,reply_markup =pay_kb )
+    else :
+        sent =await _send (context .bot ,chat_id =chat .id ,text =caption ,reply_markup =pay_kb )
+    _store_last_game10_payment_ui_state (
+    context ,
+    payment_id =payment_id ,
+    confirmation_url =confirmation_url ,
+    variant =variant ,
+    message_id =getattr (sent ,"message_id",None ),
+    )
+
+
+async def _request_payment_contact_screen (update :Update ,context :ContextTypes .DEFAULT_TYPE ,*,variant :str )->None :
+    _start_payment_contact_flow_state (context ,variant =_payment_variant_normalized (variant ))
+    await _show_screen (
+    update ,
+    context ,
+    PAYMENT_NEED_CONTACT_SCREEN ,
+    reply_markup =get_payment_contact_choice_kb (),
+    )
+
+
+async def _run_game10_payment_create_flow (
+update :Update ,
+context :ContextTypes .DEFAULT_TYPE ,
+*,
+variant :str |None =None ,
+refresh_hint :bool =False ,
+)->None :
+    user =update .effective_user
+    if user is None :
+        return
+    payment_variant =_payment_variant_normalized (variant or context .user_data .get (PAYMENT_VARIANT_KEY ))
+    context .user_data [PAYMENT_VARIANT_KEY ]=payment_variant
+    await _show_screen (
+    update ,
+    context ,
+    PAYMENT_EXPIRED_HINT if refresh_hint else PAYMENT_CREATING_SCREEN ,
+    reply_markup =_game10_kb_for_update (update ),
+    )
+    result =await _create_game10_payment_backend (user .id ,variant =payment_variant )
+    if not isinstance (result ,dict )or not result .get ("ok"):
+        if _payment_backend_need_contact (result ):
+            await _request_payment_contact_screen (update ,context ,variant =payment_variant )
+            return
+        _clear_payment_contact_flow (context )
+        await _show_screen (
+        update ,
+        context ,
+        "Сейчас не удалось создать платёж. Попробуйте ещё раз через минуту или нажмите «Связаться с менеджером».",
+        reply_markup =_game10_kb_for_update (update ),
+        )
+        return
+    _clear_payment_contact_flow (context )
+    confirmation_url =str (result .get ("confirmation_url")or "").strip ()
+    payment_id =str (result .get ("payment_id")or "").strip ()
+    context .user_data ["last_payment_id"]=payment_id
+    amount_rub =int (result .get ("amount_rub")or 5000 )
+    if not confirmation_url :
+        _clear_payment_contact_flow (context )
+        await _show_screen (
+        update ,
+        context ,
+        "Платёж создан, но ссылка оплаты не получена. Нажмите «Связаться с менеджером».",
+        reply_markup =_game10_kb_for_update (update ),
+        )
+        return
+    await _send_game10_payment_qr_and_screen (
+    update ,
+    context ,
+    confirmation_url =confirmation_url ,
+    payment_id =payment_id ,
+    amount_rub =amount_rub ,
+    variant =payment_variant ,
+    )
+
+
+def _build_qr_png (value :str )->BytesIO |None :
+    if not value :
+        return None
+    if qrcode is None :
+        return None
+    try :
+        img =qrcode .make (value )
+        buf =BytesIO ()
+        img .save (buf ,format ="PNG")
+        buf .seek (0 )
+        buf .name ="game10_payment_qr.png"
+        return buf
+    except Exception as e :
+        logger .warning ("QR generation failed: %s",e .__class__ .__name__ )
+        return None
 
 
 async def _answer (query :CallbackQuery ,text :str |None =None ,**kwargs ):
@@ -285,9 +758,57 @@ async def _get_private_channel_payload (tg_id :int )->dict |None :
     return await _fetch_private_channel_local (tg_id )
 
 
+async def _is_private_channel_paid_local (tg_id :int )->bool :
+    try :
+        db .init_db ()
+        async with db .async_session ()as session :
+            crm_service =CRMService (session )
+            result =await crm_service .is_private_channel_paid (tg_id )
+            await session .commit ()
+            return bool (result )
+    except Exception as e :
+        logger .warning ("Private channel paid check failed: %s",e .__class__ .__name__ )
+        return False
+
+
+async def _get_last_game10_payment_local (tg_id :int )->dict |None :
+    try :
+        db .init_db ()
+        async with db .async_session ()as session :
+            row =await session .execute (
+            select (YooKassaPayment )
+            .where (YooKassaPayment .tg_id ==tg_id )
+            .where (YooKassaPayment .product =="game10")
+            .order_by (YooKassaPayment .created_at .desc ())
+            .limit (1 )
+            )
+            item =row .scalar_one_or_none ()
+            user_row =await session .execute (
+            select (User .email ,User .phone )
+            .where (User .tg_id ==tg_id )
+            .limit (1 )
+            )
+            user_map =user_row .mappings ().first ()
+            await session .commit ()
+            if item is None :
+                return None
+            return {
+            "payment_id":str (item .payment_id or ""),
+            "product":str (item .product or ""),
+            "status":str (item .status or ""),
+            "created_at":item .created_at ,
+            "paid_at":item .paid_at ,
+            "has_email":bool ((user_map or {}).get ("email")),
+            "has_phone":bool ((user_map or {}).get ("phone")),
+            }
+    except Exception as e :
+        logger .warning ("Game10 payment debug lookup failed: %s",e .__class__ .__name__ )
+        return None
+
+
 def _short_text (value :str |None ,limit :int =420 )->str :
     if not value :
-        return "РћРїРёСЃР°РЅРёРµ РЅРµ СѓРєР°Р·Р°РЅРѕ."
+        return "Описание не указано."
     text =normalize_text_for_telegram (value )or value 
     if len (text )<=limit :
         return text 
@@ -297,83 +818,135 @@ def _short_text (value :str |None ,limit :int =420 )->str :
 def _format_catalog_price (price_value )->str :
     try :
         if price_value is None :
-            return "Р¦РµРЅР° РїРѕ Р·Р°РїСЂРѕСЃСѓ"
+            return "Цена по запросу"
         price =int (float (price_value ))
         if price <=0 :
-            return "Р‘РµСЃРїР»Р°С‚РЅРѕ"
-        return f"{price } в‚Ѕ"
+            return "Бесплатно"
+        return f"{price } \u20bd"
     except Exception :
-        return "Р¦РµРЅР° РїРѕ Р·Р°РїСЂРѕСЃСѓ"
+        return "Цена по запросу"
 
 
 def _format_catalog_item_card (item :CatalogItem )->str :
-    title =normalize_text_for_telegram (item .title )or "Р‘РµР· РЅР°Р·РІР°РЅРёСЏ"
+    title =normalize_text_for_telegram (item .title )or "Без названия"
     description =_short_text (item .description )
     price_text =_format_catalog_price (item .price )
     return (
     f"{title }\n"
-    f"рџ’і {price_text }\n\n"
+    f"\u0426\u0435\u043d\u0430: {price_text }\n\n"
     f"{description }"
     )
 
 GESTALT_SHORT_SCREEN_1 =(
-"🧠 *Гештальт-терапия*\n\n"
-"Помогает:\n"
-"• лучше понимать свои чувства\n"
-"• снижать внутреннее напряжение\n"
-"• жить осознанно «здесь и сейчас»\n\n"
-"Это про живой контакт с собой и людьми,\n"
-"а не про советы «как правильно»."
+"*\u0413\u0435\u0448\u0442\u0430\u043b\u044c\u0442-\u0442\u0435\u0440\u0430\u043f\u0438\u044f*\n\n"
+"\u041f\u043e\u043c\u043e\u0433\u0430\u0435\u0442:\n"
+"- \u043b\u0443\u0447\u0448\u0435 \u043f\u043e\u043d\u0438\u043c\u0430\u0442\u044c \u0441\u0432\u043e\u0438 \u0447\u0443\u0432\u0441\u0442\u0432\u0430\n"
+"- \u0441\u043d\u0438\u0436\u0430\u0442\u044c \u0432\u043d\u0443\u0442\u0440\u0435\u043d\u043d\u0435\u0435 \u043d\u0430\u043f\u0440\u044f\u0436\u0435\u043d\u0438\u0435\n"
+"- \u0436\u0438\u0442\u044c \u043e\u0441\u043e\u0437\u043d\u0430\u043d\u043d\u043e."
 )
 
 GESTALT_SHORT_SCREEN_2 =(
-"🎓 *Форматы и цены*\n\n"
-"👤 *Индивидуальная терапия*\n"
-"Личное пространство для работы с собой.\n"
-"💰 Цена: *уточняется при записи*\n\n"
-"👥 *Групповая терапия*\n"
-"Безопасная группа для поддержки и опыта.\n"
-"💰 Цена: *уточняется при записи*\n\n"
-"В процессе вы:\n"
-"– лучше понимаете себя\n"
-"– учитесь выстраивать границы\n"
-"– становитесь свободнее и честнее"
+"*\u0424\u043e\u0440\u043c\u0430\u0442\u044b \u0438 \u0446\u0435\u043d\u044b*\n\n"
+"*\u0418\u043d\u0434\u0438\u0432\u0438\u0434\u0443\u0430\u043b\u044c\u043d\u0430\u044f \u0442\u0435\u0440\u0430\u043f\u0438\u044f*\n"
+"\u041b\u0438\u0447\u043d\u043e\u0435 \u043f\u0440\u043e\u0441\u0442\u0440\u0430\u043d\u0441\u0442\u0432\u043e \u0434\u043b\u044f \u0440\u0430\u0431\u043e\u0442\u044b \u0441 \u0441\u043e\u0431\u043e\u0439.\n"
+"\u0426\u0435\u043d\u0430: *\u0443\u0442\u043e\u0447\u043d\u044f\u0435\u0442\u0441\u044f \u043f\u0440\u0438 \u0437\u0430\u043f\u0438\u0441\u0438*\n\n"
+"*\u0413\u0440\u0443\u043f\u043f\u043e\u0432\u0430\u044f \u0442\u0435\u0440\u0430\u043f\u0438\u044f*\n"
+"\u0411\u0435\u0437\u043e\u043f\u0430\u0441\u043d\u0430\u044f \u0433\u0440\u0443\u043f\u043f\u0430 \u0434\u043b\u044f \u043f\u043e\u0434\u0434\u0435\u0440\u0436\u043a\u0438 \u0438 \u043e\u043f\u044b\u0442\u0430.\n"
+"\u0426\u0435\u043d\u0430: *\u0443\u0442\u043e\u0447\u043d\u044f\u0435\u0442\u0441\u044f \u043f\u0440\u0438 \u0437\u0430\u043f\u0438\u0441\u0438*."
 )
 
 ASSISTANT_GREETING =(
-"Здравствуйте, я ассистент Ренаты Минаковой, какой у Вас вопрос?"
+"\u0417\u0434\u0440\u0430\u0432\u0441\u0442\u0432\u0443\u0439\u0442\u0435, \u044f \u0430\u0441\u0441\u0438\u0441\u0442\u0435\u043d\u0442 \u0420\u0435\u043d\u0430\u0442\u044b \u041c\u0438\u043d\u0430\u043a\u043e\u0432\u043e\u0439. \u041a\u0430\u043a\u043e\u0439 \u0443 \u0432\u0430\u0441 \u0432\u043e\u043f\u0440\u043e\u0441?"
 )
 
 COURSE_ASSISTANT_GREETING =(
-"Здравствуйте, я ассистент Ренаты Минаковой. Задайте вопросы о курсе — я расскажу программу, кому подойдет и как записаться.\n\n"
-"Примеры вопросов:\n"
-"• Какая программа курса?\n"
-"• Кому подойдет курс и как записаться?"
+"\u0417\u0434\u0440\u0430\u0432\u0441\u0442\u0432\u0443\u0439\u0442\u0435, \u044f \u0430\u0441\u0441\u0438\u0441\u0442\u0435\u043d\u0442 \u0420\u0435\u043d\u0430\u0442\u044b \u041c\u0438\u043d\u0430\u043a\u043e\u0432\u043e\u0439. \u0417\u0430\u0434\u0430\u0439\u0442\u0435 \u0432\u043e\u043f\u0440\u043e\u0441\u044b \u043e \u043a\u0443\u0440\u0441\u0435, \u044f \u0440\u0430\u0441\u0441\u043a\u0430\u0436\u0443 \u043f\u0440\u043e\u0433\u0440\u0430\u043c\u043c\u0443, \u043a\u043e\u043c\u0443 \u043f\u043e\u0434\u043e\u0439\u0434\u0435\u0442 \u0438 \u043a\u0430\u043a \u0437\u0430\u043f\u0438\u0441\u0430\u0442\u044c\u0441\u044f.\n\n"
+"\u041f\u0440\u0438\u043c\u0435\u0440\u044b \u0432\u043e\u043f\u0440\u043e\u0441\u043e\u0432:\n"
+"- \u041a\u0430\u043a\u0430\u044f \u043f\u0440\u043e\u0433\u0440\u0430\u043c\u043c\u0430 \u043a\u0443\u0440\u0441\u0430?\n"
+"- \u041a\u043e\u043c\u0443 \u043f\u043e\u0434\u043e\u0439\u0434\u0435\u0442 \u043a\u0443\u0440\u0441 \u0438 \u043a\u0430\u043a \u0437\u0430\u043f\u0438\u0441\u0430\u0442\u044c\u0441\u044f?"
 )
 
 ONLINE_COURSES_TEXT =(
-"Почему я хожу по кругу? Как выйти из детских сценариев, которые управляют вами\n\n"
-"\"Чувствуешь вину, когда отдыхаешь?\"\n"
-"\"Постоянно спасаешь подруг, а о тебе никто не помнит?\"\n"
-"\"В ссорах всегда оказываешься крайним?\"\n"
-"Это не твой характер. Это роль \"Козла отпущения\" или \"Героя\", которую тебе навязали в 5 лет. Узнай, как её снять, на лекции-практикуме."
+"\u0410\u0432\u0442\u043e\u0440\u0441\u043a\u0438\u0439 \u043a\u0443\u0440\u0441 \u043b\u0435\u043a\u0446\u0438\u0439 \u043e \u043b\u0438\u0447\u043d\u043e\u043c \u0440\u043e\u0441\u0442\u0435 \u0438 \u0441\u0446\u0435\u043d\u0430\u0440\u0438\u044f\u0445 \u043f\u043e\u0432\u0435\u0434\u0435\u043d\u0438\u044f.\n\n"
+"\u0412\u044b \u043f\u043e\u043b\u0443\u0447\u0438\u0442\u0435 \u0441\u0442\u0440\u0443\u043a\u0442\u0443\u0440\u043d\u0443\u044e \u043f\u0440\u043e\u0433\u0440\u0430\u043c\u043c\u0443 \u0438 \u043f\u0440\u0430\u043a\u0442\u0438\u0447\u0435\u0441\u043a\u0438\u0435 \u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442\u044b."
 )
 
-GAME10_SCREEN_TEXT =(
-"🔥 *«Игра 10:0»*\n\n"
-"Ты в закрытом сообществе «Игра 10:0». Здесь ты начнёшь действовать и побеждать. "
-"Ты получишь распаковку своей супер-силы в отношениях, карьере, бизнесе, здоровье. "
-"Это не просто «поддержка» и «разговоры». А жесткая, но бережная методология, собранная "
-"из системной психологии и нейропрактик."
-)
+GAME10_SCREEN_TEXT ="""\u00ab\u0418\u0433\u0440\u0430 10:0\u00bb
+
+\u0422\u044b \u0432 \u0437\u0430\u043a\u0440\u044b\u0442\u043e\u043c \u0441\u043e\u043e\u0431\u0449\u0435\u0441\u0442\u0432\u0435 \u00ab\u0418\u0433\u0440\u0430 10:0\u00bb. \u0417\u0434\u0435\u0441\u044c \u0442\u044b \u043d\u0430\u0447\u043d\u0435\u0448\u044c \u0434\u0435\u0439\u0441\u0442\u0432\u043e\u0432\u0430\u0442\u044c \u0438 \u043f\u043e\u0431\u0435\u0436\u0434\u0430\u0442\u044c. \u0422\u044b \u043f\u043e\u043b\u0443\u0447\u0438\u0448\u044c \u0440\u0430\u0441\u043f\u0430\u043a\u043e\u0432\u043a\u0443 \u0441\u0432\u043e\u0435\u0439 \u0441\u0443\u043f\u0435\u0440-\u0441\u0438\u043b\u044b \u0432 \u043e\u0442\u043d\u043e\u0448\u0435\u043d\u0438\u044f\u0445, \u043a\u0430\u0440\u044c\u0435\u0440\u0435, \u0431\u0438\u0437\u043d\u0435\u0441\u0435 \u0438 \u0437\u0434\u043e\u0440\u043e\u0432\u044c\u0435.
+\u042d\u0442\u043e \u0431\u0435\u0440\u0435\u0436\u043d\u0430\u044f \u043c\u0435\u0442\u043e\u0434\u043e\u043b\u043e\u0433\u0438\u044f \u0441\u043e\u0431\u0440\u0430\u043d\u043d\u0430\u044f \u0438\u0437 \u0441\u0438\u0441\u0442\u0435\u043c\u043d\u043e\u0439 \u043f\u0441\u0438\u0445\u043e\u043b\u043e\u0433\u0438\u0438 \u0438 \u043d\u0435\u0439\u0440\u043e\u043f\u0440\u0430\u043a\u0442\u0438\u043a.
+\u041a\u043e\u0442\u043e\u0440\u0430\u044f \u043f\u043e\u0437\u0432\u043e\u043b\u0438\u0442 \u0442\u0435\u0431\u0435 \u0440\u0430\u0437\u0432\u0438\u0432\u0430\u0442\u044c\u0441\u044f \u0441\u0442\u0430\u0431\u0438\u043b\u044c\u043d\u043e. \u0413\u0430\u0440\u043c\u043e\u043d\u0438\u0447\u043d\u043e \u0441\u0442\u0440\u043e\u0438\u0442\u044c \u043e\u0442\u043d\u043e\u0448\u0435\u043d\u0438\u044f, \u043d\u0430\u043f\u043e\u043b\u043d\u044f\u0442\u044c\u0441\u044f \u044d\u043d\u0435\u0440\u0433\u0438\u0435\u0439, \u0443\u0447\u0430\u0441\u0442\u0432\u043e\u0432\u0430\u0442\u044c \u0432 \u043f\u0440\u044f\u043c\u044b\u0445 \u044d\u0444\u0438\u0440\u0430\u0445 \u0438 \u0440\u0430\u0437\u0431\u043e\u0440\u0430\u0445, \u0441\u043b\u0443\u0448\u0430\u0442\u044c \u043f\u043e\u0434\u043a\u0430\u0441\u0442\u044b, \u043e\u043f\u0440\u0435\u0434\u0435\u043b\u044f\u0442\u044c \u0436\u0435\u043d\u0441\u043a\u0438\u0435 \u0438 \u043f\u0440\u043e\u0444\u0435\u0441\u0441\u0438\u043e\u043d\u0430\u043b\u044c\u043d\u044b\u0435 \u0442\u0440\u0435\u043d\u0434\u044b. \u0418 \u0432\u0441\u0435 \u044d\u0442\u043e \u043f\u0440\u0438 \u0433\u043b\u0443\u0431\u0438\u043d\u043d\u043e\u0439 \u043f\u043e\u0434\u0434\u0435\u0440\u0436\u043a\u0435 \u0420\u0435\u043d\u0430\u0442\u044b, \u043a\u043e\u043c\u0430\u043d\u0434\u044b \u043f\u0441\u0438\u0445\u043e\u043b\u043e\u0433\u043e\u0432 \u0438 \u0434\u0440\u0443\u0433\u0438\u0445 \u044d\u043a\u0441\u043f\u0435\u0440\u0442\u043e\u0432. \u0412\u0441\u0435 \u0432 \u044d\u0442\u043e\u043c \u043f\u0440\u043e\u0441\u0442\u0440\u0430\u043d\u0441\u0442\u0432\u0435 \u0443\u0441\u0442\u0440\u043e\u0435\u043d\u043e \u0442\u0430\u043a, \u0447\u0442\u043e \u0442\u044b \u0431\u0443\u0434\u0435\u0448\u044c \u0441 \u0437\u0430\u0431\u043e\u0442\u043e\u0439 \u043d\u0430 \u043a\u0430\u0436\u0434\u043e\u043c \u044d\u0442\u0430\u043f\u0435. \u042f \u0437\u043d\u0430\u044e \u0447\u0442\u043e \u0442\u044b \u0443\u0441\u0442\u0430\u043b\u0430 \u0431\u044b\u0442\u044c \u043e\u0442\u0432\u0435\u0442\u0441\u0442\u0432\u0435\u043d\u043d\u043e\u0439 \u0438 \u043f\u043e\u044d\u0442\u043e\u043c\u0443 \u043c\u044b \u0441\u0434\u0435\u043b\u0430\u043b\u0438 \u0432\u0441\u0451, \u0447\u0442\u043e\u0431\u044b \u0442\u0435\u0431\u0435 \u0431\u044b\u043b\u043e \u043b\u0435\u0433\u043a\u043e \u043c\u0435\u043d\u044f\u0442\u044c\u0441\u044f.
+"""
 
 GAME10_ASSISTANT_GREETING =(
-"*Задайте вопрос про «Игра 10:0»*\n"
-"Например:\n"
-"• С чего начать в «Игра 10:0»?\n"
-"• Что я получу в клубе?\n"
-"• Как проходит работа и поддержка?"
+"\u0417\u0430\u0434\u0430\u0439\u0442\u0435 \u0432\u043e\u043f\u0440\u043e\u0441 \u043f\u0440\u043e \u00ab\u0418\u0433\u0440\u0430 10:0\u00bb.\n"
+"\u041d\u0430\u043f\u0440\u0438\u043c\u0435\u0440:\n"
+"- \u0421 \u0447\u0435\u0433\u043e \u043d\u0430\u0447\u0430\u0442\u044c \u0432 \u00ab\u0418\u0433\u0440\u0430 10:0\u00bb?\n"
+"- \u0427\u0442\u043e \u044f \u043f\u043e\u043b\u0443\u0447\u0443 \u0432 \u0441\u043e\u043e\u0431\u0449\u0435\u0441\u0442\u0432\u0435?\n"
+"- \u041a\u0430\u043a \u043f\u0440\u043e\u0445\u043e\u0434\u0438\u0442 \u0440\u0430\u0431\u043e\u0442\u0430 \u0438 \u043f\u043e\u0434\u0434\u0435\u0440\u0436\u043a\u0430?"
 )
+
+
+GAME10_DESCRIPTION_SCREEN_TEXT ="""\u0424\u043e\u0440\u043c\u0430\u0442 \u0440\u0430\u0431\u043e\u0442\u044b: 4 \u043d\u0435\u0434\u0435\u043b\u0438, 4 \u0442\u0435\u043c\u0430\u0442\u0438\u0447\u0435\u0441\u043a\u0438\u0445 \u0431\u043b\u043e\u043a\u0430. \u041e\u0442\u043d\u043e\u0448\u0435\u043d\u0438\u044f, \u0434\u0435\u043d\u044c\u0433\u0438, \u044d\u043d\u0435\u0440\u0433\u0438\u044f, \u0442\u0430\u043b\u0430\u043d\u0442\u044b.
+
+\u0427\u0442\u043e \u0432\u044b \u043f\u043e\u043b\u0443\u0447\u0438\u0442\u0435:
+\u2022 \u041f\u043e\u043d\u044f\u0442\u043d\u044b\u0435 \u0437\u043d\u0430\u043d\u0438\u044f \u043f\u043e \u044d\u0442\u0438\u043c \u0442\u0435\u043c\u0430\u043c \u2014 \u043d\u0438\u043a\u0430\u043a\u043e\u0439 \u0432\u043e\u0434\u044b, \u0442\u043e\u043b\u044c\u043a\u043e \u0442\u043e, \u0447\u0442\u043e \u0440\u0430\u0431\u043e\u0442\u0430\u0435\u0442
+\u2022 \u0427\u0451\u0442\u043a\u0438\u0435 \u0438\u043d\u0441\u0442\u0440\u0443\u043a\u0446\u0438\u0438, \u043a\u0430\u043a \u043d\u0430\u043b\u0430\u0434\u0438\u0442\u044c \u0436\u0438\u0437\u043d\u044c \u0432 \u044d\u0442\u0438\u0445 \u0447\u0435\u0442\u044b\u0440\u0451\u0445 \u0441\u0444\u0435\u0440\u0430\u0445
+\u2022 \u041c\u0430\u0442\u0435\u0440\u0438\u0430\u043b\u044b, \u043a\u043e\u0442\u043e\u0440\u044b\u0435 \u043e\u0441\u0442\u0430\u043d\u0443\u0442\u0441\u044f \u0441 \u0432\u0430\u043c\u0438 \u2014 \u0441\u043c\u043e\u0436\u0435\u0442\u0435 \u043f\u0435\u0440\u0435\u0441\u043c\u0430\u0442\u0440\u0438\u0432\u0430\u0442\u044c \u0438 \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u044c\u0441\u044f
+\u2022 \u0414\u043b\u044f \u043f\u0441\u0438\u0445\u043e\u043b\u043e\u0433\u043e\u0432 \u2014 \u043d\u043e\u0432\u044b\u0435 \u0440\u0430\u0431\u043e\u0447\u0438\u0435 \u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442\u044b
+
+\u041a\u0442\u043e \u0432\u0435\u0434\u0451\u0442: \u042f, \u0420\u0435\u043d\u0430\u0442\u0430 \u041c\u0438\u043d\u0430\u043a\u043e\u0432\u0430.
+25 \u043b\u0435\u0442 \u043e\u043f\u044b\u0442\u0430. \u0418 \u043a\u043e\u043c\u0430\u043d\u0434\u0430 \u0434\u0438\u043f\u043b\u043e\u043c\u0438\u0440\u043e\u0432\u0430\u043d\u043d\u044b\u0445 \u0441\u043f\u0435\u0446\u0438\u0430\u043b\u0438\u0441\u0442\u043e\u0432, \u043a\u043e\u0442\u043e\u0440\u044b\u0435 \u043f\u043e\u043c\u043e\u0433\u0430\u044e\u0442 \u0443\u0447\u0430\u0441\u0442\u043d\u0438\u0446\u0430\u043c.
+
+\u042d\u0442\u043e \u0443\u043d\u0438\u043a\u0430\u043b\u044c\u043d\u0430\u044f \u0438\u043d\u0444\u043e\u0440\u043c\u0430\u0446\u0438\u044f, \u043a\u043e\u0442\u043e\u0440\u043e\u0439 \u0431\u043e\u043b\u044c\u0448\u0435 \u043d\u0438\u0433\u0434\u0435 \u043d\u0435\u0442. \u041e\u043d\u0430 \u043f\u043e\u0441\u0442\u0440\u043e\u0435\u043d\u0430 \u043d\u0430 \u0441\u0438\u0441\u0442\u0435\u043c\u043d\u043e\u043c \u043f\u043e\u0434\u0445\u043e\u0434\u0435.
+
+\u0420\u0430\u0437\u0431\u0435\u0440\u0451\u043c:
+\u2022 \u0427\u0442\u043e \u0432\u043b\u0438\u044f\u0435\u0442 \u043d\u0430 \u0443\u0440\u043e\u0432\u0435\u043d\u044c \u044d\u043d\u0435\u0440\u0433\u0438\u0438, \u043e\u0442\u043a\u0443\u0434\u0430 \u0441\u0438\u043b\u044b \u0431\u0435\u0440\u0443\u0442\u0441\u044f \u0438 \u043a\u0443\u0434\u0430 \u0443\u0445\u043e\u0434\u044f\u0442
+\u2022 \u041a\u0430\u043a \u0437\u0430\u043a\u043e\u043d\u0447\u0438\u0442\u044c \u043e\u0442\u043d\u043e\u0448\u0435\u043d\u0438\u044f, \u043a\u043e\u0442\u043e\u0440\u044b\u0435 \u0432\u0430\u0441 \u043e\u0431\u0435\u0441\u0442\u043e\u0447\u0438\u0432\u0430\u044e\u0442
+\u2022 \u041a\u0430\u043a \u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c \u0441\u0432\u044f\u0437\u044c \u0441 \u0440\u043e\u0434\u043e\u043c \u0438 \u0447\u0443\u0432\u0441\u0442\u0432\u043e\u0432\u0430\u0442\u044c \u043f\u043e\u0434\u0434\u0435\u0440\u0436\u043a\u0443
+\u2022 \u041a\u0430\u043a \u0440\u0430\u0431\u043e\u0442\u0430\u0442\u044c \u0441 \u0440\u043e\u0434\u043e\u0432\u044b\u043c\u0438 \u043f\u0440\u043e\u0433\u0440\u0430\u043c\u043c\u0430\u043c\u0438 (\u0434\u0435\u043d\u0435\u0436\u043d\u044b\u0435 \u0431\u043b\u043e\u043a\u0438, \u0431\u043e\u043b\u0435\u0437\u043d\u0438 \u0434\u0435\u0442\u0435\u0439, \u043f\u0440\u043e\u0431\u043b\u0435\u043c\u044b \u0432 \u043b\u0438\u0447\u043d\u043e\u0439 \u0436\u0438\u0437\u043d\u0438 \u0438 \u0434\u0440\u0443\u0433\u043e\u0435)
+
+\u041b\u0435\u043a\u0446\u0438\u0438 \u0438 \u043f\u043e\u0434\u043a\u0430\u0441\u0442\u044b, \u0433\u0434\u0435 \u0432\u044b \u043f\u043e\u043b\u0443\u0447\u0438\u0442\u0435:
+\u2022 \u0420\u0430\u0437\u0431\u043e\u0440 \u0432\u0430\u0448\u0438\u0445 \u0441\u0446\u0435\u043d\u0430\u0440\u0438\u0435\u0432 \u2014 \u043f\u043e\u0447\u0435\u043c\u0443 \u0432\u044b \u043f\u043e\u043f\u0430\u0434\u0430\u0435\u0442\u0435 \u0432 \u043e\u0434\u043d\u0438 \u0438 \u0442\u0435 \u0436\u0435 \u0438\u0441\u0442\u043e\u0440\u0438\u0438
+\u2022 \u041a\u0430\u043a \u043f\u043e\u043c\u0435\u043d\u044f\u0442\u044c \u0436\u0438\u0437\u043d\u0435\u043d\u043d\u044b\u0439 \u0441\u0446\u0435\u043d\u0430\u0440\u0438\u0439, \u043a\u043e\u0442\u043e\u0440\u044b\u0439 \u043c\u0435\u0448\u0430\u0435\u0442
+\u2022 \u041f\u0440\u043e\u0441\u0442\u044b\u0435 \u0442\u0435\u0445\u043d\u0438\u043a\u0438 \u0438\u0437 \u043d\u0435\u0439\u0440\u043e\u043b\u0438\u043d\u0433\u0432\u0438\u0441\u0442\u0438\u0447\u0435\u0441\u043a\u043e\u0433\u043e \u043f\u0440\u043e\u0433\u0440\u0430\u043c\u043c\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u044f (\u041d\u041b\u041f) \u0434\u043b\u044f \u0440\u0430\u0431\u043e\u0442\u044b \u0441 \u0441\u043e\u0431\u043e\u0439
+
+\u0414\u043b\u044f \u043f\u0441\u0438\u0445\u043e\u043b\u043e\u0433\u043e\u0432:
+\u2022 \u041a\u0430\u043a \u0440\u0430\u0431\u043e\u0442\u0430\u0442\u044c \u0441\u043e \u0441\u0446\u0435\u043d\u0430\u0440\u0438\u044f\u043c\u0438 \u043a\u043b\u0438\u0435\u043d\u0442\u043e\u0432
+\u2022 \u041a\u0430\u043a \u043f\u0440\u0438\u043c\u0435\u043d\u044f\u0442\u044c \u0441\u043a\u0430\u0437\u043a\u043e\u0442\u0435\u0440\u0430\u043f\u0438\u044e \u0432 \u043f\u0440\u0430\u043a\u0442\u0438\u043a\u0435
+
+\u2014
+\u2022 \u041a\u0430\u043a \u0443\u0441\u0442\u0440\u043e\u0435\u043d \u043d\u0430\u0448 \u043c\u043e\u0437\u0433, \u043a\u043e\u0433\u0434\u0430 \u043c\u044b \u0431\u0435\u0440\u0451\u043c\u0441\u044f \u0437\u0430 \u043d\u043e\u0432\u043e\u0435 \u0434\u0435\u043b\u043e
+\u2022 \u041f\u0440\u043e\u043a\u0440\u0430\u0441\u0442\u0438\u043d\u0430\u0446\u0438\u044f \u0441 \u0442\u043e\u0447\u043a\u0438 \u0437\u0440\u0435\u043d\u0438\u044f \u0440\u0430\u0431\u043e\u0442\u044b \u043c\u043e\u0437\u0433\u0430 \u2014 \u043f\u043e\u0447\u0435\u043c\u0443 \u043c\u044b \u043e\u0442\u043a\u043b\u0430\u0434\u044b\u0432\u0430\u0435\u043c \u0438 \u043a\u0430\u043a \u0441 \u044d\u0442\u0438\u043c \u0431\u044b\u0442\u044c
+\u2022 \u0422\u0440\u0435\u0432\u043e\u0433\u0430 \u0438 \u043f\u0430\u043d\u0438\u0447\u0435\u0441\u043a\u0438\u0435 \u0430\u0442\u0430\u043a\u0438 \u2014 \u0447\u0442\u043e \u043f\u0440\u043e\u0438\u0441\u0445\u043e\u0434\u0438\u0442 \u0438 \u043a\u0430\u043a \u043f\u043e\u043c\u043e\u0447\u044c \u0441\u0435\u0431\u0435 \u043f\u0440\u044f\u043c\u043e \u0441\u0435\u0439\u0447\u0430\u0441
+\u2022 \u041f\u0440\u043e\u0441\u0442\u044b\u0435 \u0441\u043f\u043e\u0441\u043e\u0431\u044b \u0441\u0430\u043c\u043e\u043f\u043e\u043c\u043e\u0449\u0438, \u043a\u043e\u0433\u0434\u0430 \u043d\u0430\u043a\u0440\u044b\u0432\u0430\u0435\u0442 \u0442\u0440\u0435\u0432\u043e\u0433\u0430, \u043f\u0430\u043c\u044f\u0442\u043a\u0438 \u0438 \u0440\u0435\u043a\u043e\u043c\u0435\u043d\u0434\u0430\u0446\u0438\u0438
+
+\u0414\u043b\u044f \u043f\u0441\u0438\u0445\u043e\u043b\u043e\u0433\u043e\u0432:
+\u2022 \u0413\u043e\u0442\u043e\u0432\u044b\u0435 \u0441\u0445\u0435\u043c\u044b \u0440\u0430\u0431\u043e\u0442\u044b \u0441 \u0442\u0440\u0435\u0432\u043e\u0436\u043d\u044b\u043c\u0438 \u0441\u043e\u0441\u0442\u043e\u044f\u043d\u0438\u044f\u043c\u0438 \u0438 \u043f\u0430\u043d\u0438\u0447\u0435\u0441\u043a\u0438\u043c\u0438 \u0430\u0442\u0430\u043a\u0430\u043c\u0438
+
+\u2014
+\u2022 \u041a\u0430\u043a \u0442\u0440\u0430\u0432\u043c\u0430 \u043f\u0440\u043e\u044f\u0432\u043b\u044f\u0435\u0442\u0441\u044f \u0443 \u0432\u0437\u0440\u043e\u0441\u043b\u044b\u0445 \u0438 \u043a\u0430\u043a \u0441\u0435\u0431\u044f \u043f\u043e\u0434\u0434\u0435\u0440\u0436\u0430\u0442\u044c
+\u2022 \u041a\u0430\u043a \u0442\u0440\u0430\u0432\u043c\u0430 \u0432\u043b\u0438\u044f\u0435\u0442 \u043d\u0430 \u0431\u043b\u0438\u0437\u043a\u0438\u0445, \u0434\u0435\u043d\u044c\u0433\u0438, \u044d\u043d\u0435\u0440\u0433\u0438\u044e, \u0442\u0430\u043b\u0430\u043d\u0442\u044b \u0438 \u043e\u0442\u043d\u043e\u0448\u0435\u043d\u0438\u044f
+\u2022 \u0427\u0442\u043e \u043f\u0440\u043e\u0438\u0441\u0445\u043e\u0434\u0438\u0442 \u0441 \u043f\u043e\u0432\u0435\u0434\u0435\u043d\u0438\u0435\u043c \u0438 \u044d\u043c\u043e\u0446\u0438\u044f\u043c\u0438, \u0435\u0441\u043b\u0438 \u0435\u0441\u0442\u044c \u043d\u0435\u043f\u0440\u043e\u0440\u0430\u0431\u043e\u0442\u0430\u043d\u043d\u0430\u044f \u0442\u0440\u0430\u0432\u043c\u0430
+
+\u0414\u043b\u044f \u043f\u0441\u0438\u0445\u043e\u043b\u043e\u0433\u043e\u0432:
+\u2022 \u041e\u0441\u043e\u0431\u0435\u043d\u043d\u043e\u0441\u0442\u0438 \u0440\u0430\u0431\u043e\u0442\u044b \u0441 \u0442\u0440\u0430\u0432\u043c\u043e\u0439
+\u2022 \u041a\u0430\u043a \u043f\u0440\u0430\u0432\u0438\u043b\u044c\u043d\u043e \u0432\u0435\u0441\u0442\u0438 \u043a\u043b\u0438\u0435\u043d\u0442\u0430 \u0432 \u0442\u0430\u043a\u0438\u0445 \u0441\u043b\u0443\u0447\u0430\u044f\u0445
+
+\u2014
+\u2022 \u041a\u0430\u043a \u043f\u0440\u043e\u0434\u0432\u0438\u0433\u0430\u0442\u044c\u0441\u044f \u0432 \u043a\u0430\u0440\u044c\u0435\u0440\u0435, \u0447\u0442\u043e\u0431\u044b \u0440\u043e\u0441 \u0434\u043e\u0445\u043e\u0434
+\u2022 \u041a\u0430\u043a \u0440\u0430\u0431\u043e\u0442\u0430\u0442\u044c \u0441 \u0438\u0441\u043a\u0443\u0441\u0441\u0442\u0432\u0435\u043d\u043d\u044b\u043c \u0438\u043d\u0442\u0435\u043b\u043b\u0435\u043a\u0442\u043e\u043c (\u0418\u0418) \u0441\u0435\u0431\u0435 \u0432 \u043f\u043e\u043c\u043e\u0449\u044c
+\u2022 \u041a\u0430\u043a \u0432\u0435\u0441\u0442\u0438 \u0441\u043e\u0446\u0441\u0435\u0442\u0438 \u0438 \u043f\u043e\u043d\u0438\u043c\u0430\u0442\u044c \u0442\u0440\u0435\u043d\u0434\u044b \u2014 \u0434\u043b\u044f \u043b\u0438\u0447\u043d\u043e\u0433\u043e \u0438 \u043f\u0440\u043e\u0444\u0435\u0441\u0441\u0438\u043e\u043d\u0430\u043b\u044c\u043d\u043e\u0433\u043e \u0440\u043e\u0441\u0442\u0430
+\u2022 \u041a\u0430\u043a \u0432\u043e\u0441\u043f\u0438\u0442\u044b\u0432\u0430\u0442\u044c \u0434\u0435\u0442\u0435\u0439 \u0440\u0430\u0437\u043d\u043e\u0433\u043e \u0432\u043e\u0437\u0440\u0430\u0441\u0442\u0430
+\u2022 \u041a\u0430\u043a \u0441\u0435\u043c\u0435\u0439\u043d\u044b\u0435 \u0438 \u0440\u043e\u0434\u043e\u0432\u044b\u0435 \u0441\u0446\u0435\u043d\u0430\u0440\u0438\u0438 \u0432\u043b\u0438\u044f\u044e\u0442 \u043d\u0430 \u043f\u043e\u0432\u0435\u0434\u0435\u043d\u0438\u0435 \u0438 \u0441\u0443\u0434\u044c\u0431\u0443 \u0440\u0435\u0431\u0451\u043d\u043a\u0430
+
+\u0427\u0422\u041e \u0415\u0429\u0415 \u0412\u0410\u0421 \u0416\u0414\u0401\u0422 \u0412 \u0421\u041e\u041e\u0411\u0429\u0415\u0421\u0422\u0412\u0415
+\u2022 \u041c\u0430\u0441\u0442\u0435\u0440-\u043a\u043b\u0430\u0441\u0441\u044b \u0441 \u043f\u0440\u0438\u0433\u043b\u0430\u0448\u0451\u043d\u043d\u044b\u043c\u0438 \u0441\u043f\u0435\u0446\u0438\u0430\u043b\u0438\u0441\u0442\u0430\u043c\u0438 \u0438\u0437 \u0431\u044c\u044e\u0442\u0438-\u0441\u0444\u0435\u0440\u044b
+\u2022 \u041f\u0440\u044f\u043c\u044b\u0435 \u044d\u0444\u0438\u0440\u044b \u0441 \u0420\u0435\u043d\u0430\u0442\u043e\u0439 \u041c\u0438\u043d\u0430\u043a\u043e\u0432\u043e\u0439
+\u2022 \u0412\u0441\u0442\u0440\u0435\u0447\u0438 \u0441 \u044d\u043a\u0441\u043f\u0435\u0440\u0442\u0430\u043c\u0438: \u0432\u0440\u0430\u0447-\u043d\u0435\u0432\u0440\u043e\u043b\u043e\u0433 \u0438 \u0434\u0435\u0442\u0441\u043a\u0438\u0439 \u043f\u0441\u0438\u0445\u043e\u043b\u043e\u0433 \u043e\u0442\u0432\u0435\u0442\u044f\u0442 \u043d\u0430 \u0432\u0430\u0448\u0438 \u0432\u043e\u043f\u0440\u043e\u0441\u044b
+\u2022 \u0421\u043f\u0438\u0441\u043a\u0438 \u043a\u043d\u0438\u0433 \u043f\u043e \u043a\u0430\u0436\u0434\u043e\u0439 \u0442\u0435\u043c\u0435 \u2014 \u0434\u043b\u044f \u0442\u0435\u0445, \u043a\u0442\u043e \u0445\u043e\u0447\u0435\u0442 \u0433\u043b\u0443\u0431\u0436\u0435 \u0438\u0437\u0443\u0447\u0438\u0442\u044c \u0432\u043e\u043f\u0440\u043e\u0441
+\u2022 \u0420\u0430\u0437 \u0432 \u043d\u0435\u0434\u0435\u043b\u044e \u2014 \u0444\u043e\u043a\u0443\u0441-\u0433\u0440\u0443\u043f\u043f\u0430 \u0441 \u0434\u0438\u043f\u043b\u043e\u043c\u0438\u0440\u043e\u0432\u0430\u043d\u043d\u044b\u043c \u043f\u0441\u0438\u0445\u043e\u043b\u043e\u0433\u043e\u043c. \u0412 \u0442\u0451\u043f\u043b\u043e\u0439 \u043e\u0431\u0441\u0442\u0430\u043d\u043e\u0432\u043a\u0435 \u0440\u0430\u0437\u0431\u0438\u0440\u0430\u0435\u043c \u0432\u0430\u0448\u0438 \u0441\u0438\u0442\u0443\u0430\u0446\u0438\u0438, \u043f\u043e\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u043c \u0438 \u043f\u043e\u043c\u043e\u0433\u0430\u0435\u043c \u043d\u0430\u0439\u0442\u0438 \u0440\u0435\u0448\u0435\u043d\u0438\u0435
+"""
 
 
 # ============ Helpers ============
@@ -388,6 +961,10 @@ def _reset_states (context :ContextTypes .DEFAULT_TYPE ):
     context .user_data .pop (CONTACT_FLOW_KEY ,None )
     context .user_data .pop (CONTACT_PHONE_KEY ,None )
     context .user_data .pop (SKIP_NEXT_EMAIL_KEY ,None )
+    _clear_payment_contact_flow (context )
+    context .user_data .pop ("last_payment_id",None )
+    context .user_data .pop (LAST_GAME10_PAYMENT_UI_KEY ,None )
+    context .user_data .pop (BUSY_NOTICE_TS_KEY ,None )
     context .user_data .pop (PRODUCT_FOCUS_KEY ,None )
 
 
@@ -403,6 +980,107 @@ def _apply_focus_timeout (context :ContextTypes .DEFAULT_TYPE )->bool :
 
 def _clear_product_focus (context :ContextTypes .DEFAULT_TYPE )->None :
     context .user_data .pop (PRODUCT_FOCUS_KEY ,None )
+
+
+def _is_db_exception (exc :Exception |None )->bool :
+    if exc is None :
+        return False
+    if isinstance (exc ,SQLAlchemyError ):
+        return True
+    cls =exc .__class__
+    module_name =str (getattr (cls ,"__module__", "")or "").lower ()
+    return module_name .startswith ("sqlalchemy")or module_name .startswith ("asyncpg")or module_name .startswith ("psycopg")
+
+
+def _is_network_timeout_exception (exc :Exception |None )->bool :
+    if exc is None :
+        return False
+    if _is_db_exception (exc ):
+        return False
+    if isinstance (exc ,(TimedOut ,httpx .TimeoutException ,asyncio .TimeoutError ,TimeoutError )):
+        return True
+    cls =exc .__class__
+    module_name =str (getattr (cls ,"__module__", "")or "").lower ()
+    class_name =str (getattr (cls ,"__name__", "")or "").lower ()
+    if "timeout" not in class_name :
+        return False
+    return any (part in module_name for part in ("telegram","httpx","httpcore"))
+
+
+def _update_kind (update :Update )->str :
+    if getattr (update ,"callback_query",None )is not None :
+        return "callback"
+    if getattr (update ,"message",None )is not None :
+        return "message"
+    if getattr (update ,"chat_join_request",None )is not None :
+        return "chat_join_request"
+    return "other"
+
+
+def _log_action_duration (action :str ,started_at :float ,update :Update )->None :
+    duration_ms =round ((time .perf_counter ()-started_at )*1000 ,2 )
+    logger .info (
+    "bot_action duration_ms=%s action=%s update_kind=%s",
+    duration_ms ,
+    action ,
+    _update_kind (update ),
+    )
+
+
+def _try_enter_user_busy (user_id :int )->bool :
+    if user_id in USER_BUSY_IDS :
+        return False
+    USER_BUSY_IDS .add (user_id )
+    return True
+
+
+def _leave_user_busy (user_id :int )->None :
+    USER_BUSY_IDS .discard (user_id )
+
+
+async def _handle_busy_update (update :Update ,context :ContextTypes .DEFAULT_TYPE ,*,busy_mode :str )->None :
+    query =getattr (update ,"callback_query",None )
+    if query is not None :
+        try :
+            if busy_mode =="notify":
+                await _answer (query ,"\u042f \u043e\u0442\u0432\u0435\u0447\u0430\u044e, \u043f\u043e\u0434\u043e\u0436\u0434\u0438\u0442\u0435.")
+            else :
+                await _answer (query )
+        except Exception :
+            pass
+        return
+    if busy_mode !="notify":
+        return
+    message =getattr (update ,"effective_message",None )
+    if message is None :
+        return
+    now_ts =time .time ()
+    last_notice =float (context .user_data .get (BUSY_NOTICE_TS_KEY )or 0.0 )
+    if now_ts -last_notice <BUSY_NOTICE_INTERVAL_SEC :
+        return
+    context .user_data [BUSY_NOTICE_TS_KEY ]=now_ts
+    try :
+        await _reply (message ,"\u042f \u043e\u0442\u0432\u0435\u0447\u0430\u044e, \u043f\u043e\u0434\u043e\u0436\u0434\u0438\u0442\u0435.")
+    except Exception :
+        pass
+
+
+def _guard_user_handler (handler ,*,action :str |None =None ,busy_mode :str ="notify"):
+    async def _wrapped (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+        tg_user =getattr (update ,"effective_user",None )
+        user_id =int (tg_user .id )if tg_user is not None else None
+        if user_id is not None and not _try_enter_user_busy (user_id ):
+            await _handle_busy_update (update ,context ,busy_mode =busy_mode )
+            raise ApplicationHandlerStop
+        started_at =time .perf_counter ()
+        try :
+            return await handler (update ,context )
+        finally :
+            if user_id is not None :
+                _leave_user_busy (user_id )
+            _log_action_duration (action or getattr (handler ,"__name__","handler"),started_at ,update )
+    _wrapped .__name__ =getattr (handler ,"__name__","guarded_handler")
+    return _wrapped
 
 
 def _err_name (exc :Exception |None )->str :
@@ -428,6 +1106,31 @@ def _log_db_issue (scope :str ,exc :Exception |None =None )->None :
         logger .warning ("DB issue [%s]: %s: %s",scope ,_err_name (exc ),short )
     else :
         logger .warning ("DB issue [%s]: %s",scope ,_err_name (exc ))
+
+
+def _log_net_issue (scope :str ,exc :Exception |None =None )->None :
+    short =_err_short (exc )
+    if short :
+        logger .warning ("NET issue [%s]: %s: %s",scope ,_err_name (exc ),short )
+    else :
+        logger .warning ("NET issue [%s]: %s",scope ,_err_name (exc ))
+
+
+async def _notify_network_timeout (update :Update )->None :
+    text ="\u0422\u0435\u043b\u0435\u0433\u0440\u0430\u043c \u0432\u0440\u0435\u043c\u0435\u043d\u043d\u043e \u043d\u0435 \u043e\u0442\u0432\u0435\u0447\u0430\u0435\u0442, \u043f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u0435\u0449\u0451 \u0440\u0430\u0437."
+    query =getattr (update ,"callback_query",None )
+    if query is not None :
+        try :
+            await _answer (query ,text )
+        except Exception :
+            pass
+        return
+    message =getattr (update ,"effective_message",None )
+    if message is not None :
+        try :
+            await _reply (message ,text )
+        except Exception :
+            pass
 
 
 
@@ -498,7 +1201,10 @@ async def _notify_db_unavailable (update :Update ,exc :Exception |None =None ,*,
             await _edit (update .callback_query ,text ,reply_markup =keyboard )
             return 
         except Exception as notify_exc :
-            _log_db_issue ("notify_db_unavailable_edit",notify_exc )
+            if _is_network_timeout_exception (notify_exc ):
+                _log_net_issue ("notify_db_unavailable_edit",notify_exc )
+            else :
+                _log_db_issue ("notify_db_unavailable_edit",notify_exc )
 
     if update .effective_message :
         await _reply (update .effective_message ,text ,reply_markup =keyboard )
@@ -554,10 +1260,7 @@ def classify_update_need_db (update :Update ,context :ContextTypes .DEFAULT_TYPE
     return False
 
 async def ensure_user (update :Update ,source :str ="bot",ai_increment :int =0 ,notify_ui :bool =True ):
-    """
-    Р•РґРёРЅР°СЏ С‚РѕС‡РєР°: СЃРѕР·РґР°С‘Рј/РѕР±РЅРѕРІР»СЏРµРј РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ РІ Р‘Р” РїРѕ tg_id.
-    Р’РѕР·РІСЂР°С‰Р°РµС‚ РѕР±СЉРµРєС‚ User (РёР· Р‘Р”).
-    """
+    "\n    Единая точка: создаем/обновляем пользователя в БД по tg_id.\n    Возвращает объект User (из БД).\n    "
     tg_user =update .effective_user 
     if tg_user is None :
         return None 
@@ -604,6 +1307,8 @@ async def ensure_user_on_message (update :Update ,context :ContextTypes .DEFAULT
         return
     if context .user_data .get (WAITING_CONTACT_PHONE_KEY )or context .user_data .get (WAITING_CONTACT_EMAIL_KEY ):
         return
+    if context .user_data .get (PAYMENT_CONTACT_FLOW_KEY ):
+        return
     if not classify_update_need_db (update ,context ):
         logger .debug ("DB guard skipped for navigation message update")
         return
@@ -611,20 +1316,45 @@ async def ensure_user_on_message (update :Update ,context :ContextTypes .DEFAULT
 
 
 async def start (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
-# РіР°СЂР°РЅС‚РёСЂСѓРµРј РЅР°Р»РёС‡РёРµ user РІ Р‘Р”
+# ensure user exists in DB
 
     screen_manager .clear_screen (context )
     _reset_states (context )
 
-    text ="РђСЃСЃРёСЃС‚РµРЅС‚ РіРѕС‚РѕРІ РїРѕРјРѕС‡СЊ СЃ... рџ‘‡"
+    start_payload =str ((context .args [0 ]if context .args else "")or "").strip ()
+    if start_payload .startswith ("pay_"):
+        payment_id =""
+        if start_payload !="pay_return":
+            payment_id =start_payload [4 :].strip ()
+        if payment_id :
+            context .user_data ["last_payment_id"]=payment_id
+        await _show_screen (
+        update ,
+        context ,
+        "\u0421\u043f\u0430\u0441\u0438\u0431\u043e \u0437\u0430 \u043e\u043f\u043b\u0430\u0442\u0443. \u041d\u0430\u0436\u043c\u0438\u0442\u0435 \u00ab\u2705 \u042f \u043e\u043f\u043b\u0430\u0442\u0438\u043b \u2014 \u043f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c\u00bb.",
+        parse_mode =None ,
+        reply_markup =_payment_return_kb (payment_id ),
+        )
+        return
+
+    text ="\u0410\u0441\u0441\u0438\u0441\u0442\u0435\u043d\u0442 \u0433\u043e\u0442\u043e\u0432 \u043f\u043e\u043c\u043e\u0447\u044c \u0441 \u0432\u044b\u0431\u043e\u0440\u043e\u043c \u0440\u0430\u0437\u0434\u0435\u043b\u0430."
     await _show_screen (update ,context ,text ,reply_markup =get_main_menu ())
 
 
 async def main_menu (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     query =update .callback_query 
     await _answer (query )
-    _reset_states (context )
-    await _show_screen (update ,context ,"рџ“‹ Р“Р»Р°РІРЅРѕРµ РјРµРЅСЋ",reply_markup =get_main_menu ())
+    try :
+        _reset_states (context )
+    except Exception as e :
+        _log_db_issue ("main_menu_reset",e )
+    try :
+        await _show_main_menu_bottom (update ,context )
+    except Exception as e :
+        logger .warning ("Main menu render fallback: %s",_err_name (e ))
+        chat =update .effective_chat
+        if chat is not None :
+            await _send (context .bot ,chat_id =chat .id ,text ="\u0413\u043b\u0430\u0432\u043d\u043e\u0435 \u043c\u0435\u043d\u044e",reply_markup =get_main_menu (),parse_mode =None )
 
 
 async def show_contacts_request (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
@@ -688,15 +1418,9 @@ async def _save_contacts (update :Update ,context :ContextTypes .DEFAULT_TYPE ,p
             await session .commit ()
     except Exception as e :
         _log_db_issue ("save_contacts",e )
-        pending =_remember_pending_contacts (context ,update ,phone =phone ,email =email )
-        await _notify_admin_pending_contacts (context ,pending )
-        _reset_states (context )
-        await _show_screen (
-        update ,
-        context ,
-        "\u2705 \u041a\u043e\u043d\u0442\u0430\u043a\u0442\u044b \u043f\u0440\u0438\u043d\u044f\u0442\u044b. \u041c\u0435\u043d\u0435\u0434\u0436\u0435\u0440 \u0441\u0432\u044f\u0436\u0435\u0442\u0441\u044f \u0441 \u0432\u0430\u043c\u0438 \u0432 \u0431\u043b\u0438\u0436\u0430\u0439\u0448\u0435\u0435 \u0432\u0440\u0435\u043c\u044f.",
-        reply_markup =get_back_to_menu_kb (),
-        )
+        context .user_data [WAITING_CONTACT_PHONE_KEY ]=False
+        context .user_data [WAITING_CONTACT_EMAIL_KEY ]=True
+        await _show_screen (update ,context ,"Не удалось сохранить email, попробуйте ещё раз.",reply_markup =get_remove_reply_kb ())
         return 
 
     _reset_states (context )
@@ -758,12 +1482,24 @@ async def _save_contact_field (update :Update ,context :ContextTypes .DEFAULT_TY
     except Exception as e :
         _log_db_issue ("save_contact_field",e )
         _remember_pending_contacts (context ,update ,phone =phone ,email =email )
-        return True 
+        return False 
 
 
 async def handle_contact_phone (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     if not update .message or not update .message .contact :
         return 
+    if context .user_data .get (PAYMENT_CONTACT_FLOW_KEY ):
+        contact =update .message .contact
+        phone =(contact .phone_number or "").strip ()
+        if not phone :
+            await _show_screen (update ,context ,"Не удалось прочитать номер. Отправьте контакт ещё раз.",reply_markup =get_payment_contact_choice_kb ())
+            return
+        if not await _save_contact_field (update ,context ,phone =phone ):
+            return
+        await _send_reply_keyboard_remove (update ,context )
+        await _show_screen (update ,context ,PAYMENT_CONTACT_SAVED_SCREEN ,reply_markup =get_back_to_menu_kb ())
+        await _run_game10_payment_create_flow (update ,context )
+        return
 
     waiting_phone =bool (context .user_data .get (WAITING_CONTACT_PHONE_KEY ))
     if not waiting_phone :
@@ -774,13 +1510,13 @@ async def handle_contact_phone (update :Update ,context :ContextTypes .DEFAULT_T
         if snapshot is None :
             return 
         if snapshot .get ("phone")and snapshot .get ("email"):
-            await _show_screen (update ,context ,'Контакты уже получены, спасибо!',reply_markup =get_main_menu ())
+            await _show_screen (update ,context ,"Контакты уже получены, спасибо!",reply_markup =get_main_menu ())
             return 
 
     contact =update .message .contact 
     phone =(contact .phone_number or "").strip ()
     if not phone :
-        await _show_screen (update ,context ,'Не удалось прочитать номер. Отправьте контакт ещё раз.',reply_markup =get_contact_request_kb ())
+        await _show_screen (update ,context ,"Не удалось прочитать номер. Отправьте контакт ещё раз.",reply_markup =get_contact_request_kb ())
         return 
     if not await _save_contact_field (update ,context ,phone =phone ):
         return 
@@ -788,11 +1524,44 @@ async def handle_contact_phone (update :Update ,context :ContextTypes .DEFAULT_T
     context .user_data [CONTACT_PHONE_KEY ]=phone 
     context .user_data [WAITING_CONTACT_PHONE_KEY ]=False 
     context .user_data [WAITING_CONTACT_EMAIL_KEY ]=True 
-    context .user_data [SKIP_NEXT_EMAIL_KEY ]=True 
-    await _show_screen (update ,context ,'Спасибо! Теперь пришлите вашу почту одним сообщением (например: name@example.com).',reply_markup =get_remove_reply_kb ())
+    await _show_screen (update ,context ,"Спасибо! Теперь пришлите вашу почту одним сообщением (например: name@example.com).",reply_markup =get_remove_reply_kb ())
 
 
 async def handle_contact_phone_text (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    if context .user_data .get (PAYMENT_CONTACT_FLOW_KEY ):
+        payment_mode =str (context .user_data .get (PAYMENT_CONTACT_MODE_KEY )or "")
+        if payment_mode == "email":
+            return
+        if not update .message or not update .message .text :
+            return
+        if payment_mode != "phone":
+            text =(update .message .text or "").strip ()
+            if text .lower ()=="отмена":
+                await _send_reply_keyboard_remove (update ,context )
+                _clear_payment_contact_flow (context )
+                await _show_main_menu_bottom (update ,context ,text =PAYMENT_CANCELLED_SCREEN )
+            else :
+                await _request_payment_contact_screen (update ,context ,variant =_payment_variant_normalized (context .user_data .get (PAYMENT_VARIANT_KEY )))
+            return
+    if context .user_data .get (PAYMENT_CONTACT_FLOW_KEY )and str (context .user_data .get (PAYMENT_CONTACT_MODE_KEY )or "")=="phone":
+        if not update .message or not update .message .text :
+            return
+        text =(update .message .text or "").strip ()
+        if text .lower ()=="отмена":
+            await _send_reply_keyboard_remove (update ,context )
+            _clear_payment_contact_flow (context )
+            await _show_main_menu_bottom (update ,context ,text =PAYMENT_CANCELLED_SCREEN )
+            return
+        normalized =re .sub (r"[^\\d+]","",text )
+        if len (re .sub (r"\\D","",normalized ))<10 :
+            await _show_screen (update ,context ,"Номер выглядит некорректно. Нажмите кнопку отправки контакта или введите номер ещё раз.",reply_markup =get_payment_contact_choice_kb ())
+            return
+        if not await _save_contact_field (update ,context ,phone =normalized ):
+            return
+        await _send_reply_keyboard_remove (update ,context )
+        await _show_screen (update ,context ,PAYMENT_CONTACT_SAVED_SCREEN ,reply_markup =get_back_to_menu_kb ())
+        await _run_game10_payment_create_flow (update ,context )
+        return
     if not context .user_data .get (WAITING_CONTACT_PHONE_KEY ):
         return 
     if not update .message or not update .message .text :
@@ -801,12 +1570,12 @@ async def handle_contact_phone_text (update :Update ,context :ContextTypes .DEFA
     text =(update .message .text or "").strip ()
     if text .lower ()=="отмена":
         _reset_states (context )
-        await _show_screen (update ,context ,'Действие отменено.',reply_markup =get_main_menu ())
+        await _show_screen (update ,context ,"Действие отменено.",reply_markup =get_main_menu ())
         return 
 
     normalized =re .sub (r"[^\\d+]","",text )
     if len (re .sub (r"\\D","",normalized ))<10 :
-        await _show_screen (update ,context ,'Номер выглядит некорректно. Пример: +79991234567',reply_markup =get_contact_request_kb ())
+        await _show_screen (update ,context ,"Номер выглядит некорректно. Пример: +79991234567",reply_markup =get_contact_request_kb ())
         return 
     if not await _save_contact_field (update ,context ,phone =normalized ):
         return 
@@ -814,51 +1583,96 @@ async def handle_contact_phone_text (update :Update ,context :ContextTypes .DEFA
     context .user_data [CONTACT_PHONE_KEY ]=normalized 
     context .user_data [WAITING_CONTACT_PHONE_KEY ]=False 
     context .user_data [WAITING_CONTACT_EMAIL_KEY ]=True 
-    context .user_data [SKIP_NEXT_EMAIL_KEY ]=True 
-    await _show_screen (update ,context ,'Спасибо! Теперь пришлите вашу почту одним сообщением (например: name@example.com).',reply_markup =get_remove_reply_kb ())
+    await _show_screen (update ,context ,"Спасибо! Теперь пришлите вашу почту одним сообщением (например: name@example.com).",reply_markup =get_remove_reply_kb ())
 
 
 async def handle_contact_email_text (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
-    if context .user_data .pop (SKIP_NEXT_EMAIL_KEY ,False ):
-        return 
+    in_payment_email_flow =bool (
+    context .user_data .get (PAYMENT_CONTACT_FLOW_KEY )
+    and str (context .user_data .get (PAYMENT_CONTACT_MODE_KEY )or "")=="email"
+    )
+    if in_payment_email_flow :
+        if not update .message or not update .message .text :
+            return
+        email =(update .message .text or "").strip ().lower ()
+        if email =="отмена":
+            await _send_reply_keyboard_remove (update ,context )
+            _clear_payment_contact_flow (context )
+            await _show_main_menu_bottom (update ,context ,text =PAYMENT_CANCELLED_SCREEN )
+            raise ApplicationHandlerStop
+        if not EMAIL_RE .match (email ):
+            await _show_screen (
+            update ,
+            context ,
+            "Похоже, это не email. Пришлите, пожалуйста, в формате name@example.com",
+            reply_markup =get_payment_contact_choice_kb (),
+            )
+            raise ApplicationHandlerStop
+        if not await _save_contact_field (update ,context ,email =email ):
+            await _show_screen (
+            update ,
+            context ,
+            "Не удалось сохранить email, попробуйте ещё раз.",
+            reply_markup =get_payment_contact_choice_kb (),
+            )
+            raise ApplicationHandlerStop
+        await _send_reply_keyboard_remove (update ,context )
+        await _show_screen (
+        update ,
+        context ,
+        "Спасибо! Email сохранён. Теперь можно оплатить.",
+        reply_markup =get_back_to_menu_kb (),
+        )
+        await _run_game10_payment_create_flow (update ,context )
+        raise ApplicationHandlerStop
+
     if not update .message or not update .message .text :
-        return 
+        return
 
     waiting_email =bool (context .user_data .get (WAITING_CONTACT_EMAIL_KEY ))
+    if not waiting_email :
+        return
     email =(update .message .text or "").strip ().lower ()
-    if waiting_email and email =="отмена":
+    if email =="отмена":
         _reset_states (context )
-        await _show_screen (update ,context ,'Действие отменено.',reply_markup =get_main_menu ())
-        return 
+        await _show_screen (update ,context ,"Действие отменено.",reply_markup =get_main_menu ())
+        raise ApplicationHandlerStop
 
     if not EMAIL_RE .match (email ):
-        if waiting_email :
-            await _show_screen (update ,context ,'Некорректный email. Пример: name@example.com',reply_markup =get_remove_reply_kb ())
-        return 
+        await _show_screen (
+        update ,
+        context ,
+        "Похоже, это не email. Пришлите, пожалуйста, в формате name@example.com",
+        reply_markup =get_remove_reply_kb (),
+        )
+        raise ApplicationHandlerStop
 
-    tg_user =update .effective_user 
+    tg_user =update .effective_user
     if tg_user is None :
-        return 
+        raise ApplicationHandlerStop
 
     snapshot =await _get_contact_snapshot (tg_user .id )
     if snapshot is not None and snapshot .get ("phone")and snapshot .get ("email"):
         _reset_states (context )
-        await _show_screen (update ,context ,'Контакты уже получены, спасибо!',reply_markup =get_main_menu ())
-        return 
+        await _show_screen (update ,context ,"Контакты уже получены, спасибо!",reply_markup =get_main_menu ())
+        raise ApplicationHandlerStop
 
     phone =context .user_data .get (CONTACT_PHONE_KEY )
     if not phone and snapshot is not None :
         phone =snapshot .get ("phone")
     if not phone :
-        if waiting_email :
-            context .user_data [WAITING_CONTACT_EMAIL_KEY ]=False 
-            context .user_data [WAITING_CONTACT_PHONE_KEY ]=True 
-        await _show_screen (update ,context ,'Сначала отправьте номер телефона.',reply_markup =get_contact_request_kb ())
-        return 
+        context .user_data [WAITING_CONTACT_EMAIL_KEY ]=False
+        context .user_data [WAITING_CONTACT_PHONE_KEY ]=True
+        await _show_screen (update ,context ,"Сначала отправьте номер телефона.",reply_markup =get_contact_request_kb ())
+        raise ApplicationHandlerStop
 
-    await _save_contacts (update ,context ,phone =phone ,email =email )
+    if not await _save_contact_field (update ,context ,email =email ):
+        await _show_screen (update ,context ,"Не удалось сохранить email, попробуйте ещё раз.",reply_markup =get_remove_reply_kb ())
+        raise ApplicationHandlerStop
 
-
+    _reset_states (context )
+    await _show_screen (update ,context ,"Спасибо! Email сохранён.",reply_markup =get_back_to_menu_kb ())
+    raise ApplicationHandlerStop
 def _set_screen_meta (context :ContextTypes .DEFAULT_TYPE ,*,kind :str ,event_id :int |None =None )->None :
     context .user_data [SCREEN_KIND_KEY ]=kind
     if event_id is None :
@@ -898,7 +1712,7 @@ def _event_prices_lines (event :dict )->list [str ]:
         if price_rub in (None ,""):
             continue
         note =str (item .get ("note")or "").strip ()
-        line =f"\u2022 {label} — {_format_rub (price_rub )} \u20bd"
+        line =f"\u2022 {label} - {_format_rub (price_rub )} \u20bd"
         if note :
             line =f"{line} ({note })"
         lines .append (line )
@@ -906,7 +1720,7 @@ def _event_prices_lines (event :dict )->list [str ]:
         return lines
     fallback_price =event .get ("price")
     if fallback_price not in (None ,""):
-        return [f"\u2022 \u0421\u0442\u043e\u0438\u043c\u043e\u0441\u0442\u044c — {_format_rub (fallback_price )} \u20bd"]
+        return [f"\u2022 \u0421\u0442\u043e\u0438\u043c\u043e\u0441\u0442\u044c - {_format_rub (fallback_price )} \u20bd"]
     return []
 
 
@@ -1157,6 +1971,7 @@ async def event_questions (update :Update ,context :ContextTypes .DEFAULT_TYPE )
     context .user_data [AI_MODE_KEY ]=True
     context .user_data [ASSISTANT_SOURCE_KEY ]="event"
     context .user_data [ASSISTANT_EVENT_ID_KEY ]=event_id
+    context .user_data .pop (PRODUCT_FOCUS_KEY ,None )
     event =_find_cached_event (context ,event_id )
     if event is None :
         await _load_events_cache (update ,context ,force_refresh =True )
@@ -1222,17 +2037,135 @@ async def show_private_channel (update :Update ,context :ContextTypes .DEFAULT_T
     update ,
     context ,
     GAME10_SCREEN_TEXT ,
-    parse_mode ="Markdown",
-    reply_markup =get_game10_kb (_private_channel_payment_url ()),
+    parse_mode =None ,
+    reply_markup =_game10_kb_for_update (update ),
+    )
+
+
+async def show_game10_description (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    query =update .callback_query
+    if query :
+        await _answer (query )
+    await _show_screen (
+    update ,
+    context ,
+    GAME10_DESCRIPTION_SCREEN_TEXT ,
+    parse_mode =None ,
+    reply_markup =get_game10_description_kb (),
     )
 
 
 async def private_channel_payment_info (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
-    _ =context 
-    query =update .callback_query 
+    query =update .callback_query
     if query is None :
-        return 
-    await _answer (query ,"Ссылка на оплату временно недоступна. Нажмите «Связаться с менеджером».",show_alert =True )
+        return
+    await _answer (query )
+    await _run_game10_payment_create_flow (update ,context ,variant =PAYMENT_VARIANT_MAIN )
+
+
+
+async def game10_pay_refresh (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    query =update .callback_query
+    if query is None :
+        return
+    await _answer (query )
+    await _run_game10_payment_create_flow (update ,context ,variant =PAYMENT_VARIANT_MAIN ,refresh_hint =True )
+
+
+
+async def game10_pay_check (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    query =update .callback_query
+    if query is None :
+        return
+    try :
+        await _answer (query )
+    except Exception :
+        pass
+    data =str (query .data or "")
+    payment_id =data .split (":",1 )[1 ].strip ()if ":" in data else ""
+    if not payment_id :
+        payment_id =str (context .user_data .get ("last_payment_id")or "").strip ()
+    if not payment_id :
+        await _show_screen (update ,context ,"\u041d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d id \u043f\u043b\u0430\u0442\u0435\u0436\u0430. \u041e\u0442\u043a\u0440\u043e\u0439\u0442\u0435 \u0440\u0430\u0437\u0434\u0435\u043b \u043e\u043f\u043b\u0430\u0442\u044b \u0438 \u043f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u0435\u0449\u0451 \u0440\u0430\u0437.",reply_markup =_game10_kb_for_update (update ))
+        return
+    context .user_data ["last_payment_id"]=payment_id
+    retry_kb =_get_last_game10_payment_ui_kb (context ,payment_id )or _game10_kb_for_update (update )
+    await _show_screen (update ,context ,PAYMENT_CHECKING_SCREEN ,reply_markup =retry_kb )
+    user =update .effective_user
+    result =await _check_game10_payment_status_backend (payment_id ,tg_id =user .id if user else None )
+    if not isinstance (result ,dict )or not result .get ("ok"):
+        await _show_screen (update ,context ,"Could not verify payment now. Please retry in a minute.",reply_markup =retry_kb )
+        return
+    status =str (result .get ("status")or "").strip ().lower ()
+    outcome =str (result .get ("result")or "").strip ().lower ()
+    error_type =str (result .get ("error_type")or "").strip ()
+    if bool (result .get ("already_in_channel"))or outcome =="already_member":
+        _clear_payment_runtime_state (context )
+        await _show_screen (update ,context ,PAYMENT_ALREADY_IN_CHANNEL_SCREEN ,reply_markup =_game10_kb_for_update (update ))
+        return
+    if status =="succeeded"and outcome =="invite_failed":
+        error_norm =error_type .lower ()
+        if error_norm in {"forbidden","chatnotfound"}:
+            await _show_screen (update ,context ,"Bot cannot message you now. Send /start and check again.",reply_markup =retry_kb )
+            return
+        await _show_screen (update ,context ,"Access delivery failed. Please contact admin and retry.",reply_markup =retry_kb )
+        return
+    if status =="succeeded":
+        _clear_payment_runtime_state (context )
+        await _show_screen (update ,context ,PAYMENT_STATUS_CONFIRMED_SCREEN ,reply_markup =_game10_kb_for_update (update ))
+        return
+    if status in {"pending","waiting_for_capture","created"}:
+        await _show_screen (
+        update ,
+        context ,
+        "Платёж ещё обрабатывается. Попробуйте снова через минуту.",
+        parse_mode =None ,
+        reply_markup =retry_kb ,
+        )
+        return
+    if status in {"canceled","cancelled"}:
+        _clear_payment_runtime_state (context )
+        await _show_screen (update ,context ,PAYMENT_STATUS_CANCELED_SCREEN ,reply_markup =retry_kb )
+        return
+    await _show_screen (update ,context ,f"Payment status: {status or 'unknown'}",reply_markup =retry_kb )
+
+
+async def pay_contact_phone (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    query =update .callback_query
+    if query is None :
+        return
+    await _answer (query )
+    if not context .user_data .get (PAYMENT_CONTACT_FLOW_KEY ):
+        await _request_payment_contact_screen (update ,context ,variant =_payment_variant_normalized (context .user_data .get (PAYMENT_VARIANT_KEY )))
+        return
+    context .user_data [PAYMENT_CONTACT_MODE_KEY ]="phone"
+    await _show_screen (update ,context ,PAYMENT_ASK_PHONE_SCREEN ,reply_markup =get_payment_contact_choice_kb ())
+    chat =update .effective_chat
+    if chat is not None :
+        await _send (context .bot ,chat_id =chat .id ,text ="Нажмите кнопку ниже, чтобы отправить номер.",reply_markup =get_contact_request_kb ())
+
+
+async def pay_contact_email (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    query =update .callback_query
+    if query is None :
+        return
+    await _answer (query )
+    if not context .user_data .get (PAYMENT_CONTACT_FLOW_KEY ):
+        await _request_payment_contact_screen (update ,context ,variant =_payment_variant_normalized (context .user_data .get (PAYMENT_VARIANT_KEY )))
+        return
+    context .user_data [PAYMENT_CONTACT_MODE_KEY ]="email"
+    await _send_reply_keyboard_remove (update ,context )
+    await _show_screen (update ,context ,PAYMENT_ASK_EMAIL_SCREEN ,reply_markup =get_payment_contact_choice_kb ())
+
+
+async def pay_contact_cancel (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    query =update .callback_query
+    if query is None :
+        return
+    await _answer (query )
+    await _send_reply_keyboard_remove (update ,context )
+    _clear_payment_runtime_state (context )
+    await _show_main_menu_bottom (update ,context ,text =PAYMENT_CANCELLED_SCREEN )
 
 
     # --------- Consultations / Gestalt ---------
@@ -1263,23 +2196,129 @@ async def show_formats_and_prices (update :Update ,context :ContextTypes .DEFAUL
     )
 
 
+async def _has_saved_email_for_user (update :Update )->bool :
+    tg_user =update .effective_user
+    if tg_user is None :
+        return False
+    snapshot =await _get_contact_snapshot (tg_user .id )
+    return bool ((snapshot or {}).get ("email"))
+
+
+async def _save_consultation_lead (
+update :Update ,
+mode :str ,
+raw_text :str ,
+parsed :ParsedContacts ,
+)->dict :
+    tg_user =update .effective_user
+    if tg_user is None :
+        return {"ok":False ,"reason":"no_user"}
+    try :
+        db .init_db ()
+        async with db .async_session ()as session :
+            user_service =UserService (session )
+            user =await user_service .get_or_create_by_tg_id (
+            tg_id =tg_user .id ,
+            first_name =tg_user .first_name ,
+            last_name =tg_user .last_name ,
+            username =tg_user .username ,
+            source ="bot",
+            update_if_exists =True ,
+            )
+            if user is None :
+                return {"ok":False ,"reason":"no_user"}
+
+            had_email_before =bool (user .email )
+            user =await user_service .partial_update_contacts (
+            tg_id =tg_user .id ,
+            name =parsed .name ,
+            phone =parsed .phone ,
+            email =parsed .email ,
+            username =parsed .username ,
+            )
+            if user is None :
+                return {"ok":False ,"reason":"no_user"}
+
+            has_name =bool (user .first_name )
+            has_phone =bool (user .phone )
+            has_email =bool (user .email )
+            has_username =bool (user .username )
+            if not (has_phone or has_email or has_username ):
+                await session .rollback ()
+                return {
+                "ok":False ,
+                "reason":"no_contact_method",
+                "had_email_before":had_email_before ,
+                "has_email":has_email ,
+                "has_phone":has_phone ,
+                "has_name":has_name ,
+                "has_username":has_username ,
+                }
+
+            crm_service =CRMService (session )
+            await crm_service .touch_client_activity_by_tg_id (tg_user .id )
+
+            consultation_service =ConsultationService (session )
+            consultations =await consultation_service .list_active (limit =50 )
+            target_consultation =None
+            if consultations :
+                mode_keywords =(("инд","individual","личн")if mode =="individual"else ("груп","group"))
+                for consultation in consultations :
+                    type_value =str (getattr (consultation ,"type","")or "").lower ()
+                    if any (keyword in type_value for keyword in mode_keywords ):
+                        target_consultation =consultation
+                        break
+                if target_consultation is None :
+                    target_consultation =consultations [0 ]
+
+            lead_saved =False
+            if target_consultation is not None :
+                notes =(raw_text or "").strip ()
+                await consultation_service .book (
+                user_id =int (user .id ),
+                consultation_id =int (target_consultation .id ),
+                status ="consultation_lead",
+                notes =notes [:1000 ]or None ,
+                )
+                lead_saved =True
+
+            await session .commit ()
+            return {
+            "ok":True ,
+            "had_email_before":had_email_before ,
+            "has_email":has_email ,
+            "has_phone":has_phone ,
+            "has_name":has_name ,
+            "has_username":has_username ,
+            "lead_saved":lead_saved ,
+            }
+    except Exception as e :
+        _ =e
+        _log_db_issue ("consultation_lead_save")
+        return {"ok":False ,"reason":"db_error"}
+
+
 async def begin_booking_individual (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     query =update .callback_query 
     await _answer (query )
     context .user_data [AI_MODE_KEY ]=False 
     context .user_data [WAITING_LEAD_KEY ]="individual"
+    has_email =await _has_saved_email_for_user (update )
 
-
-    await _show_screen (update ,context ,
-    "📩 *Запись на индивидуальную терапию*\n\n"
-    "Отправьте одним сообщением:\n"
-    "1) Имя\n"
-    "2) Телефон или @username\n"
-    "3) Коротко запрос (по желанию)\n\n"
-    "Пример: Иван, +46..., хочу меньше тревоги",
-    parse_mode ="Markdown",
-    reply_markup =get_back_to_menu_kb (),
-    )
+    lines =[
+    "📩 *Запись на индивидуальную терапию*",
+    "",
+    "Отправьте одним сообщением:",
+    "1) Имя",
+    "2) Телефон или @username",
+    "3) Почта (email)",
+    "",
+    "Пример: Иван, +7..., name@example.com",
+    ]
+    if has_email :
+        lines .append ("")
+        lines .append ("Email уже сохранён, повторно указывать не нужно.")
+    await _show_screen (update ,context ,"\n".join (lines ),parse_mode ="Markdown",reply_markup =get_back_to_menu_kb ())
 
 
 async def begin_booking_group (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
@@ -1287,18 +2326,22 @@ async def begin_booking_group (update :Update ,context :ContextTypes .DEFAULT_TY
     await _answer (query )
     context .user_data [AI_MODE_KEY ]=False 
     context .user_data [WAITING_LEAD_KEY ]="group"
+    has_email =await _has_saved_email_for_user (update )
 
-
-    await _show_screen (update ,context ,
-    "📩 *Запись в терапевтическую группу*\n\n"
-    "Отправьте одним сообщением:\n"
-    "1) Имя\n"
-    "2) Телефон или @username\n"
-    "3) Коротко ожидания от группы (по желанию)\n\n"
-    "Пример: Анна, @anna, хочу научиться говорить о чувствах",
-    parse_mode ="Markdown",
-    reply_markup =get_back_to_menu_kb (),
-    )
+    lines =[
+    "📩 *Запись в терапевтическую группу*",
+    "",
+    "Отправьте одним сообщением:",
+    "1) Имя",
+    "2) Телефон или @username",
+    "3) Почта (email)",
+    "",
+    "Пример: Анна, @anna, name@example.com",
+    ]
+    if has_email :
+        lines .append ("")
+        lines .append ("Email уже сохранён, повторно указывать не нужно.")
+    await _show_screen (update ,context ,"\n".join (lines ),parse_mode ="Markdown",reply_markup =get_back_to_menu_kb ())
 
 
 async def handle_lead_message (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
@@ -1310,43 +2353,65 @@ async def handle_lead_message (update :Update ,context :ContextTypes .DEFAULT_TY
     if not mode :
         return 
 
-    text =(update .message .text or "").strip ()
+    message =update .message
+    if message is None :
+        return
+    text =(message .text or "").strip ()
     if not text :
-        await _reply (update .message ,"\u041d\u0430\u043f\u0438\u0448\u0438\u0442\u0435 \u0442\u0435\u043a\u0441\u0442\u043e\u043c, \u043f\u043e\u0436\u0430\u043b\u0443\u0439\u0441\u0442\u0430.")
+        await _reply (message ,"\u041d\u0430\u043f\u0438\u0448\u0438\u0442\u0435 \u0442\u0435\u043a\u0441\u0442\u043e\u043c, \u043f\u043e\u0436\u0430\u043b\u0443\u0439\u0441\u0442\u0430.")
         return 
-
 
     user =update .effective_user 
     if user is None :
         return 
 
-    lead_type ="\u0418\u043d\u0434\u0438\u0432\u0438\u0434\u0443\u0430\u043b\u044c\u043d\u043e"if mode =="individual"else "\u0413\u0440\u0443\u043f\u043f\u0430"
+    parsed =parse_contacts_from_message (text ,email_re =EMAIL_RE )
+    if not parsed .has_any :
+        await _show_screen (
+        update ,
+        context ,
+        "Не удалось распознать контакты. Пришлите одним сообщением имя и телефон/@username/email.",
+        reply_markup =get_back_to_menu_kb (),
+        )
+        return
 
+    result =await _save_consultation_lead (update ,mode =str (mode ),raw_text =text ,parsed =parsed )
+    if not result .get ("ok"):
+        if result .get ("reason")=="no_contact_method":
+            await _show_screen (
+            update ,
+            context ,
+            "Нужен хотя бы один контакт: телефон, @username или email. Пришлите ещё раз.",
+            reply_markup =get_back_to_menu_kb (),
+            )
+            return
+        await _show_screen (
+        update ,
+        context ,
+        "Не удалось сохранить заявку, попробуйте ещё раз.",
+        reply_markup =get_back_to_menu_kb (),
+        )
+        return
+
+    lead_type ="\u0418\u043d\u0434\u0438\u0432\u0438\u0434\u0443\u0430\u043b\u044c\u043d\u043e"if mode =="individual"else "\u0413\u0440\u0443\u043f\u043f\u0430"
     lead_payload =(
-    f"NEW lead: *{lead_type }*\n"
-    f"user: {user .first_name } {user .last_name or ''} (@{user .username or '-'})\n"
-    f"tg_id: `{user .id }`\n\n"
-    f"message:\n{text }"
+    f"NEW lead: {lead_type }\n"
+    f"has_name={bool (result .get ('has_name'))}\n"
+    f"has_phone={bool (result .get ('has_phone'))}\n"
+    f"has_email={bool (result .get ('has_email'))}"
     )
 
     context .user_data [WAITING_LEAD_KEY ]=None 
-
     if ADMIN_CHAT_ID :
         try :
-            await _send (context .bot ,
-            chat_id =int (ADMIN_CHAT_ID ),
-            text =lead_payload ,
-            parse_mode ="Markdown",
-            )
+            await _send (context .bot ,chat_id =int (ADMIN_CHAT_ID ),text =lead_payload ,parse_mode =None )
         except Exception as e :
-            logger .exception ("Lead notify admin failed: %s",e )
+            _log_net_issue ("lead_notify_admin",e )
 
-    await _show_screen (
-    update ,
-    context ,
-    "\u2705 \u0421\u043f\u0430\u0441\u0438\u0431\u043e! \u0417\u0430\u044f\u0432\u043a\u0430 \u043f\u0440\u0438\u043d\u044f\u0442\u0430. \u041c\u044b \u0441\u043a\u043e\u0440\u043e \u0441\u0432\u044f\u0436\u0435\u043c\u0441\u044f.",
-    reply_markup =get_back_to_menu_kb (),
-    )
+    success_lines =["\u2705 Спасибо! Заявка принята. Менеджер свяжется с вами в ближайшее время."]
+    if bool (result .get ("had_email_before"))and not bool (parsed .email ):
+        success_lines .append ("Email уже сохранён.")
+    await _show_screen (update ,context ,"\n".join (success_lines ),reply_markup =get_back_to_menu_kb ())
 
 
 
@@ -1360,12 +2425,13 @@ async def show_ai_chat (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
 
 
     user_id =update .effective_user .id 
-    chat_histories [user_id ]=[]# СЃР±СЂР°СЃС‹РІР°РµРј РёСЃС‚РѕСЂРёСЋ РїСЂРё РІС…РѕРґРµ
+    chat_histories [user_id ]=[]# reset in-memory history on /start
 
     context .user_data [WAITING_LEAD_KEY ]=None 
     context .user_data [AI_MODE_KEY ]=True 
-    context .user_data .pop (ASSISTANT_SOURCE_KEY ,None )
+    context .user_data [ASSISTANT_SOURCE_KEY ]="consult"
     context .user_data .pop (ASSISTANT_EVENT_ID_KEY ,None )
+    context .user_data [PRODUCT_FOCUS_KEY ]="gestalt"
 
     await _show_screen (update ,context ,
     ASSISTANT_GREETING ,
@@ -1385,6 +2451,7 @@ async def show_course_questions (update :Update ,context :ContextTypes .DEFAULT_
     context .user_data [AI_MODE_KEY ]=True 
     context .user_data [ASSISTANT_SOURCE_KEY ]="course"
     context .user_data .pop (ASSISTANT_EVENT_ID_KEY ,None )
+    context .user_data [PRODUCT_FOCUS_KEY ]="getcourse"
 
     await _show_screen (
     update ,
@@ -1406,6 +2473,7 @@ async def game10_questions (update :Update ,context :ContextTypes .DEFAULT_TYPE 
     context .user_data [AI_MODE_KEY ]=True
     context .user_data [ASSISTANT_SOURCE_KEY ]="game10"
     context .user_data .pop (ASSISTANT_EVENT_ID_KEY ,None )
+    context .user_data [PRODUCT_FOCUS_KEY ]="game10"
 
     await _show_screen (
     update ,
@@ -1445,6 +2513,11 @@ def _auto_ai_rate_limited (context :ContextTypes .DEFAULT_TYPE )->bool :
 def _build_ai_request_message (context :ContextTypes .DEFAULT_TYPE ,user_message :str ,*,response_mode :str ="default")->str :
     assistant_source =str (context .user_data .get (ASSISTANT_SOURCE_KEY )or "").strip ().lower ()
     ai_message =user_message
+    if assistant_source =="consult":
+        ai_message =f"[FOCUS:GESTALT]\n{user_message }"
+        if response_mode =="sales":
+            ai_message =f"[FOCUS:GESTALT]\n[SALES_MODE]\n{user_message }"
+        return ai_message
     if assistant_source =="course":
         ai_message =f"\u041a\u043e\u043d\u0442\u0435\u043a\u0441\u0442: \u0432\u043e\u043f\u0440\u043e\u0441\u044b \u043e \u043a\u0443\u0440\u0441\u0435 GetCourse.\n{user_message }"
         if response_mode =="sales":
@@ -1542,6 +2615,9 @@ reply_markup =None ,
 
 
 async def _route_detected_intent (update :Update ,context :ContextTypes .DEFAULT_TYPE ,intent :str )->bool :
+    context .user_data [AI_MODE_KEY ]=False
+    context .user_data .pop (ASSISTANT_SOURCE_KEY ,None )
+    context .user_data .pop (ASSISTANT_EVENT_ID_KEY ,None )
     _clear_product_focus (context )
     if intent =="MENU":
         await menu_command (update ,context )
@@ -1570,11 +2646,31 @@ async def _route_detected_intent (update :Update ,context :ContextTypes .DEFAULT
             update ,
             context ,
             GAME10_SCREEN_TEXT ,
-            parse_mode ="Markdown",
-            reply_markup =get_game10_kb (_private_channel_payment_url ()),
+            parse_mode =None ,
+            reply_markup =_game10_kb_for_update (update ),
             )
         return True
     return False
+
+def _extract_navigation_intent_from_text_message (update :Update )->str |None :
+    message =update .effective_message
+    if message is None :
+        return None
+    text =(getattr (message ,"text",None )or "").strip ()
+    if not text or text .startswith ("/"):
+        return None
+    return detect_intent (text )
+
+async def handle_navigation_text_message (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    _apply_focus_timeout (context )
+    if context .user_data .get (WAITING_LEAD_KEY ):
+        return
+    intent =_extract_navigation_intent_from_text_message (update )
+    if not intent :
+        return
+    routed =await _route_detected_intent (update ,context ,intent )
+    if routed :
+        raise ApplicationHandlerStop
 
 async def handle_ai_message (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     _apply_focus_timeout (context )
@@ -1594,15 +2690,16 @@ async def handle_ai_message (update :Update ,context :ContextTypes .DEFAULT_TYPE
 
     intent =detect_intent (user_message )
     if intent :
-        context .user_data [AI_MODE_KEY ]=False
-        context .user_data [WAITING_LEAD_KEY ]=None
-        context .user_data .pop (ASSISTANT_SOURCE_KEY ,None )
-        context .user_data .pop (ASSISTANT_EVENT_ID_KEY ,None )
-        routed =await _route_detected_intent (update ,context ,intent )
-        if routed :
-            return
+        return
 
-    if not context .user_data .get (ASSISTANT_SOURCE_KEY ):
+    assistant_source =str (context .user_data .get (ASSISTANT_SOURCE_KEY )or "").strip ().lower ()
+    product_focus =str (context .user_data .get (PRODUCT_FOCUS_KEY )or "").strip ().lower ()
+    if not assistant_source and not product_focus :
+        context .user_data [AI_MODE_KEY ]=False
+        await _show_screen (update ,context ,ASSISTANT_ENTRY_HINT_TEXT ,reply_markup =get_back_to_menu_kb (),ui_mode =False )
+        return
+
+    if not context .user_data .get (ASSISTANT_SOURCE_KEY )and not context .user_data .get (PRODUCT_FOCUS_KEY ):
         focus_candidate =detect_product_focus (user_message )
         if focus_candidate :
             context .user_data [PRODUCT_FOCUS_KEY ]=focus_candidate
@@ -1632,27 +2729,9 @@ async def handle_text_outside_assistant (update :Update ,context :ContextTypes .
 
     intent =detect_intent (text )
     if intent :
-        routed =await _route_detected_intent (update ,context ,intent )
-        if routed :
-            return
-
-    focus_candidate =detect_product_focus (text )
-    if focus_candidate :
-        context .user_data [PRODUCT_FOCUS_KEY ]=focus_candidate
-    product_focus =str (context .user_data .get (PRODUCT_FOCUS_KEY )or "").strip ().lower ()
-    buy_intent =detect_buy_intent (text )
-
-    if _auto_ai_rate_limited (context ):
-        logger .debug ("auto_ai rate limited: user=%s",getattr (update .effective_user ,"id",None ))
         return
 
-    await _send_ai_response (
-    update ,
-    context ,
-    user_message =text ,
-    response_mode ="sales" if (buy_intent and product_focus )else "auto_lite",
-    reply_markup =get_ai_quick_actions_kb (),
-    )
+    await _show_screen (update ,context ,ASSISTANT_ENTRY_HINT_TEXT ,reply_markup =get_back_to_menu_kb (),ui_mode =False )
 
 async def show_help (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     query =update .callback_query
@@ -1672,7 +2751,7 @@ async def show_help (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
 
 async def course_link_unavailable (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     query =update .callback_query 
-    await _answer (query ,"РЎСЃС‹Р»РєР° РІСЂРµРјРµРЅРЅРѕ РЅРµРґРѕСЃС‚СѓРїРЅР°, РјС‹ РѕР±РЅРѕРІРёРј РµС‘ РїРѕСЃР»Рµ СЃРёРЅС…СЂРѕРЅРёР·Р°С†РёРё.",show_alert =True )
+    await _answer (query ,"\u0421\u0441\u044b\u043b\u043a\u0430 \u0432\u0440\u0435\u043c\u0435\u043d\u043d\u043e \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0430, \u043c\u044b \u043e\u0431\u043d\u043e\u0432\u0438\u043c \u0435\u0435 \u043f\u043e\u0441\u043b\u0435 \u0441\u0438\u043d\u0445\u0440\u043e\u043d\u0438\u0437\u0430\u0446\u0438\u0438.",show_alert =True )
 
 
     # --------- Errors / Retry ---------
@@ -1700,7 +2779,7 @@ async def rag_debug_command (update :Update ,context :ContextTypes .DEFAULT_TYPE
     f"Collections: {', '.join (map (str ,discovered )) if discovered else '-'}",
     f"Trace: collection={trace .get ('rag_collection','-')} requested={trace .get ('rag_requested_collection','-')} hits={trace .get ('rag_hits',0)} used={trace .get ('rag_used',False)} fallback_default={trace .get ('rag_fallback_to_default',False)}",
     f"Trace scores: {trace .get ('rag_top_scores') or []}",
-    f"Last response trace: events={last_trace .get ('used_events',False)}({last_trace .get ('used_events_count',0)}) rag={last_trace .get ('rag_used',False)}[{last_trace .get ('rag_collection','-')}] hits={last_trace .get ('rag_hits',0)} fallback_model={last_trace .get ('fallback_to_model',False)}",
+    f"Last response trace: events={last_trace .get ('events_used',last_trace .get ('used_events',False))}({last_trace .get ('events_count',last_trace .get ('used_events_count',0))}) rag={last_trace .get ('rag_used',False)}[{last_trace .get ('rag_used_collection',last_trace .get ('rag_collection','-'))}] hits={last_trace .get ('rag_hits',0)} fallback_model={last_trace .get ('fallback_to_model',False)}",
     "",
     ]
     for name in discovered :
@@ -1744,9 +2823,24 @@ async def retry_db (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
 
 
 async def on_error (update :object ,context :ContextTypes .DEFAULT_TYPE )->None :
-    logger .exception ("Unhandled error: %s",context .error )
-    if isinstance (update ,Update ):
-        await _notify_db_unavailable (update ,context .error if isinstance (context .error ,Exception )else None ,scope ="on_error")
+    error_obj =context .error if isinstance (context .error ,Exception )else None
+    if _is_network_timeout_exception (error_obj ):
+        _log_net_issue ("on_error",error_obj )
+        if isinstance (update ,Update ):
+            await _notify_network_timeout (update )
+        return
+    logger .exception ("Unhandled error type: %s",_err_name (error_obj ))
+    if not isinstance (update ,Update ):
+        return
+    if _is_db_exception (error_obj ):
+        await _notify_db_unavailable (update ,error_obj ,scope ="on_error")
+        return
+    query =getattr (update ,"callback_query",None )
+    if query is not None :
+        try :
+            await _answer (query ,"\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0431\u0440\u0430\u0431\u043e\u0442\u0430\u0442\u044c \u0437\u0430\u043f\u0440\u043e\u0441. \u041d\u0430\u0436\u043c\u0438\u0442\u0435 \u00ab\u0412 \u043c\u0435\u043d\u044e\u00bb.")
+        except Exception :
+            pass
 
 
 async def _send_events_list (
@@ -1786,7 +2880,7 @@ async def event_register (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     try :
         event_id =int (query .data .split (":")[1 ])
     except Exception :
-        await _answer (query ,"РќРµРєРѕСЂСЂРµРєС‚РЅС‹Р№ event_id",show_alert =True )
+        await _answer (query ,"\u041d\u0435\u043a\u043e\u0440\u0440\u0435\u043a\u0442\u043d\u044b\u0439 event_id",show_alert =True )
         return 
 
     try :
@@ -1796,10 +2890,10 @@ async def event_register (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
             tg_id =update .effective_user .id if update .effective_user else user_db .tg_id 
             result =await crm_service .add_attendee_by_tg_id (event_id ,tg_id )
             if not result .get ("ok")and result .get ("error")=="event_not_found":
-                await _answer (query ,"РЎРѕР±С‹С‚РёРµ РЅРµ РЅР°Р№РґРµРЅРѕ",show_alert =True )
+                await _answer (query ,"\u0421\u043e\u0431\u044b\u0442\u0438\u0435 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e",show_alert =True )
                 return 
             if not result .get ("ok")and result .get ("error")=="user_not_found":
-                await _answer (query ,"РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ",show_alert =True )
+                await _answer (query ,"\u041f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044c \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d",show_alert =True )
                 return 
             await session .commit ()
             if str (context .user_data .get (SCREEN_KIND_KEY )or "")=="event_detail"and int (context .user_data .get (SCREEN_EVENT_ID_KEY )or 0 )==event_id :
@@ -1809,7 +2903,7 @@ async def event_register (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
                 query ,
                 reply_markup =get_event_actions_kb (event_id ,registered =True ),
                 )
-            await _answer (query ,"Р’С‹ Р·Р°РїРёСЃР°РЅС‹!"if not result .get ("already")else "Р’С‹ СѓР¶Рµ Р±С‹Р»Рё Р·Р°РїРёСЃР°РЅС‹")
+            await _answer (query ,"\u0412\u044b \u0437\u0430\u043f\u0438\u0441\u0430\u043d\u044b!"if not result .get ("already")else "\u0412\u044b \u0443\u0436\u0435 \u0431\u044b\u043b\u0438 \u0437\u0430\u043f\u0438\u0441\u0430\u043d\u044b")
     except Exception as e :
         _log_db_issue ("event_register",e )
         _remember_pending_event_action (context ,update ,action ="event_register",event_id =event_id )
@@ -1836,7 +2930,7 @@ async def event_cancel (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     try :
         event_id =int (query .data .split (":")[1 ])
     except Exception :
-        await _answer (query ,"РќРµРєРѕСЂСЂРµРєС‚РЅС‹Р№ event_id",show_alert =True )
+        await _answer (query ,"\u041d\u0435\u043a\u043e\u0440\u0440\u0435\u043a\u0442\u043d\u044b\u0439 event_id",show_alert =True )
         return 
 
     try :
@@ -1846,10 +2940,10 @@ async def event_cancel (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
             tg_id =update .effective_user .id if update .effective_user else user_db .tg_id 
             result =await crm_service .remove_attendee_by_tg_id (event_id ,tg_id )
             if not result .get ("ok")and result .get ("error")=="event_not_found":
-                await _answer (query ,"РЎРѕР±С‹С‚РёРµ РЅРµ РЅР°Р№РґРµРЅРѕ",show_alert =True )
+                await _answer (query ,"\u0421\u043e\u0431\u044b\u0442\u0438\u0435 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e",show_alert =True )
                 return 
             if not result .get ("ok")and result .get ("error")=="user_not_found":
-                await _answer (query ,"РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ",show_alert =True )
+                await _answer (query ,"\u041f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044c \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d",show_alert =True )
                 return 
             await session .commit ()
             if str (context .user_data .get (SCREEN_KIND_KEY )or "")=="event_detail"and int (context .user_data .get (SCREEN_EVENT_ID_KEY )or 0 )==event_id :
@@ -1859,7 +2953,7 @@ async def event_cancel (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
                 query ,
                 reply_markup =get_event_actions_kb (event_id ,registered =False ),
                 )
-            await _answer (query ,"Р—Р°РїРёСЃСЊ РѕС‚РјРµРЅРµРЅР°"if result .get ("removed")else "Р’С‹ РЅРµ Р±С‹Р»Рё Р·Р°РїРёСЃР°РЅС‹")
+            await _answer (query ,"\u0417\u0430\u043f\u0438\u0441\u044c \u043e\u0442\u043c\u0435\u043d\u0435\u043d\u0430"if result .get ("removed")else "\u0412\u044b \u043d\u0435 \u0431\u044b\u043b\u0438 \u0437\u0430\u043f\u0438\u0441\u0430\u043d\u044b")
     except Exception as e :
         await _notify_db_unavailable (update ,e ,scope ="event_cancel")
 
@@ -1875,7 +2969,7 @@ async def event_pay (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     try :
         event_id =int (query .data .split (":")[1 ])
     except Exception :
-        await _answer (query ,"РќРµРєРѕСЂСЂРµРєС‚РЅС‹Р№ event_id",show_alert =True )
+        await _answer (query ,"\u041d\u0435\u043a\u043e\u0440\u0440\u0435\u043a\u0442\u043d\u044b\u0439 event_id",show_alert =True )
         return 
 
     try :
@@ -1884,13 +2978,13 @@ async def event_pay (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
             event_service =EventService (session )
             event =await event_service .get_by_id (event_id )
             if not event :
-                await _answer (query ,"РЎРѕР±С‹С‚РёРµ РЅРµ РЅР°Р№РґРµРЅРѕ",show_alert =True )
+                await _answer (query ,"\u0421\u043e\u0431\u044b\u0442\u0438\u0435 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e",show_alert =True )
                 return 
 
             price_value =event .price 
             amount =int (price_value )if price_value is not None else 0 
             if amount <=0 :
-                await _answer (query ,"РћРїР»Р°С‚Р° РґР»СЏ СЌС‚РѕРіРѕ СЃРѕР±С‹С‚РёСЏ РїРѕРєР° РЅРµРґРѕСЃС‚СѓРїРЅР°",show_alert =True )
+                await _answer (query ,"\u041e\u043f\u043b\u0430\u0442\u0430 \u0434\u043b\u044f \u044d\u0442\u043e\u0433\u043e \u0441\u043e\u0431\u044b\u0442\u0438\u044f \u043f\u043e\u043a\u0430 \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0430",show_alert =True )
                 return 
 
             crm_service =CRMService (session )
@@ -1901,28 +2995,28 @@ async def event_pay (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
             source ="yookassa",
             )
             if result is None :
-                await _answer (query ,"РќРµ СѓРґР°Р»РѕСЃСЊ СЃРѕР·РґР°С‚СЊ РїР»Р°С‚С‘Р¶",show_alert =True )
+                await _answer (query ,"\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0441\u043e\u0437\u0434\u0430\u0442\u044c \u043f\u043b\u0430\u0442\u0435\u0436",show_alert =True )
                 return 
 
             await session .commit ()
 
             payment_link =f"https://pay.example.local/yookassa?payment_id={result ['id']}"
             event_link_part =(
-            f"\nРЎС‚СЂР°РЅРёС†Р° РјРµСЂРѕРїСЂРёСЏС‚РёСЏ РЅР° GetCourse: {event .link_getcourse }"
+            f"\n\u0421\u0442\u0440\u0430\u043d\u0438\u0446\u0430 \u043c\u0435\u0440\u043e\u043f\u0440\u0438\u044f\u0442\u0438\u044f \u043d\u0430 GetCourse: {event .link_getcourse }"
             if _is_valid_http_url (event .link_getcourse )
             else ""
             )
             invite_part =(
-            f"\nРџРѕСЃР»Рµ РїРѕРґС‚РІРµСЂР¶РґРµРЅРёСЏ РѕРїР»Р°С‚С‹ РІС‹ РїРѕР»СѓС‡РёС‚Рµ РґРѕСЃС‚СѓРї РІ РєР°РЅР°Р»: {TG_PRIVATE_CHANNEL_INVITE_LINK }"
+            f"\n\u041f\u043e\u0441\u043b\u0435 \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u0438\u044f \u043e\u043f\u043b\u0430\u0442\u044b \u0432\u044b \u043f\u043e\u043b\u0443\u0447\u0438\u0442\u0435 \u0434\u043e\u0441\u0442\u0443\u043f \u0432 \u043a\u0430\u043d\u0430\u043b: {TG_PRIVATE_CHANNEL_INVITE_LINK }"
             if TG_PRIVATE_CHANNEL_INVITE_LINK 
-            else "\nРџРѕСЃР»Рµ РїРѕРґС‚РІРµСЂР¶РґРµРЅРёСЏ РѕРїР»Р°С‚С‹ РјРµРЅРµРґР¶РµСЂ РѕС‚РїСЂР°РІРёС‚ СЃСЃС‹Р»РєСѓ РІ Р·Р°РєСЂС‹С‚С‹Р№ РєР°РЅР°Р»."
+            else "\n\u041f\u043e\u0441\u043b\u0435 \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u0438\u044f \u043e\u043f\u043b\u0430\u0442\u044b \u043c\u0435\u043d\u0435\u0434\u0436\u0435\u0440 \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u0442 \u0441\u0441\u044b\u043b\u043a\u0443 \u0432 \u0437\u0430\u043a\u0440\u044b\u0442\u044b\u0439 \u043a\u0430\u043d\u0430\u043b."
             )
             await _send (context .bot ,
             chat_id =update .effective_chat .id ,
             text =(
-            "РџР»Р°С‚РµР¶ СЃРѕР·РґР°РЅ (pending).\n"
-            f"РЎСЃС‹Р»РєР° РґР»СЏ РѕРїР»Р°С‚С‹: {payment_link }\n"
-            "Р•СЃР»Рё РЅСѓР¶РµРЅ Р°Р»СЊС‚РµСЂРЅР°С‚РёРІРЅС‹Р№ СЃРїРѕСЃРѕР±, РЅР°Р¶РјРёС‚Рµ В«РЎРІСЏР·Р°С‚СЊСЃСЏ СЃ РјРµРЅРµРґР¶РµСЂРѕРјВ»."
+            "\u041f\u043b\u0430\u0442\u0435\u0436 \u0441\u043e\u0437\u0434\u0430\u043d (pending).\n"
+            f"\u0421\u0441\u044b\u043b\u043a\u0430 \u0434\u043b\u044f \u043e\u043f\u043b\u0430\u0442\u044b: {payment_link }\n"
+            "\u0415\u0441\u043b\u0438 \u043d\u0443\u0436\u0435\u043d \u0430\u043b\u044c\u0442\u0435\u0440\u043d\u0430\u0442\u0438\u0432\u043d\u044b\u0439 \u0441\u043f\u043e\u0441\u043e\u0431, \u043d\u0430\u0436\u043c\u0438\u0442\u0435 \u00ab\u0421\u0432\u044f\u0437\u0430\u0442\u044c\u0441\u044f \u0441 \u043c\u0435\u043d\u0435\u0434\u0436\u0435\u0440\u043e\u043c\u00bb."
             f"{event_link_part }"
             f"{invite_part }"
             ),
@@ -1932,9 +3026,18 @@ async def event_pay (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
 
 
 async def menu_command (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
-    _reset_states (context )
+    try :
+        _reset_states (context )
+    except Exception as e :
+        _log_db_issue ("menu_command_reset",e )
     if update .effective_message :
-        await _show_screen (update ,context ,"\u0413\u043b\u0430\u0432\u043d\u043e\u0435 \u043c\u0435\u043d\u044e",reply_markup =get_main_menu ())
+        try :
+            await _show_main_menu_bottom (update ,context )
+        except Exception as e :
+            logger .warning ("Menu command fallback: %s",_err_name (e ))
+            chat =update .effective_chat
+            if chat is not None :
+                await _send (context .bot ,chat_id =chat .id ,text ="\u0413\u043b\u0430\u0432\u043d\u043e\u0435 \u043c\u0435\u043d\u044e",reply_markup =get_main_menu (),parse_mode =None )
 
 
 async def mark_paid_dev (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
@@ -1943,20 +3046,20 @@ async def mark_paid_dev (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     if message is None or user is None :
         return 
 
-    if not ADMIN_CHAT_ID or str (user .id )!=str (ADMIN_CHAT_ID ):
-        await _reply (message ,"РљРѕРјР°РЅРґР° РґРѕСЃС‚СѓРїРЅР° С‚РѕР»СЊРєРѕ Р°РґРјРёРЅРёСЃС‚СЂР°С‚РѕСЂСѓ Р±РѕС‚Р°.")
+    if not _is_admin_user_id (user .id ):
+        await _reply (message ,"\u041a\u043e\u043c\u0430\u043d\u0434\u0430 \u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0430 \u0442\u043e\u043b\u044c\u043a\u043e \u0430\u0434\u043c\u0438\u043d\u0438\u0441\u0442\u0440\u0430\u0442\u043e\u0440\u0443 \u0431\u043e\u0442\u0430.")
         return 
 
     args =context .args or []
     if len (args )!=2 :
-        await _reply (message ,"Р¤РѕСЂРјР°С‚: /mark_paid <tg_id> <event_id>")
+        await _reply (message ,"\u0424\u043e\u0440\u043c\u0430\u0442: /mark_paid <tg_id> <event_id>")
         return 
 
     try :
         tg_id =int (args [0 ])
         event_id =int (args [1 ])
     except ValueError :
-        await _reply (message ,"tg_id Рё event_id РґРѕР»Р¶РЅС‹ Р±С‹С‚СЊ С‡РёСЃР»Р°РјРё.")
+        await _reply (message ,"tg_id \u0438 event_id \u0434\u043e\u043b\u0436\u043d\u044b \u0431\u044b\u0442\u044c \u0447\u0438\u0441\u043b\u0430\u043c\u0438.")
         return 
 
     try :
@@ -1965,7 +3068,7 @@ async def mark_paid_dev (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
             crm_service =CRMService (session )
             target_user =await crm_service ._get_user_by_tg_id (tg_id )
             if target_user is None :
-                await _reply (message ,"РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ.")
+                await _reply (message ,"Пользователь не найден.")
                 return 
 
             has_event_id =await crm_service ._payments_has_event_id ()
@@ -1998,86 +3101,230 @@ async def mark_paid_dev (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
                     payment_id =int (row_map ["id"])
 
             if payment_id is None :
-                await _reply (message ,"РџР»Р°С‚РµР¶ РЅРµ РЅР°Р№РґРµРЅ.")
+                await _reply (message ,"Платеж не найден.")
                 return 
 
             await crm_service .mark_payment_status (payment_id ,"paid")
             await session .commit ()
 
         await _reply (message ,
-        f"РџР»Р°С‚РµР¶ #{payment_id } РѕС‚РјРµС‡РµРЅ РєР°Рє paid РґР»СЏ tg_id={tg_id }, event_id={event_id }."
+        f"\u041f\u043b\u0430\u0442\u0451\u0436 #{payment_id } \u043e\u0442\u043c\u0435\u0447\u0435\u043d \u043a\u0430\u043a paid \u0434\u043b\u044f tg_id={tg_id }, event_id={event_id }."
         )
         if TG_PRIVATE_CHANNEL_INVITE_LINK :
             await _send (context .bot ,
             chat_id =tg_id ,
             text =(
-            "РћРїР»Р°С‚Р° РїРѕРґС‚РІРµСЂР¶РґРµРЅР°. Р’РѕС‚ СЃСЃС‹Р»РєР° РІ Р·Р°РєСЂС‹С‚С‹Р№ РєР°РЅР°Р»:\n"
+            "\u041e\u043f\u043b\u0430\u0442\u0430 \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u0430. \u0412\u043e\u0442 \u0441\u0441\u044b\u043b\u043a\u0430 \u0432 \u0437\u0430\u043a\u0440\u044b\u0442\u044b\u0439 \u043a\u0430\u043d\u0430\u043b:\n"
             f"{TG_PRIVATE_CHANNEL_INVITE_LINK }"
             ),
             )
     except Exception as e :
-        logger .exception ("РћС€РёР±РєР° РІ /mark_paid: %s",e )
-        await _reply (message ,"РќРµ СѓРґР°Р»РѕСЃСЊ РѕС‚РјРµС‚РёС‚СЊ РѕРїР»Р°С‚Сѓ. РџСЂРѕРІРµСЂСЊС‚Рµ Р»РѕРіРё.")
+        logger .exception ("Ошибка в /mark_paid: %s",e )
+        await _reply (message ,"\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0442\u043c\u0435\u0442\u0438\u0442\u044c \u043e\u043f\u043b\u0430\u0442\u0443. \u041f\u0440\u043e\u0432\u0435\u0440\u044c\u0442\u0435 \u043b\u043e\u0433\u0438.")
+
+
+async def testpay10_command (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    message =update .effective_message
+    user =update .effective_user
+    if message is None or user is None :
+        return
+    if not PAYMENTS_TEST_ENABLED :
+        await _reply (message ,"Тестовый режим оплаты выключен.")
+        return
+    if not _is_admin_user_id (user .id ):
+        await _reply (message ,"Команда доступна только администратору.")
+        return
+
+    await _reply (message ,"Создаю тестовый платёж...")
+    result =await _create_test_payment_backend (user .id )
+    if not isinstance (result ,dict )or not result .get ("ok"):
+        await _reply (message ,"Не удалось создать тестовый платёж.")
+        return
+    payment_id =str (result .get ("payment_id")or "").strip ()
+    confirmation_url =str (result .get ("confirmation_url")or "").strip ()
+    context .user_data ["last_payment_id"]=payment_id
+    if not confirmation_url :
+        await _reply (message ,"Платёж создан, но ссылка оплаты не получена.")
+        return
+
+    chat =update .effective_chat
+    if chat is None :
+        return
+    text =(
+    f"\u0422\u0435\u0441\u0442\u043e\u0432\u044b\u0439 \u043f\u043b\u0430\u0442\u0451\u0436 {PAYMENTS_TEST_AMOUNT_RUB } \u20bd.\n"
+    f"payment_id: {payment_id or '-'}\n"
+    f"{confirmation_url }"
+    )
+    kb =InlineKeyboardMarkup ([
+    [InlineKeyboardButton ("\u2705 \u042f \u043e\u043f\u043b\u0430\u0442\u0438\u043b \u2014 \u043f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c",callback_data =f"pay_check:{payment_id }")],
+    [InlineKeyboardButton ("\u21a9\ufe0f \u0412 \u043c\u0435\u043d\u044e",callback_data ="main_menu")],
+    ])
+    try :
+        await _send (
+        context .bot ,
+        chat_id =chat .id ,
+        text =text ,
+        parse_mode =None ,
+        disable_web_page_preview =True ,
+        reply_markup =kb ,
+        )
+    except BadRequest :
+        # Safety net: retry plain text explicitly without entity parsing.
+        try :
+            await context .bot .send_message (
+            chat_id =chat .id ,
+            text =_t (text ,label ="send")or "",
+            parse_mode =None ,
+            disable_web_page_preview =True ,
+            reply_markup =normalize_ui_reply_markup (kb ),
+            )
+        except Exception :
+            await _reply (message ,"\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c \u0441\u0441\u044b\u043b\u043a\u0443. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u0435\u0449\u0451 \u0440\u0430\u0437.")
+            return
+
+
+async def pay_debug (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    message =update .effective_message 
+    user =update .effective_user 
+    if message is None or user is None :
+        return 
+    if not _is_admin_user_id (user .id ):
+        await _reply (message ,"Команда доступна только админу.")
+        return 
+    args =context .args or []
+    try :
+        tg_id =int (args [0 ])if args else int (user .id )
+    except Exception :
+        await _reply (message ,"Формат: /pay_debug [tg_id]")
+        return 
+    is_paid =await _is_private_channel_paid_local (tg_id )
+    last_payment =await _get_last_game10_payment_local (tg_id )
+    if not last_payment :
+        await _reply (message ,f"tg_id={tg_id}\nprivate_channel_paid={is_paid}\nlast_payment: not found")
+        return 
+    await _reply (
+    message ,
+    (
+    f"tg_id={tg_id}\n"
+    f"private_channel_paid={is_paid}\n"
+    f"last_payment_id={last_payment .get ('payment_id')or '-'}\n"
+    f"last_payment_variant={last_payment .get ('product')or '-'}\n"
+    f"last_payment_status={last_payment .get ('status')or '-'}\n"
+    f"paid_at={last_payment .get ('paid_at')or '-'}\n"
+    f"has_phone={bool (last_payment .get ('has_phone'))}\n"
+    f"has_email={bool (last_payment .get ('has_email'))}"
+    ),
+    )
+
+
+async def handle_chat_join_request (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
+    join_request =getattr (update ,"chat_join_request",None )
+    if join_request is None :
+        return 
+    if TELEGRAM_PRIVATE_CHANNEL_ID and str (join_request .chat .id )!=str (TELEGRAM_PRIVATE_CHANNEL_ID ):
+        return 
+    user =getattr (join_request ,"from_user",None )
+    if user is None :
+        return 
+    is_paid =await _is_private_channel_paid_local (user .id )
+    action =decide_private_channel_join_action (
+    request_chat_id =join_request .chat .id ,
+    configured_channel_id =TELEGRAM_PRIVATE_CHANNEL_ID ,
+    is_paid =is_paid ,
+    )
+    if action =="ignore":
+        return 
+    if action =="approve":
+        try :
+            await context .bot .approve_chat_join_request (chat_id =join_request .chat .id ,user_id =user .id )
+        except Exception as e :
+            logger .warning ("Approve chat join request failed: %s",e .__class__ .__name__ )
+        return 
+    try :
+        await context .bot .decline_chat_join_request (chat_id =join_request .chat .id ,user_id =user .id )
+    except Exception as e :
+        logger .warning ("Decline chat join request failed: %s",e .__class__ .__name__ )
+    try :
+        await _send (context .bot ,chat_id =user .id ,
+        text ="Доступ к закрытому каналу открывается после оплаты 5 000 ₽. Нажмите «Оплатить 5 000 ₽».",
+        reply_markup =_game10_kb_for_update (update ),
+        )
+    except Exception as e :
+        logger .warning ("Join request notify failed: %s",e .__class__ .__name__ )
 
 
         # ============ App ============
 
 def build_app ()->Application :
     app =Application .builder ().token (BOT_TOKEN ).build ()
+    cmd =lambda handler :_guard_user_handler (handler ,busy_mode ="notify")
+    cb =lambda handler :_guard_user_handler (handler ,busy_mode ="ignore")
+    msg =lambda handler :_guard_user_handler (handler ,busy_mode ="notify")
 
     # Commands
-    app .add_handler (CommandHandler ("start",start ))
-    app .add_handler (CommandHandler ("menu",menu_command ))
-    app .add_handler (CommandHandler ("back",menu_command ))
-    app .add_handler (CommandHandler ("cancel",menu_command ))
-    app .add_handler (CommandHandler ("events",show_events_command ))
-    app .add_handler (CommandHandler ("courses",show_courses_command ))
-    app .add_handler (CommandHandler ("catalog",show_courses_command ))
-    app .add_handler (CommandHandler ("mark_paid",mark_paid_dev ))
-    app .add_handler (CommandHandler ("rag_debug",rag_debug_command ))
+    app .add_handler (CommandHandler ("start",cmd (start )))
+    app .add_handler (CommandHandler ("menu",cmd (menu_command )))
+    app .add_handler (CommandHandler ("back",cmd (menu_command )))
+    app .add_handler (CommandHandler ("cancel",cmd (menu_command )))
+    app .add_handler (CommandHandler ("events",cmd (show_events_command )))
+    app .add_handler (CommandHandler ("courses",cmd (show_courses_command )))
+    app .add_handler (CommandHandler ("catalog",cmd (show_courses_command )))
+    app .add_handler (CommandHandler ("mark_paid",cmd (mark_paid_dev )))
+    app .add_handler (CommandHandler ("testpay",cmd (testpay10_command )))
+    app .add_handler (CommandHandler ("testpay10",cmd (testpay10_command )))
+    app .add_handler (CommandHandler ("pay_debug",cmd (pay_debug )))
+    app .add_handler (CommandHandler ("rag_debug",cmd (rag_debug_command )))
 
     # Menu callbacks
-    app .add_handler (CallbackQueryHandler (main_menu ,pattern ="^main_menu$"))
-    app .add_handler (CallbackQueryHandler (main_menu ,pattern ="^menu$"))
-    app .add_handler (CallbackQueryHandler (retry_db ,pattern ="^retry_db$"))
+    app .add_handler (CallbackQueryHandler (cb (main_menu ),pattern ="^main_menu$"))
+    app .add_handler (CallbackQueryHandler (cb (main_menu ),pattern ="^menu$"))
+    app .add_handler (CallbackQueryHandler (cb (retry_db ),pattern ="^retry_db$"))
 
     # Sections
-    app .add_handler (CallbackQueryHandler (show_events ,pattern ="^events$"))
-    app .add_handler (CallbackQueryHandler (events_list_callback ,pattern ="^events_list$"))
-    app .add_handler (CallbackQueryHandler (event_list_prev ,pattern ="^event_list_prev$"))
-    app .add_handler (CallbackQueryHandler (event_list_next ,pattern ="^event_list_next$"))
-    app .add_handler (CallbackQueryHandler (event_list_refresh ,pattern ="^event_list_refresh$"))
-    app .add_handler (CallbackQueryHandler (event_open ,pattern ="^event_open:"))
-    app .add_handler (CallbackQueryHandler (show_courses ,pattern ="^courses$"))
-    app .add_handler (CallbackQueryHandler (show_courses_page ,pattern ="^courses_page:"))
-    app .add_handler (CallbackQueryHandler (show_private_channel ,pattern ="^private_channel$"))
-    app .add_handler (CallbackQueryHandler (private_channel_payment_info ,pattern ="^private_channel_payment_info$"))
-    app .add_handler (CallbackQueryHandler (course_link_unavailable ,pattern ="^course_link_unavailable$"))
-    app .add_handler (CallbackQueryHandler (show_consultations ,pattern ="^consultations$"))
-    app .add_handler (CallbackQueryHandler (show_formats_and_prices ,pattern ="^consult_formats$"))
-    app .add_handler (CallbackQueryHandler (show_ai_chat ,pattern ="^ai_chat$"))
-    app .add_handler (CallbackQueryHandler (show_course_questions ,pattern ="^course_questions$"))
-    app .add_handler (CallbackQueryHandler (game10_questions ,pattern ="^game10_questions$"))
-    app .add_handler (CallbackQueryHandler (event_questions ,pattern ="^event_questions:"))
-    app .add_handler (CallbackQueryHandler (show_contacts_request ,pattern ="^share_contacts$"))
-    app .add_handler (CallbackQueryHandler (contact_manager ,pattern ="^contact_manager$"))
-    app .add_handler (CallbackQueryHandler (show_help ,pattern ="^help$"))
-    app .add_handler (CallbackQueryHandler (event_register ,pattern ="^event_register:"))
-    app .add_handler (CallbackQueryHandler (event_cancel ,pattern ="^event_cancel:"))
-    app .add_handler (CallbackQueryHandler (event_pay ,pattern ="^event_pay:"))
+    app .add_handler (CallbackQueryHandler (cb (show_events ),pattern ="^events$"))
+    app .add_handler (CallbackQueryHandler (cb (events_list_callback ),pattern ="^events_list$"))
+    app .add_handler (CallbackQueryHandler (cb (event_list_prev ),pattern ="^event_list_prev$"))
+    app .add_handler (CallbackQueryHandler (cb (event_list_next ),pattern ="^event_list_next$"))
+    app .add_handler (CallbackQueryHandler (cb (event_list_refresh ),pattern ="^event_list_refresh$"))
+    app .add_handler (CallbackQueryHandler (cb (event_open ),pattern ="^event_open:"))
+    app .add_handler (CallbackQueryHandler (cb (show_courses ),pattern ="^courses$"))
+    app .add_handler (CallbackQueryHandler (cb (show_courses_page ),pattern ="^courses_page:"))
+    app .add_handler (CallbackQueryHandler (cb (show_private_channel ),pattern ="^private_channel$"))
+    app .add_handler (CallbackQueryHandler (cb (show_game10_description ),pattern ="^game10_description$"))
+    app .add_handler (CallbackQueryHandler (cb (private_channel_payment_info ),pattern ="^private_channel_payment_info$"))
+    app .add_handler (CallbackQueryHandler (cb (game10_pay_refresh ),pattern ="^game10_pay_refresh$"))
+    app .add_handler (CallbackQueryHandler (cb (game10_pay_check ),pattern ="^(?:game10_pay_check|pay_check):"))
+    app .add_handler (CallbackQueryHandler (cb (pay_contact_phone ),pattern ="^pay_contact_phone$"))
+    app .add_handler (CallbackQueryHandler (cb (pay_contact_email ),pattern ="^pay_contact_email$"))
+    app .add_handler (CallbackQueryHandler (cb (pay_contact_cancel ),pattern ="^pay_contact_cancel$"))
+    app .add_handler (CallbackQueryHandler (cb (course_link_unavailable ),pattern ="^course_link_unavailable$"))
+    app .add_handler (CallbackQueryHandler (cb (show_consultations ),pattern ="^consultations$"))
+    app .add_handler (CallbackQueryHandler (cb (show_formats_and_prices ),pattern ="^consult_formats$"))
+    app .add_handler (CallbackQueryHandler (cb (show_ai_chat ),pattern ="^ai_chat$"))
+    app .add_handler (CallbackQueryHandler (cb (show_course_questions ),pattern ="^course_questions$"))
+    app .add_handler (CallbackQueryHandler (cb (game10_questions ),pattern ="^game10_questions$"))
+    app .add_handler (CallbackQueryHandler (cb (event_questions ),pattern ="^event_questions:"))
+    app .add_handler (CallbackQueryHandler (cb (show_contacts_request ),pattern ="^share_contacts$"))
+    app .add_handler (CallbackQueryHandler (cb (contact_manager ),pattern ="^contact_manager$"))
+    app .add_handler (CallbackQueryHandler (cb (show_help ),pattern ="^help$"))
+    app .add_handler (CallbackQueryHandler (cb (event_register ),pattern ="^event_register:"))
+    app .add_handler (CallbackQueryHandler (cb (event_cancel ),pattern ="^event_cancel:"))
+    app .add_handler (CallbackQueryHandler (cb (event_pay ),pattern ="^event_pay:"))
 
     # Booking
-    app .add_handler (CallbackQueryHandler (begin_booking_individual ,pattern ="^book_individual$"))
-    app .add_handler (CallbackQueryHandler (begin_booking_group ,pattern ="^book_group$"))
+    app .add_handler (CallbackQueryHandler (cb (begin_booking_individual ),pattern ="^book_individual$"))
+    app .add_handler (CallbackQueryHandler (cb (begin_booking_group ),pattern ="^book_group$"))
 
     # Messages routing:
-    app .add_handler (MessageHandler (filters .ALL ,ensure_user_on_message ),group =-1 )
-    app .add_handler (MessageHandler (filters .CONTACT ,handle_contact_phone ),group =0 )
-    app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,handle_contact_phone_text ),group =1 )
-    app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,handle_contact_email_text ),group =2 )
-    app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,handle_lead_message ),group =3 )
-    app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,handle_ai_message ),group =4 )
-    app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,handle_text_outside_assistant ),group =5 )
+    app .add_handler (MessageHandler (filters .ALL ,msg (ensure_user_on_message )),group =-1 )
+    app .add_handler (MessageHandler (filters .CONTACT ,msg (handle_contact_phone )),group =0 )
+    app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,msg (handle_contact_phone_text )),group =1 )
+    app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,msg (handle_contact_email_text )),group =2 )
+    app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,msg (handle_navigation_text_message )),group =3 )
+    app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,msg (handle_lead_message )),group =4 )
+    app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,msg (handle_ai_message )),group =5 )
+    app .add_handler (MessageHandler (filters .TEXT &~filters .COMMAND ,msg (handle_text_outside_assistant )),group =6 )
+    app .add_handler (ChatJoinRequestHandler (handle_chat_join_request ),group =7 )
 
     app .add_error_handler (on_error )
 
@@ -2102,7 +3349,7 @@ def main ():
 
     app =build_app ()
     heartbeat_stop =_start_lock_heartbeat (LOCK_FILE_PATH )
-    logger .info ("Renata Bot Р·Р°РїСѓС‰РµРЅ. PID=%s",os .getpid ())
+    logger .info ("Renata Bot started. PID=%s",os .getpid ())
     logger .warning ("Polling mode: run only ONE bot instance, otherwise Telegram getUpdates conflict may occur.")
     try :
         db .init_db ()

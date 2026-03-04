@@ -29,7 +29,7 @@ _DEFAULT_SYSTEM_PROMPT = (
     "Если не хватает данных, честно скажи об этом и задай уточняющий вопрос."
 )
 
-_MOJIBAKE_RE = re.compile(r"[РСЃ][\w\d]{0,3}")
+_MOJIBAKE_RE = re.compile(r"(?:\u00D0.|\u00D1.|\u0420[\u0410-\u044FA-Za-z]|\u0421[\u0410-\u044FA-Za-z])")
 _RAG_FOCUS_PREFIX_RE = re.compile(r"^\s*\[FOCUS:(?P<name>[A-Z0-9_/-]+)\]\s*", re.IGNORECASE)
 
 
@@ -64,6 +64,7 @@ class AIService:
         self._last_trace: dict[str, object] = {}
         if self.rag_enabled:
             self.rag_retriever = RagRetriever(store=RagStore(data_dir=rag_dir))
+            self._log_rag_startup_summary()
 
         self.client: OpenAI | None = None
         if not api_key:
@@ -91,6 +92,25 @@ class AIService:
             )
         else:
             self.client = OpenAI(api_key=api_key, timeout=15.0)
+
+    def _log_rag_startup_summary(self) -> None:
+        if not self.rag_enabled or self.rag_retriever is None:
+            logger.info("RAG startup: enabled=%s collections=0 docs=0", False)
+            return
+        try:
+            store = self.rag_retriever.store
+            collections = store.list_collections(self.rag_data_dir)
+            docs_total = 0
+            for collection_dir in collections.values():
+                docs_total += len(list(store._iter_files(collection_dir=collection_dir)))
+            logger.info(
+                "RAG startup: enabled=%s collections=%s docs=%s",
+                True,
+                len(collections),
+                docs_total,
+            )
+        except Exception as e:
+            logger.warning("RAG startup summary failed: %s", e.__class__.__name__)
 
     @staticmethod
     def _detect_need_themes(text: str | None) -> list[str]:
@@ -617,7 +637,7 @@ class AIService:
         trace["rag_hits"] = len(result.top_chunks)
         trace["rag_top_scores"] = [float(getattr(hit, "score", 0.0)) for hit in result.top_chunks[:3]]
 
-        lines = ["???????? ???? ??????:"]
+        lines = ["Контекст из базы знаний:"]
         for idx, chunk in enumerate(result.top_chunks, start=1):
             lines.append(
                 f"{idx}. {chunk.title} ({chunk.source}, score={getattr(chunk, 'score', 0)}): {self._short(chunk.text, limit=520)}"
@@ -769,6 +789,7 @@ class AIService:
 
         self._last_trace = {
             "used_events": bool(event_context),
+            "events_used": bool(event_context),
             "used_events_count": int(event_counts.get("active_events", 0) if isinstance(event_counts, dict) else 0),
             "events_count": int(event_counts.get("active_events", 0) if isinstance(event_counts, dict) else 0),
             "event_counts": event_counts,

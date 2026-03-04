@@ -186,6 +186,42 @@ class UserService:
         await self.session.flush()
         return user
 
+    async def partial_update_contacts(
+        self,
+        tg_id: int,
+        *,
+        name: Optional[str] = None,
+        phone: Optional[str] = None,
+        email: Optional[str] = None,
+        username: Optional[str] = None,
+    ) -> Optional[User]:
+        user = await self.get_by_tg_id(tg_id)
+        if user is None:
+            return None
+
+        clean_name = (str(name).strip() if name else "") or None
+        clean_phone = (str(phone).strip() if phone else "") or None
+        clean_email = (str(email).strip().lower() if email else "") or None
+        clean_username = (str(username).strip().lstrip("@") if username else "") or None
+
+        changed = False
+        if clean_name and not user.first_name:
+            user.first_name = clean_name
+            changed = True
+        if clean_phone and not user.phone:
+            user.phone = clean_phone
+            changed = True
+        if clean_email and not user.email:
+            user.email = clean_email
+            changed = True
+        if clean_username and clean_username != user.username:
+            user.username = clean_username
+            changed = True
+
+        if changed:
+            await self.session.flush()
+        return user
+
     async def update(self, tg_id: int, data) -> Optional[User]:
         user = await self.get_by_tg_id(tg_id)
         if user is None:

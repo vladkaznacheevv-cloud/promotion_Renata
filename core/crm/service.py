@@ -7,7 +7,7 @@ import json
 import logging
 import os
 from uuid import uuid4
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from sqlalchemy import String, and_, cast, func, or_, select, text
@@ -107,6 +107,27 @@ class CRMService:
     def stage_after_payment_paid(cls, current_stage: str | None) -> str:
         _ = cls.normalize_stage(current_stage)
         return User.CRM_STAGE_PAID
+
+    @staticmethod
+    def _utc_now() -> datetime:
+        return datetime.now(timezone.utc)
+
+    @classmethod
+    def _dashboard_bounds(
+        cls,
+        days: Literal[7, 30, 90],
+        *,
+        now_utc: datetime | None = None,
+    ) -> tuple[datetime, datetime]:
+        end_ts = now_utc or cls._utc_now()
+        if end_ts.tzinfo is None:
+            end_ts = end_ts.replace(tzinfo=timezone.utc)
+        start_ts = end_ts - timedelta(days=int(days))
+        return start_ts, end_ts
+
+    @staticmethod
+    def _dashboard_paid_statuses() -> tuple[str, str]:
+        return ("paid", "succeeded")
 
     @staticmethod
     def _normalize_schedule_type(value: str | None) -> str:
@@ -408,6 +429,7 @@ class CRMService:
     async def list_clients(
         self,
         limit: int = 10,
+        offset: int = 0,
         stage: str | None = None,
         search: str | None = None,
     ) -> dict[str, Any]:
@@ -433,7 +455,7 @@ class CRMService:
         total = await self.db.scalar(select(func.count()).select_from(query.subquery()))
 
         result = await self.db.execute(
-            query.order_by(User.created_at.desc()).limit(limit)
+            query.order_by(User.created_at.desc()).limit(limit).offset(offset)
         )
         users = result.scalars().all()
         items = await self._build_client_items(users)
@@ -545,6 +567,57 @@ class CRMService:
             "avgRating": 0.0,
             "responseTime": 0.0,
             "topQuestions": [],
+        }
+
+    async def get_dashboard_summary(self, days: Literal[7, 30, 90] = 7) -> dict[str, Any]:
+        start_ts, end_ts = self._dashboard_bounds(days)
+
+        activity_ts = func.coalesce(
+            CRMUserActivity.last_activity_at,
+            CRMUserActivity.updated_at,
+            CRMUserActivity.created_at,
+        )
+        ai_answers = await self.db.scalar(
+            select(func.coalesce(func.sum(CRMUserActivity.ai_chats), 0)).where(
+                activity_ts >= start_ts,
+                activity_ts <= end_ts,
+            )
+        )
+
+        user_created_ts = func.coalesce(User.created_at, User.updated_at)
+        new_clients = await self.db.scalar(
+            select(func.count(User.id)).where(
+                user_created_ts >= start_ts,
+                user_created_ts <= end_ts,
+            )
+        )
+
+        paid_statuses = self._dashboard_paid_statuses()
+        paid_status_filter = func.lower(func.coalesce(Payment.status, "")).in_(paid_statuses)
+        paid_ts = func.coalesce(Payment.paid_at, Payment.updated_at, Payment.created_at)
+        payments_count = await self.db.scalar(
+            select(func.count(Payment.id)).where(
+                paid_status_filter,
+                paid_ts >= start_ts,
+                paid_ts <= end_ts,
+            )
+        )
+        revenue_total = await self.db.scalar(
+            select(func.coalesce(func.sum(Payment.amount), 0)).where(
+                paid_status_filter,
+                paid_ts >= start_ts,
+                paid_ts <= end_ts,
+            )
+        )
+
+        return {
+            "days": int(days),
+            "start_ts": start_ts,
+            "end_ts": end_ts,
+            "ai_answers": int(ai_answers or 0),
+            "new_clients": int(new_clients or 0),
+            "payments_count": int(payments_count or 0),
+            "revenue_total": int(revenue_total or 0),
         }
 
     async def create_client(self, data: ClientCreate) -> dict[str, Any]:
@@ -1629,7 +1702,7 @@ class CRMService:
         await self.db.flush()
         return placeholder
 
-    async def mark_private_channel_paid(self, user_id: int) -> dict[str, Any] | None:
+    async def mark_private_channel_paid(self, user_id: int, *, ensure_invite: bool = True) -> dict[str, Any] | None:
         subscription = await self._get_or_create_private_channel_subscription(user_id)
         if subscription is None:
             return None
@@ -1640,14 +1713,18 @@ class CRMService:
             subscription.paid_at = now
         subscription.updated_at = now
 
-        invite = await self._get_or_create_channel_invite(subscription.id)
-        invite_url = await self._ensure_invite_url(invite)
+        invite_url: str | None = None
+        token: str | None = None
+        if ensure_invite:
+            invite = await self._get_or_create_channel_invite(subscription.id)
+            token = invite.token
+            invite_url = await self._ensure_invite_url(invite)
         return {
             "ok": True,
             "user_id": int(subscription.user_id),
             "product": "private_channel",
             "status": subscription.status,
-            "token": invite.token,
+            "token": token,
             "invite_url": invite_url,
             "payment_url": self._private_channel_payment_url(),
             "paid_at": subscription.paid_at,
@@ -1676,6 +1753,21 @@ class CRMService:
         payload["token"] = invite.token
         payload["invite_url"] = await self._ensure_invite_url(invite)
         return payload
+
+    async def is_private_channel_paid(self, user_id: int) -> bool | None:
+        user = await self._get_user_by_any_id(user_id)
+        if user is None:
+            return None
+        row = await self.db.execute(
+            select(UserSubscription)
+            .where(UserSubscription.user_id == user.id)
+            .where(UserSubscription.product == "private_channel")
+            .limit(1)
+        )
+        subscription = row.scalar_one_or_none()
+        if subscription is None:
+            return False
+        return str(subscription.status or "").strip().lower() == "paid"
 
     def get_getcourse_integration(self) -> GetCourseService:
         return GetCourseService(self.db)

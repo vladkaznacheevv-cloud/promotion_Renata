@@ -372,8 +372,30 @@ const deriveClient = (client) => {
   };
 };
 
-export function getClients() {
-  return { items: clone(clients.map(deriveClient)), total: clients.length };
+export function getClients(params = {}) {
+  const stage = typeof params.stage === "string" ? params.stage.trim() : "";
+  const search = typeof params.search === "string" ? params.search.trim().toLowerCase() : "";
+  const rawLimit = Number(params.limit);
+  const rawOffset = Number(params.offset);
+  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.trunc(rawLimit) : null;
+  const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? Math.trunc(rawOffset) : 0;
+
+  let items = clients.map(deriveClient);
+  if (stage) {
+    items = items.filter((item) => item.stage === stage);
+  }
+  if (search) {
+    items = items.filter((item) =>
+      [item.name, item.telegram, item.phone, item.email, item.tg_id ? String(item.tg_id) : ""]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .includes(search)
+    );
+  }
+  const total = items.length;
+  const paged = limit === null ? items.slice(offset) : items.slice(offset, offset + limit);
+  return { items: clone(paged), total };
 }
 
 export function createClient(payload) {
@@ -499,6 +521,42 @@ export function deleteEvent(id) {
 
 export function getAiStats() {
   return clone(aiStats);
+}
+
+export function getDashboardSummary(days = 7) {
+  const safeDays = [7, 30, 90].includes(Number(days)) ? Number(days) : 7;
+  const now = new Date();
+  const start = new Date(now.getTime() - safeDays * 24 * 60 * 60 * 1000);
+  const paidStatuses = new Set(["paid", "succeeded"]);
+  const inRange = (value) => {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return false;
+    return date >= start && date <= now;
+  };
+
+  const aiAnswers = clients
+    .filter((client) => inRange(client.lastActivity))
+    .reduce((sum, client) => sum + Number(client.aiChats || 0), 0);
+
+  const newClients = clients.filter((client) => inRange(client.registered)).length;
+
+  const paidInRange = payments.filter((payment) => {
+    const status = String(payment.status || "").toLowerCase();
+    if (!paidStatuses.has(status)) return false;
+    return inRange(payment.paid_at || payment.created_at);
+  });
+
+  const revenueTotal = paidInRange.reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+
+  return {
+    days: safeDays,
+    start_ts: start.toISOString(),
+    end_ts: now.toISOString(),
+    ai_answers: aiAnswers,
+    new_clients: newClients,
+    payments_count: paidInRange.length,
+    revenue_total: revenueTotal,
+  };
 }
 
 export function getEventAttendees(eventId) {

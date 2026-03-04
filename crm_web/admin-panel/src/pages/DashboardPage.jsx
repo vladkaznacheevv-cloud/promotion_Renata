@@ -11,8 +11,8 @@ import {
   YAxis,
 } from "recharts";
 
-import { getAiStats } from "../api/ai";
 import { getClients } from "../api/clients";
+import { getDashboardSummary } from "../api/dashboard";
 import { getEvents } from "../api/events";
 import { DEV_MOCKS, getDevFallbackUsed } from "../api/http";
 import { getGetCourseEvents, getGetCourseSummary } from "../api/integrations";
@@ -28,7 +28,7 @@ import { Tabs } from "../components/ui/Tabs";
 export default function DashboardPage() {
   const [clients, setClients] = useState([]);
   const [events, setEvents] = useState([]);
-  const [aiStats, setAiStats] = useState(null);
+  const [dashboardSummary, setDashboardSummary] = useState(null);
   const [revenueSummary, setRevenueSummary] = useState(null);
   const [payments, setPayments] = useState([]);
   const [getcourseSummary, setGetcourseSummary] = useState(null);
@@ -36,17 +36,18 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [devNotice, setDevNotice] = useState("");
-  const [range, setRange] = useState("30d");
+  const [range, setRange] = useState("7d");
+  const rangeDays = range === "30d" ? 30 : range === "90d" ? 90 : 7;
 
-  const fetchData = async (withLoading = false) => {
+  const fetchData = async (days, withLoading = false) => {
     try {
       if (withLoading) setLoading(true);
       setError("");
-      const [clientsRes, eventsRes, aiRes, revenueRes, paymentsRes, gcSummaryRes, gcEventsRes] =
+      const [clientsRes, eventsRes, dashboardRes, revenueRes, paymentsRes, gcSummaryRes, gcEventsRes] =
         await Promise.all([
           getClients(),
           getEvents(),
-          getAiStats(),
+          getDashboardSummary(days),
           getRevenueSummary(),
           getPayments(),
           getGetCourseSummary(),
@@ -55,7 +56,7 @@ export default function DashboardPage() {
 
       setClients(clientsRes.items ?? clientsRes);
       setEvents(eventsRes.items ?? eventsRes);
-      setAiStats(aiRes);
+      setDashboardSummary(dashboardRes);
       setRevenueSummary(revenueRes);
       setPayments(paymentsRes.items ?? paymentsRes);
       setGetcourseSummary(gcSummaryRes);
@@ -86,12 +87,12 @@ export default function DashboardPage() {
     let active = true;
     (async () => {
       if (!active) return;
-      await fetchData(true);
+      await fetchData(rangeDays, true);
     })();
     return () => {
       active = false;
     };
-  }, []);
+  }, [rangeDays]);
 
   const stageCounters = useMemo(() => {
     const counters = {
@@ -113,7 +114,7 @@ export default function DashboardPage() {
     () => [
       {
         title: RU.labels.totalRevenue,
-        value: revenueSummary ? formatCurrencyRub(revenueSummary.total || 0) : RU.messages.emDash,
+        value: formatCurrencyRub(dashboardSummary?.revenue_total ?? 0),
         change: "—",
         changeType: "neutral",
         icon: <DollarSign className="h-6 w-6" />,
@@ -134,14 +135,14 @@ export default function DashboardPage() {
       },
       {
         title: RU.labels.aiResponses,
-        value: aiStats?.totalResponses ? aiStats.totalResponses.toLocaleString("ru-RU") : RU.messages.emDash,
+        value: (dashboardSummary?.ai_answers ?? 0).toLocaleString("ru-RU"),
         change: "—",
         changeType: "neutral",
         icon: <Bot className="h-6 w-6" />,
       },
       {
         title: RU.labels.stageNew,
-        value: stageCounters.NEW.toLocaleString("ru-RU"),
+        value: (dashboardSummary?.new_clients ?? 0).toLocaleString("ru-RU"),
         change: "—",
         changeType: "neutral",
         icon: <Users className="h-6 w-6" />,
@@ -162,19 +163,19 @@ export default function DashboardPage() {
       },
       {
         title: RU.labels.stagePaid,
-        value: stageCounters.PAID.toLocaleString("ru-RU"),
+        value: (dashboardSummary?.payments_count ?? 0).toLocaleString("ru-RU"),
         change: "—",
         changeType: "positive",
         icon: <TrendingUp className="h-6 w-6" />,
       },
     ],
-    [aiStats, clients.length, events.length, revenueSummary, stageCounters]
+    [clients.length, dashboardSummary, events.length, stageCounters]
   );
 
   const paidPayments = useMemo(() => payments.filter((p) => p.status === "paid"), [payments]);
 
   const revenueSeries = useMemo(() => {
-    const days = range === "7d" ? 7 : range === "90d" ? 90 : 30;
+    const days = rangeDays;
     const now = new Date();
     const map = new Map();
     for (let i = days - 1; i >= 0; i -= 1) {
@@ -190,7 +191,7 @@ export default function DashboardPage() {
       }
     });
     return Array.from(map.entries()).map(([date, value]) => ({ date, value }));
-  }, [paidPayments, range]);
+  }, [paidPayments, rangeDays]);
 
   const topEvents = useMemo(() => {
     const map = new Map();
@@ -282,9 +283,9 @@ export default function DashboardPage() {
         </div>
         <Tabs
           tabs={[
-            { label: "7д", value: "7d" },
-            { label: "30д", value: "30d" },
-            { label: "90д", value: "90d" },
+            { label: "7 дней", value: "7d" },
+            { label: "30 дней", value: "30d" },
+            { label: "90 дней", value: "90d" },
           ]}
           active={range}
           onChange={setRange}

@@ -7,12 +7,13 @@ export async function getClients(params = {}) {
     if (params.stage) query.set("stage", params.stage);
     if (params.search) query.set("search", params.search);
     if (params.limit) query.set("limit", String(params.limit));
+    if (typeof params.offset === "number" && params.offset >= 0) query.set("offset", String(params.offset));
     const suffix = query.toString() ? `?${query.toString()}` : "";
     return await apiGet(`/api/crm/clients${suffix}`);
   } catch (error) {
     if (shouldFallback(error)) {
       markDevFallbackUsed();
-      return devStore.getClients();
+      return devStore.getClients(params);
     }
     throw error;
   }

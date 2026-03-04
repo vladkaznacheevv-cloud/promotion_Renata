@@ -11,6 +11,25 @@ body {
   font-family: "Space Grotesk", system-ui, sans-serif;
 }
 
+.clients-table-scroll {
+  width: 100%;
+  scrollbar-gutter: stable both-edges;
+}
+
+.clients-table-scroll::-webkit-scrollbar {
+  height: 10px;
+}
+
+.clients-table-scroll::-webkit-scrollbar-track {
+  background: #e2e8f0;
+  border-radius: 9999px;
+}
+
+.clients-table-scroll::-webkit-scrollbar-thumb {
+  background: #94a3b8;
+  border-radius: 9999px;
+}
+
 @keyframes shimmer {
   0% {
     background-position: -200% 0;

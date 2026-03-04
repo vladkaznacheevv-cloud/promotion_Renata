@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 pytest.importorskip("jose")
+pytestmark = pytest.mark.integration
 
 from core.api.deps import get_db
 from core.auth.deps import get_current_admin_user
@@ -38,8 +39,8 @@ def test_get_catalog_contract(monkeypatch):
                 "items": [
                     {
                         "id": 1,
-                        "title": "Курс по продажам",
-                        "description": "Описание",
+                        "title": "Sales course",
+                        "description": "Description",
                         "price": 7900,
                         "currency": "RUB",
                         "link_getcourse": "https://example.com/course",
@@ -72,8 +73,8 @@ def test_get_catalog_item_contract(monkeypatch):
         AsyncMock(
             return_value={
                 "id": 2,
-                "title": "Продукт",
-                "description": "Описание продукта",
+                "title": "Product",
+                "description": "Product description",
                 "price": 3900,
                 "currency": "RUB",
                 "link_getcourse": "https://example.com/product",

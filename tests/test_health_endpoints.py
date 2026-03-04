@@ -13,6 +13,12 @@ def test_healthz_ok():
     assert "uptimeSeconds" in payload
 
 
+def test_health_routes_registered():
+    route_paths = {getattr(route, "path", None) for route in app.router.routes}
+    assert "/healthz" in route_paths
+    assert "/readyz" in route_paths
+
+
 def test_readyz_503_when_db_unavailable(monkeypatch):
     client = TestClient(app)
 

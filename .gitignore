@@ -6,16 +6,19 @@ venv/
 .tmp/
 .vscode/
 .idea/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 *.log
-setings.py
-.DS_store.env 
 *.egg-info/
 dist/
 build/
 *.bak_encoding
-# RAG data
+*.lock
+.DS_Store
+
+# RAG data (keep markdown/text knowledge files in git)
 rag_data/*
+!rag_data/**/
 !rag_data/**/*.md
 !rag_data/**/*.txt
-!rag_data/**/
-Send

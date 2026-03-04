@@ -1,14 +1,641 @@
-from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
+from __future__ import annotations
+
+import logging
+import os
+import re
+from datetime import datetime, timedelta, timezone
+from uuid import uuid4
+from typing import Any, List, Optional
+
+import httpx
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from core.api.deps import get_db
+from core.api.webhooks import process_game10_payment_success
+from core.crm.models import YooKassaPayment
 from core.payments.models import Payment
 from core.payments.schemas import PaymentCreate, PaymentResponse
 from core.payments.service import PaymentService
+from core.users.models import User
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+GAME10_PRICE_RUB = 5000
+GAME10_PRODUCT = "game10"
+GAME10_TEST_PRODUCT = "game10_test"
+_YOOKASSA_CONFIGURED = False
+_URL_RE = re.compile(r"https?://\S+")
+
+
+class Game10PaymentCreateIn(BaseModel):
+    tg_id: int = Field(..., ge=1)
+
+
+class Game10PaymentCreateOut(BaseModel):
+    payment_id: str
+    confirmation_url: str
+    amount_rub: int
+    is_reused: bool | None = None
+    reuse_reason: str | None = None
+
+
+class YooKassaStatusCheckIn(BaseModel):
+    payment_id: str = Field(..., min_length=1, max_length=128)
+    tg_id: int | None = Field(default=None, ge=1)
+
+
+class TestPaymentCreateIn(BaseModel):
+    tg_id: int = Field(..., ge=1)
+    product: str = Field(default=GAME10_TEST_PRODUCT, min_length=1, max_length=32)
+    amount_rub: int | None = Field(default=None, ge=1, le=100000)
+
+
+class YooKassaStatusCheckOut(BaseModel):
+    ok: bool = True
+    payment_id: str
+    status: str
+    updated: bool = False
+    processed_success: bool = False
+    already_in_channel: bool | None = None
+    result: str | None = None
+
+
+def _extract_internal_token(request: Request) -> str:
+    token = (request.headers.get("X-Bot-Api-Token") or request.headers.get("x-bot-api-token") or "").strip()
+    if token:
+        return token
+    auth = (request.headers.get("Authorization") or "").strip()
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return ""
+
+
+def _require_bot_api_token(request: Request) -> None:
+    expected = (os.getenv("BOT_API_TOKEN") or "").strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="BOT_API_TOKEN not configured")
+    incoming = _extract_internal_token(request)
+    if incoming != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def _is_enabled_env(name: str, default: bool = False) -> bool:
+    raw = str(os.getenv(name, "true" if default else "false") or "").strip().lower()
+    return raw in {"1", "true", "yes", "y", "on"}
+
+
+def _payments_test_enabled() -> bool:
+    return _is_enabled_env("PAYMENTS_TEST_ENABLED", default=False)
+
+
+def _payments_test_amount_rub() -> int:
+    return max(1, _int_env("PAYMENTS_TEST_AMOUNT_RUB", 10))
+
+
+def _bot_admin_ids() -> set[int]:
+    values: set[int] = set()
+    raw = str(os.getenv("BOT_ADMIN_IDS") or "").strip()
+    for item in raw.split(","):
+        candidate = item.strip()
+        if not candidate:
+            continue
+        try:
+            values.add(int(candidate))
+        except Exception:
+            continue
+    admin_chat_id = str(os.getenv("ADMIN_CHAT_ID") or "").strip()
+    if admin_chat_id:
+        try:
+            values.add(int(admin_chat_id))
+        except Exception:
+            pass
+    return values
+
+
+def _require_admin_tg_id(tg_id: int) -> None:
+    if int(tg_id) not in _bot_admin_ids():
+        raise HTTPException(status_code=403, detail="Admin only")
+
+
+def _sanitize_error_description(value: str | None) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    return _URL_RE.sub("<redacted_url>", text)[:240]
+
+
+def ensure_yookassa_configured() -> bool:
+    global _YOOKASSA_CONFIGURED
+    if _YOOKASSA_CONFIGURED:
+        return True
+
+    shop_id = (os.getenv("YOOKASSA_SHOP_ID") or "").strip()
+    secret_key = (os.getenv("YOOKASSA_SECRET_KEY") or "").strip()
+    if not shop_id or not secret_key:
+        return False
+
+    try:
+        from yookassa import Configuration as YooKassaConfiguration
+    except Exception:
+        return False
+
+    YooKassaConfiguration.configure(shop_id, secret_key)
+    _YOOKASSA_CONFIGURED = True
+    return True
+
+
+def _telegram_return_url(payment_id: str | None = None) -> str | None:
+    username = (
+        (os.getenv("BOT_USERNAME") or "").strip()
+        or (os.getenv("TELEGRAM_BOT_USERNAME") or "").strip()
+    )
+    username = username.lstrip("@").strip()
+    if not username:
+        return None
+    payment_suffix = re.sub(r"[^A-Za-z0-9_-]", "", str(payment_id or "").strip())[:48]
+    start_payload = f"pay_{payment_suffix}" if payment_suffix else "pay_return"
+    return f"https://t.me/{username}?start={start_payload}"
+
+
+def _public_return_url(payment_id: str | None = None) -> str:
+    bot_return = (os.getenv("TELEGRAM_BOT_RETURN_URL") or "").strip()
+    if bot_return:
+        if not bot_return.lower().startswith(("http://", "https://")):
+            bot_return = f"https://{bot_return}"
+        return bot_return
+    tg_deep_link = _telegram_return_url(payment_id=payment_id)
+    if tg_deep_link:
+        return tg_deep_link
+    base = _normalized_public_base_url()
+    if base:
+        return f"{base}/"
+    return "https://example.com/"
+
+
+def _yookassa_notification_url() -> str | None:
+    base = _normalized_public_base_url()
+    token = (os.getenv("YOOKASSA_WEBHOOK_TOKEN") or "").strip()
+    if not base or not token:
+        return None
+    return f"{base}/api/webhooks/yookassa/{token}"
+
+
+def _normalized_public_base_url() -> str:
+    base = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    if not base:
+        return ""
+    if not base.lower().startswith(("http://", "https://")):
+        base = f"https://{base}"
+    return base
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = (os.getenv(name) or "").strip()
+    try:
+        return int(raw) if raw else default
+    except Exception:
+        return default
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _normalize_dt(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _reuse_ttl_minutes() -> int:
+    return max(1, _int_env("YOOKASSA_REUSE_TTL_MINUTES", 15))
+
+
+def _is_within_reuse_ttl(created_at: datetime | None) -> bool:
+    created = _normalize_dt(created_at)
+    if created is None:
+        return False
+    return (_utcnow() - created) <= timedelta(minutes=_reuse_ttl_minutes())
+
+
+def _normalize_phone_for_receipt(value: str | None) -> str | None:
+    if not value:
+        return None
+    phone = "".join(ch for ch in str(value).strip() if ch.isdigit() or ch == "+")
+    return phone or None
+
+
+def _build_yookassa_receipt(
+    *,
+    email: str | None,
+    phone: str | None,
+    amount_rub: int,
+    item_description: str | None = None,
+) -> dict:
+    customer: dict[str, str] = {}
+    email_value = (str(email).strip() if email else "") or None
+    phone_value = _normalize_phone_for_receipt(phone)
+    if email_value:
+        customer["email"] = email_value
+    if phone_value:
+        customer["phone"] = phone_value
+    return {
+        "customer": customer,
+        "tax_system_code": _int_env("YOOKASSA_TAX_SYSTEM_CODE", 2),
+        "items": [
+            {
+                "description": str(item_description or "Игра 10:0 — доступ в закрытое сообщество"),
+                "quantity": "1.00",
+                "amount": {"value": f"{amount_rub:.2f}", "currency": "RUB"},
+                "vat_code": _int_env("YOOKASSA_VAT_CODE", 1),
+                "payment_subject": "service",
+                "payment_mode": "full_payment",
+            }
+        ],
+    }
+
+
+async def _get_receipt_customer_contact(db: AsyncSession, *, tg_id: int) -> tuple[str | None, str | None]:
+    row = await db.execute(
+        select(User.email, User.phone)
+        .where(User.tg_id == tg_id)
+        .limit(1)
+    )
+    mapping = row.mappings().first()
+    if not mapping:
+        return None, None
+    email = str(mapping.get("email") or "").strip() or None
+    phone = str(mapping.get("phone") or "").strip() or None
+    return email, phone
+
+
+async def _create_yookassa_payment(
+    *,
+    tg_id: int,
+    customer_email: str | None,
+    customer_phone: str | None,
+    amount_rub: int = GAME10_PRICE_RUB,
+    product_code: str = GAME10_PRODUCT,
+    payment_description: str | None = None,
+    receipt_item_description: str | None = None,
+) -> dict:
+    shop_id = (os.getenv("YOOKASSA_SHOP_ID") or "").strip()
+    secret_key = (os.getenv("YOOKASSA_SECRET_KEY") or "").strip()
+    if not shop_id or not secret_key:
+        raise HTTPException(status_code=503, detail="YOOKASSA credentials not configured")
+
+    idempotence_key = uuid4().hex
+    request_body = {
+        "amount": {"value": f"{amount_rub:.2f}", "currency": "RUB"},
+        "capture": True,
+        "confirmation": {"type": "redirect", "return_url": _public_return_url()},
+        "description": str(payment_description or "Игра 10:0 (доступ в закрытый канал)"),
+        "metadata": {"tg_id": str(tg_id), "product": str(product_code)},
+        "receipt": _build_yookassa_receipt(
+            email=customer_email,
+            phone=customer_phone,
+            amount_rub=amount_rub,
+            item_description=receipt_item_description,
+        ),
+    }
+    notification_url = _yookassa_notification_url()
+    if notification_url:
+        request_body["notification_url"] = notification_url
+    headers = {"Idempotence-Key": idempotence_key}
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(
+                "https://api.yookassa.ru/v3/payments",
+                json=request_body,
+                headers=headers,
+                auth=(shop_id, secret_key),
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"YooKassa request failed: {exc.__class__.__name__}") from exc
+
+    if response.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"YooKassa error: HTTP {response.status_code}")
+
+    try:
+        payload = response.json()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="YooKassa invalid JSON response") from exc
+
+    payment_id = str(payload.get("id") or "").strip()
+    confirmation_url = str(((payload.get("confirmation") or {}).get("confirmation_url") or "")).strip()
+    if not payment_id:
+        raise HTTPException(status_code=502, detail="YooKassa response missing payment_id")
+    if not confirmation_url:
+        raise HTTPException(status_code=502, detail="YooKassa response missing confirmation_url")
+    return {
+        "payment_id": payment_id,
+        "confirmation_url": confirmation_url,
+        "status": str(payload.get("status") or "pending"),
+        "idempotence_key": idempotence_key,
+    }
+
+
+async def _get_yookassa_payment_status(payment_id: str) -> str | None:
+    payment_id = str(payment_id or "").strip()
+    if not payment_id:
+        return None
+    try:
+        ensure_yookassa_configured()
+    except Exception:
+        pass
+    shop_id = (os.getenv("YOOKASSA_SHOP_ID") or "").strip()
+    secret_key = (os.getenv("YOOKASSA_SECRET_KEY") or "").strip()
+    if not shop_id or not secret_key:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                f"https://api.yookassa.ru/v3/payments/{payment_id}",
+                auth=(shop_id, secret_key),
+            )
+    except Exception:
+        return None
+    if response.status_code >= 400:
+        return None
+    try:
+        payload = response.json()
+    except Exception:
+        return None
+    return str(payload.get("status") or "").strip().lower() or None
+
+
+async def _should_reuse_existing_game10_payment(existing: YooKassaPayment | None) -> tuple[bool, str]:
+    if existing is None or not existing.payment_id or not existing.confirmation_url:
+        return False, "missing_existing"
+    if not _is_within_reuse_ttl(existing.created_at):
+        return False, "expired_ttl"
+    remote_status = await _get_yookassa_payment_status(str(existing.payment_id))
+    if remote_status and remote_status not in {"pending", "waiting_for_capture"}:
+        return False, "status_not_pending"
+    return True, "fresh"
+
+
+async def _get_last_pending_game10_payment(
+    db: AsyncSession,
+    *,
+    tg_id: int,
+    product_code: str,
+    amount_rub: int,
+) -> YooKassaPayment | None:
+    existing_row = await db.execute(
+        select(YooKassaPayment)
+        .where(YooKassaPayment.tg_id == tg_id)
+        .where(YooKassaPayment.product == str(product_code))
+        .where(YooKassaPayment.amount_rub == int(amount_rub))
+        .where(YooKassaPayment.status.in_(["pending", "waiting_for_capture", "created"]))
+        .where(YooKassaPayment.confirmation_url.is_not(None))
+        .order_by(YooKassaPayment.id.desc())
+        .limit(1)
+    )
+    return existing_row.scalar_one_or_none()
+
+
+async def _create_game10_payment_common(
+    *,
+    request: Request,
+    body: Optional[Game10PaymentCreateIn],
+    tg_id: Optional[int],
+    db: AsyncSession,
+    product_code: str,
+    amount_rub: int,
+    payment_description: str,
+    receipt_item_description: str,
+) -> Game10PaymentCreateOut:
+    _require_bot_api_token(request)
+    target_tg_id = int(tg_id or (body.tg_id if body is not None else 0))
+    if target_tg_id <= 0:
+        raise HTTPException(status_code=422, detail="tg_id is required")
+
+    existing = await _get_last_pending_game10_payment(
+        db,
+        tg_id=target_tg_id,
+        product_code=product_code,
+        amount_rub=amount_rub,
+    )
+    can_reuse, reuse_reason = await _should_reuse_existing_game10_payment(existing)
+    if can_reuse and existing and existing.payment_id and existing.confirmation_url:
+        return Game10PaymentCreateOut(
+            payment_id=str(existing.payment_id),
+            confirmation_url=str(existing.confirmation_url),
+            amount_rub=int(existing.amount_rub or amount_rub),
+            is_reused=True,
+            reuse_reason=reuse_reason,
+        )
+
+    email, phone = await _get_receipt_customer_contact(db, tg_id=target_tg_id)
+    logger.info(
+        "Game10 YooKassa receipt contacts: tg_id=%s has_email=%s has_phone=%s amount_rub=%s product=%s",
+        target_tg_id,
+        bool(email),
+        bool(phone),
+        amount_rub,
+        product_code,
+    )
+    if not email and not phone:
+        raise HTTPException(
+            status_code=400,
+            detail="Для оплаты нужен телефон или email (для отправки чека). Запросите контакты у клиента.",
+        )
+
+    created = await _create_yookassa_payment(
+        tg_id=target_tg_id,
+        customer_email=email,
+        customer_phone=phone,
+        amount_rub=amount_rub,
+        product_code=product_code,
+        payment_description=payment_description,
+        receipt_item_description=receipt_item_description,
+    )
+    logger.info(
+        "Game10 YooKassa payment created: tg_id=%s payment_id=%s status=%s has_email=%s has_phone=%s amount_rub=%s product=%s notification_url_present=%s",
+        target_tg_id,
+        created.get("payment_id"),
+        created.get("status"),
+        bool(email),
+        bool(phone),
+        amount_rub,
+        product_code,
+        bool(_yookassa_notification_url()),
+    )
+    record = YooKassaPayment(
+        tg_id=target_tg_id,
+        product=product_code,
+        amount_rub=amount_rub,
+        payment_id=created["payment_id"],
+        idempotence_key=created["idempotence_key"],
+        status=created["status"] or "pending",
+        confirmation_url=created["confirmation_url"],
+    )
+    db.add(record)
+    await db.flush()
+    return Game10PaymentCreateOut(
+        payment_id=created["payment_id"],
+        confirmation_url=created["confirmation_url"],
+        amount_rub=amount_rub,
+        is_reused=False,
+        reuse_reason=("new" if reuse_reason in {"missing_existing", "fresh"} else reuse_reason),
+    )
+
+
+@router.post("/game10/create", response_model=Game10PaymentCreateOut)
+async def create_game10_payment(
+    request: Request,
+    body: Optional[Game10PaymentCreateIn] = Body(default=None),
+    tg_id: Optional[int] = Query(default=None, ge=1),
+    db: AsyncSession = Depends(get_db),
+):
+    return await _create_game10_payment_common(
+        request=request,
+        body=body,
+        tg_id=tg_id,
+        db=db,
+        product_code=GAME10_PRODUCT,
+        amount_rub=GAME10_PRICE_RUB,
+        payment_description="Игра 10:0 (доступ в закрытый канал)",
+        receipt_item_description="Игра 10:0 — доступ в закрытое сообщество",
+    )
+
+
+
+@router.post("/test/create", response_model=Game10PaymentCreateOut)
+async def create_test_payment(
+    request: Request,
+    body: TestPaymentCreateIn,
+    db: AsyncSession = Depends(get_db),
+):
+    _require_bot_api_token(request)
+    if not _payments_test_enabled():
+        raise HTTPException(status_code=404, detail="Not found")
+    _require_admin_tg_id(int(body.tg_id))
+
+    product_code = str(body.product or GAME10_TEST_PRODUCT).strip().lower()
+    if product_code not in {GAME10_PRODUCT, GAME10_TEST_PRODUCT}:
+        raise HTTPException(status_code=422, detail="unsupported test product")
+    amount_rub = int(body.amount_rub or _payments_test_amount_rub())
+
+    return await _create_game10_payment_common(
+        request=request,
+        body=Game10PaymentCreateIn(tg_id=int(body.tg_id)),
+        tg_id=None,
+        db=db,
+        product_code=product_code,
+        amount_rub=amount_rub,
+        payment_description="Test payment (admin only)",
+        receipt_item_description="Test payment",
+    )
+
+
+async def _recheck_yookassa_payment_internal(
+    *,
+    db: AsyncSession,
+    payment_id: str,
+    tg_id: int | None = None,
+) -> dict:
+    payment_id = str(payment_id or "").strip()
+    if not payment_id:
+        raise HTTPException(status_code=422, detail="payment_id is required")
+    ensure_yookassa_configured()
+
+    row = await db.execute(
+        select(YooKassaPayment).where(YooKassaPayment.payment_id == payment_id).limit(1)
+    )
+    payment = row.scalar_one_or_none()
+    if payment is None:
+        raise HTTPException(status_code=404, detail="payment not found")
+    if tg_id is not None and int(payment.tg_id or 0) != int(tg_id):
+        raise HTTPException(status_code=409, detail="payment_id does not belong to tg_id")
+
+    remote_status = await _get_yookassa_payment_status(payment_id)
+    status_error_type: str | None = None
+    status_error_code: int | None = None
+    status_error_description: str | None = None
+    if remote_status is None:
+        status_error_type = "StatusUnknown"
+    status = str(remote_status or payment.status or "unknown").strip().lower() or "unknown"
+    previous_status = str(payment.status or "").strip().lower()
+    payment.status = status
+    if status == "succeeded" and payment.paid_at is None:
+        payment.paid_at = _utcnow()
+    await db.flush()
+    updated = status != previous_status or (status == "succeeded" and payment.paid_at is not None)
+
+    processed_success = False
+    already_in_channel: bool | None = None
+    result_label: str | None = None
+    error_type: str | None = None
+    if status == "succeeded" and int(payment.tg_id or 0) > 0:
+        success_result = await process_game10_payment_success(
+            db=db,
+            payment_id=payment_id,
+            tg_id=int(payment.tg_id),
+        )
+        processed_success = True
+        already_in_channel = bool(success_result.get("already_in_channel"))
+        result_label = str(success_result.get("result") or "")
+        error_type = str(success_result.get("error_type") or "").strip() or None
+        logger.info(
+            "YooKassa status check processed: payment_id=%s tg_id=%s status=%s result=%s",
+            payment_id,
+            int(payment.tg_id),
+            status,
+            result_label or "-",
+        )
+    else:
+        logger.info(
+            "YooKassa status check: payment_id=%s status=%s",
+            payment_id,
+            status,
+        )
+
+    return {
+        "ok": True,
+        "payment_id": payment_id,
+        "tg_id": int(payment.tg_id or 0),
+        "status": status,
+        "updated": bool(updated),
+        "processed_success": processed_success,
+        "already_in_channel": already_in_channel,
+        "result": result_label,
+        "error_type": error_type,
+        "status_error_type": status_error_type,
+        "status_error_code": status_error_code,
+        "status_error_description": _sanitize_error_description(status_error_description),
+    }
+
+
+@router.post("/yookassa/status", response_model=YooKassaStatusCheckOut)
+async def check_yookassa_payment_status(
+    request: Request,
+    body: YooKassaStatusCheckIn,
+    db: AsyncSession = Depends(get_db),
+):
+    _require_bot_api_token(request)
+    payload = await _recheck_yookassa_payment_internal(
+        db=db,
+        payment_id=str(body.payment_id or ""),
+        tg_id=(int(body.tg_id) if body.tg_id is not None else None),
+    )
+
+    return YooKassaStatusCheckOut(
+        ok=bool(payload.get("ok")),
+        payment_id=str(payload.get("payment_id") or ""),
+        status=str(payload.get("status") or "unknown"),
+        updated=bool(payload.get("updated")),
+        processed_success=bool(payload.get("processed_success")),
+        already_in_channel=payload.get("already_in_channel"),
+        result=(str(payload.get("result") or "") or None),
+    )
 
 
 @router.get("/", response_model=List[PaymentResponse])

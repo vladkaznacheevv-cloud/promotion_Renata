@@ -88,17 +88,17 @@ export default function PaymentsPage({ clients = [], events = [], role }) {
   return (
     <div className="space-y-6">
       <Card>
-        <CardHeader className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <CardHeader className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
           <div>
             <h2 className="text-lg font-semibold text-slate-900">{RU.labels.paymentsTitle}</h2>
             <p className="text-sm text-slate-500">{RU.labels.paymentsSubtitle}</p>
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex w-full flex-wrap items-center gap-2 xl:w-auto xl:flex-nowrap xl:justify-end">
             <Input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder={RU.labels.paymentSearch}
-              className="min-w-[220px]"
+              className="w-full min-w-[260px] xl:w-[340px] 2xl:w-[420px]"
             />
             <select
               className="h-10 rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-700"
@@ -155,7 +155,7 @@ export default function PaymentsPage({ clients = [], events = [], role }) {
                   <TH>{RU.labels.status}</TH>
                   <TH>{RU.labels.source}</TH>
                   <TH>{RU.labels.createdAt}</TH>
-                  <TH>{RU.labels.actions}</TH>
+                  <TH className="w-[1%] whitespace-nowrap">{RU.labels.actions}</TH>
                 </TR>
               </THead>
               <TBody>
@@ -181,10 +181,10 @@ export default function PaymentsPage({ clients = [], events = [], role }) {
                       })}
                     </TD>
                     <TD>
-                      <div className="flex flex-wrap gap-2">
+                      <div className="flex flex-nowrap gap-1.5">
                         <Button
                           variant="secondary"
-                          className="text-xs"
+                          className="h-8 whitespace-nowrap px-2.5 text-xs"
                           onClick={() => handleUpdateStatus(payment.id, "paid")}
                           disabled={!canManagePayments}
                         >
@@ -192,7 +192,7 @@ export default function PaymentsPage({ clients = [], events = [], role }) {
                         </Button>
                         <Button
                           variant="secondary"
-                          className="text-xs"
+                          className="h-8 whitespace-nowrap px-2.5 text-xs"
                           onClick={() => handleUpdateStatus(payment.id, "failed")}
                           disabled={!canManagePayments}
                         >
@@ -200,7 +200,7 @@ export default function PaymentsPage({ clients = [], events = [], role }) {
                         </Button>
                         <Button
                           variant="secondary"
-                          className="text-xs"
+                          className="h-8 whitespace-nowrap px-2.5 text-xs"
                           onClick={() => handleUpdateStatus(payment.id, "cancelled")}
                           disabled={!canManagePayments}
                         >

@@ -1,4 +1,4 @@
-﻿# promotion_Renata
+# promotion_Renata
 
 ## Запуск Docker-стека
 
@@ -7,6 +7,7 @@
 ```bash
 docker compose -f compose.prod.yml up -d --build
 docker compose -f compose.prod.yml ps
+python scripts/compose_doctor.py
 ```
 
 Runtime entrypoints:
@@ -14,6 +15,29 @@ Runtime entrypoints:
 - `web`: `uvicorn core.main:app --host 0.0.0.0 --port 8000`
 - `bot`: `python -m telegram_bot.main`
 - `frontend`: `nginx` (из `crm_web/admin-panel/Dockerfile`)
+
+Контур runtime опирается на `core/`, `telegram_bot/`, `crm_web/admin-panel/`.
+Папки `legacy/` и `backend/` оставлены как архив/история и не участвуют в production entrypoints.
+Артефакты разработки (`.tmp/`, `__pycache__/`, `.pytest_cache/`, `.vscode/`, `*.pyc`, `*.lock`) исключены из git и docker build context.
+
+Порты в production compose (для подготовки HTTPS на хосте):
+- `web`: `127.0.0.1:8000:8000`
+- `frontend`: `127.0.0.1:8080:80`
+- `bot`: без публичных портов
+
+Проверка после `up`:
+
+```bash
+docker compose -f compose.prod.yml config | grep -n "ports\\|published"
+docker ps --format "table {{.Names}}\t{{.Ports}}"
+ss -lntp | egrep ":80|:443|:8000|:8080"
+```
+
+Ожидаемо:
+- нет `0.0.0.0:80->...` у compose `frontend`
+- `127.0.0.1:8000->8000/tcp` (web)
+- `127.0.0.1:8080->80/tcp` (frontend)
+- порт `80` свободен для nginx/certbot на хосте
 
 ### Development (локально)
 
@@ -31,12 +55,25 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml ps
 - `backend`: `http://localhost:8000/docs`
 - `crm ping`: `http://localhost/api/crm/ping`
 
+## YooKassa (game10) — receipt / чек
+
+Если YooKassa возвращает `400 Receipt is missing or illegal` при создании платежа:
+- убедитесь, что в запросе передаётся `receipt`
+- в `receipt.customer` есть хотя бы `email` или `phone` пользователя
+- `vat_code=1` (без НДС)
+- для УСН используйте `YOOKASSA_TAX_SYSTEM_CODE=2` (по умолчанию)
+- если у клиента в БД нет `email/phone`, бот в сценарии `Игра 10:0 -> Оплатить 5 000 ₽` сам запросит телефон или email для чека, сохранит контакт и повторит создание платежа
+- если ссылка оплаты устарела и YooKassa показывает `Время истекло`, используйте кнопку `Обновить ссылку` — backend создаст новый платёж (или переиспользует только свежий `pending` в пределах `YOOKASSA_REUSE_TTL_MINUTES`, по умолчанию 15 минут)
+- если webhook YooKassa задержался, используйте кнопку `Проверить оплату` — бот запросит статус через backend и при подтверждении отправит кнопку вступления в канал
+- если у пользователя нет телефона/email для чека, бот сам запросит контакт (телефон или email), сохранит его и автоматически повторит создание платежа
+- чтобы после оплаты пользователь возвращался в Telegram-бот, задайте `BOT_USERNAME` (или явный `TELEGRAM_BOT_RETURN_URL`); по умолчанию используется deep-link вида `https://t.me/<bot_username>?start=pay_return`
+
 ## Bot Polling: только один экземпляр
 
 Бот работает в polling (`getUpdates`) и должен быть запущен только в одном экземпляре.
 
 Что добавлено:
-- lock-файл: `/tmp/renata_bot.lock`
+- lock-файл по умолчанию: `/tmp/promotion_renata/renata_bot.lock`
 - lock-путь можно переопределить через `BOT_LOCK_PATH`
 - лог инстанса: `host`, `pid`, `token_hash` (без вывода токена)
 - при занятом lock второй процесс завершается, не создавая конфликтов
@@ -79,6 +116,7 @@ docker ps --format "{{.Names}}\t{{.Image}}\t{{.Labels}}"
 - убедиться, что запущен только один контейнер `bot`
 - убедиться, что локально не запущен `python -m telegram_bot.main`
 - убедиться, что `BOT_LOCK_PATH` указывает в доступный путь внутри контейнера
+- временные lock/runtime-файлы не должны храниться в корне репозитория
 
 ### Bot unhealthy
 
@@ -370,48 +408,65 @@ python scripts/smoke_openrouter.py
 
 Ожидаемый результат: `OK <длина_ответа>`.
 
-## Локальный RAG (MVP)
+## RAG диагностика (production)
 
 RAG читает:
 - `default` коллекцию из корня `rag_data/*.md|*.txt`
-- дополнительные коллекции из любых подпапок `rag_data/<collection_name>/...`
+- дополнительные коллекции из подпапок `rag_data/<collection_name>/...`
 - вложенные коллекции тоже поддерживаются (пример: `rag_data/programs/supervision/*.md` -> коллекция `programs/supervision`)
 
-Примеры:
+Примеры файлов:
 - `rag_data/getcourse.md` (default)
-- `rag_data/gestalt.md` (default)
+- `rag_data/gestalt/overview.md` (collection `gestalt`)
 - `rag_data/game10/overview.md` (collection `game10`)
 - `rag_data/programs/<name>/intro.md` (collection `programs/<name>`)
 
-Эти файлы нужно заполнить вручную актуальным контентом проекта.
-
-Env:
+Env (web/bot):
 - `RAG_ENABLED=true`
 - `RAG_TOP_K=6`
 - `RAG_MIN_SCORE=0.08`
-- `RAG_DATA_DIR=rag_data`
+- `RAG_DATA_DIR=/app/rag_data` (в Docker) / `rag_data` (локально)
 - `RAG_MAX_CONTEXT_CHARS=5000`
 
-Smoke:
+### (а) Проверка файлов на хосте
 
 ```bash
-python scripts/rag_smoke.py
-python scripts/rag_smoke.py "как записаться на консультацию"
+ls -la rag_data
+find rag_data -maxdepth 3 -type f -name "*.md" -print
+```
+
+### (б) Проверка файлов внутри bot/web контейнеров
+
+```bash
+docker compose -f compose.prod.yml exec -T bot ls -la /app/rag_data
+docker compose -f compose.prod.yml exec -T bot find /app/rag_data -maxdepth 3 -type f -name "*.md" -print
+docker compose -f compose.prod.yml exec -T web ls -la /app/rag_data
+```
+
+### (в) `rag_doctor --list`
+
+```bash
+python scripts/rag_doctor.py --help
 python scripts/rag_doctor.py --list
-python scripts/rag_doctor.py --query "игра 10:0"
-python scripts/rag_doctor.py --query "супервизорская группа" --collection programs/supervision
-python scripts/rag_doctor.py --query "игра 10:0" --collections all
+docker compose -f compose.prod.yml exec -T web python scripts/rag_doctor.py --list
 ```
 
-Проверка в Docker (web/bot образ должен содержать `rag_data`):
+### (г) `rag_doctor --query` (default / game10 / gestalt)
 
 ```bash
-docker compose exec web python scripts/rag_doctor.py --list
-docker compose exec bot python scripts/rag_doctor.py --list
-docker compose -f compose.prod.yml exec bot ls -la /app/rag_data
-docker compose -f compose.prod.yml exec bot find /app/rag_data -maxdepth 3 -type f -name "*.md" -print
-docker compose -f compose.prod.yml exec web python scripts/rag_doctor.py --list
+python scripts/rag_doctor.py --query "что такое игра 10:0" --collection game10
+python scripts/rag_doctor.py --query "гештальт 1 ступень" --collection gestalt
+python scripts/rag_doctor.py --query "игра 10:0" --collections all
+python scripts/rag_doctor.py --query "игра 10:0" --collections game10,gestalt
+docker compose -f compose.prod.yml exec -T web python scripts/rag_doctor.py --query "что такое игра 10:0" --collection game10
 ```
+
+### (д) `/rag_debug` в боте
+
+- Команда: `/rag_debug <query>`
+- Если `ADMIN_CHAT_ID` задан, команда доступна только админу.
+- Если `ADMIN_CHAT_ID` не задан, бот явно показывает предупреждение, что команда открыта.
+- В выводе отображаются: обнаруженные коллекции, trace по query, trace последнего ответа (`rag_used_collection`, `rag_hits`, `fallback_to_default`, `fallback_to_model`).
 
 ## Ключевые скрипты и legacy
 
@@ -473,8 +528,305 @@ cp .env.example .env
 
 # 4) Запуск
 docker compose -f compose.prod.yml up -d --build
+python scripts/compose_doctor.py
 
 # 5) Проверка
-curl -i http://localhost:8000/healthz
-curl -i http://localhost:8000/readyz
+curl -i http://127.0.0.1:8000/healthz
+curl -i http://127.0.0.1:8000/readyz
+curl -i http://127.0.0.1:8080/
+docker ps --format "table {{.Names}}\t{{.Ports}}"
+ss -lntp | egrep ":80|:443|:8000|:8080"
+```
+
+## Домены и HTTPS (runbook, подготовка)
+
+Текущий `compose.prod.yml` специально не занимает внешний `:80`:
+- `frontend` слушает `127.0.0.1:8080`
+- `web` слушает `127.0.0.1:8000`
+
+Это позволяет поднять reverse proxy на хосте (nginx + certbot) для доменов без изменения внутренних API-контрактов.
+
+Шаблоны в репозитории:
+- `deploy/nginx/renatapromotion.conf` — host nginx для `crm.<domain>` и `api.<domain>`
+- `deploy/nginx/limits.conf` — `limit_req_zone` (кладётся в `/etc/nginx/conf.d/`, не в `server {}`)
+- `scripts/nginx_doctor.py` — безопасная диагностика (checks + copy-paste команды, без `systemctl`)
+
+Шаги:
+
+1. DNS:
+- создайте `A`-записи `crm.<DOMAIN>` -> `<SERVER_IP>`
+- создайте `A`-записи `api.<DOMAIN>` -> `<SERVER_IP>`
+
+2. Проверьте, какие порты должны быть заняты/свободны:
+- `80` / `443` — должен занимать хостовый nginx (после его установки)
+- `127.0.0.1:8000` — контейнер `web`
+- `127.0.0.1:8080` — контейнер `frontend`
+
+До установки хостового nginx внешний `:80` и `:443` должны быть свободны.
+
+Проверка:
+
+```bash
+ss -lntp | egrep ":80|:443|:8000|:8080"
+docker ps --format "table {{.Names}}\t{{.Ports}}"
+python scripts/nginx_doctor.py
+```
+
+3. Поднимите reverse proxy на хосте (рекомендуемый вариант):
+- `nginx` на хосте
+- `certbot` (HTTP-01) на `:80`
+- прокси:
+  - `crm.<DOMAIN>` -> `http://127.0.0.1:8080`
+  - `api.<DOMAIN>` -> `http://127.0.0.1:8000`
+- используйте шаблон `deploy/nginx/renatapromotion.conf` как стартовую точку
+- `limit_req_zone` вынесите в `deploy/nginx/limits.conf` (http-context)
+
+4. Обновите `.env` (не коммитьте):
+- `PUBLIC_BASE_URL=https://api.<DOMAIN>`
+- `YOOKASSA_WEBHOOK_TOKEN=<secret>`
+- `BOT_API_TOKEN=<internal bot->web token>`
+- `YOOKASSA_SHOP_ID=<shop/account id>`
+- `YOOKASSA_SECRET_KEY=<secret>`
+- `YOOKASSA_TAX_SYSTEM_CODE=2` (УСН доходы, по умолчанию)
+- `YOOKASSA_VAT_CODE=1` (без НДС, по умолчанию)
+- укажите webhook YooKassa на `https://api.<DOMAIN>/api/webhooks/yookassa/<YOOKASSA_WEBHOOK_TOKEN>`
+
+Примечания:
+- фронт уже собран с `VITE_API_BASE_URL=/api`, поэтому CRM продолжит работать через `crm.<DOMAIN>/api/*` при проксировании на backend;
+- HTTPS в compose сейчас не включается намеренно (TLS завершается на хостовом reverse proxy).
+
+## PROD CHECKLIST (today)
+
+1. Docker compose сервисы и health:
+
+```bash
+docker compose -f compose.prod.yml up -d --build
+docker compose -f compose.prod.yml ps
+docker ps --format "table {{.Names}}\t{{.Ports}}"
+ss -lntp | egrep ":80|:443|:8000|:8080"
+```
+
+Ожидаемо:
+- `web` -> `127.0.0.1:8000`
+- `frontend` -> `127.0.0.1:8080`
+- `80/443` свободны для host nginx (до его запуска)
+
+2. Host nginx routing check:
+
+```bash
+sudo cp deploy/nginx/renatapromotion.conf /etc/nginx/sites-available/renatapromotion.conf
+sudo cp deploy/nginx/limits.conf /etc/nginx/conf.d/limits.conf
+sudo ln -sfn /etc/nginx/sites-available/renatapromotion.conf /etc/nginx/sites-enabled/renatapromotion.conf
+sudo nginx -t && sudo systemctl reload nginx
+sh scripts/nginx_header_check.sh
+python scripts/nginx_doctor.py
+```
+
+3. HTTPS / certbot (пример):
+
+```bash
+sudo certbot --nginx -d crm.renatapromotion.ru -d api.renatapromotion.ru
+```
+
+4. YooKassa env checklist (`.env`, не коммитить):
+- `PUBLIC_BASE_URL=https://api.renatapromotion.ru`
+- `YOOKASSA_WEBHOOK_TOKEN=<secret>`
+- `BOT_API_TOKEN=<internal token bot->web>`
+- `YOOKASSA_SHOP_ID=<shop/account id>`
+- `YOOKASSA_SECRET_KEY=<secret>`
+- `YOOKASSA_TAX_SYSTEM_CODE=2`
+- `YOOKASSA_VAT_CODE=1`
+- `TELEGRAM_PRIVATE_CHANNEL_ID=-100...` (канал, где бот админ)
+
+Проверка env + create-payment smoke:
+
+```bash
+python scripts/yookassa_smoke.py
+python scripts/yookassa_smoke.py --tg-id <TG_ID>
+```
+
+5. Smoke тест оплаты (цепочка):
+- create payment (`/api/payments/game10/create`) -> получен `payment_id` + `confirmation_url`
+- webhook endpoint:
+  - `GET /api/webhooks/yookassa/<token>` -> `405` (это нормально, endpoint только POST)
+  - `POST /api/webhooks/yookassa/<token>` -> обновляет статус и отправляет TG кнопку вступления
+- join request flow:
+  - оплаченный пользователь -> approve
+  - неоплаченный пользователь -> decline + предложение оплатить
+
+Примеры:
+
+```bash
+curl -i -H "Host: api.renatapromotion.ru" http://127.0.0.1/healthz
+curl -i -H "Host: api.renatapromotion.ru" http://127.0.0.1/api/healthz
+curl -i -X GET "https://api.renatapromotion.ru/api/webhooks/yookassa/<TOKEN>"
+```
+
+6. Troubleshooting:
+- `nginx returns default page` -> проверьте `sites-enabled` symlink и `server_name`
+- `/api/* gives 404 html` -> неправильный `location /api/` / `proxy_pass` в host nginx
+- `YooKassa Receipt is missing` -> проверьте `receipt`, `receipt.customer`, `vat_code=1`
+- бот не approve join request -> проверьте `TELEGRAM_PRIVATE_CHANNEL_ID`, права бота в канале (admin), и paid-flag в БД (`/pay_debug`, `/rag_debug` тут не поможет)
+
+### Почему `curl /api/healthz` может быть `404` и как правильно тестировать
+
+Базовые health endpoints FastAPI существуют на:
+- `/healthz`
+- `/readyz`
+
+На `api.<DOMAIN>` можно тестировать напрямую:
+
+```bash
+curl -i -H "Host: api.<DOMAIN>" http://127.0.0.1/healthz
+curl -i -H "Host: api.<DOMAIN>" http://127.0.0.1/readyz
+```
+
+Пути `/api/healthz` и `/api/readyz` работают только если в host nginx добавлены алиасы
+(`/api/healthz -> /healthz`, `/api/readyz -> /readyz`). Шаблон `deploy/nginx/renatapromotion.conf`
+их уже содержит.
+
+Дополнительно (через CRM vhost):
+
+```bash
+curl -i -H "Host: crm.<DOMAIN>" http://127.0.0.1/api/healthz
+curl -i -H "Host: crm.<DOMAIN>" http://127.0.0.1/api/readyz
+```
+
+## Payment access diagnostics (P0)
+
+Use this checklist when user says "payment succeeded, but no private TG access".
+
+1. Verify YooKassa webhook POST traffic in nginx:
+
+```bash
+zgrep -h 'POST /api/webhooks/yookassa/' /var/log/nginx/access.log*
+```
+
+2. Verify backend webhook handler diagnostics (`event`, `payment_id`, `request_id`, `status`):
+
+```bash
+docker compose -f compose.prod.yml logs -n 300 web | grep "YooKassa webhook handled"
+```
+
+3. Verify invite delivery result and error type (`invite_sent` or `invite_failed`):
+
+```bash
+docker compose -f compose.prod.yml logs -n 300 web | grep -E "YooKassa payment succeeded|Game10 invite delivery failed"
+```
+
+4. Safe Telegram delivery probe by `tg_id` (token is read from env, never printed):
+
+```bash
+docker compose -f compose.prod.yml exec -T bot python - <<'PY'
+import asyncio
+import os
+import httpx
+
+tg_id = int(os.environ["TEST_TG_ID"])
+bot_token = os.environ["BOT_TOKEN"]
+
+async def main():
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {"chat_id": tg_id, "text": "diag: delivery check"}
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(url, json=payload)
+    try:
+        data = resp.json()
+    except Exception:
+        data = {}
+    print({
+        "status_code": resp.status_code,
+        "ok": bool(data.get("ok")),
+        "error_code": data.get("error_code"),
+        "description": data.get("description"),
+    })
+
+asyncio.run(main())
+PY
+```
+
+Interpretation:
+- `Forbidden`: user blocked bot or user never started chat with bot.
+- `BadRequest`: invalid `tg_id`/chat not found or malformed Telegram request.
+- `Timeout`: Telegram API/network timeout.
+- No webhook POST records in nginx: YooKassa webhook URL/delivery issue.
+
+5. Check DB request failures in web logs (safe fields only):
+
+```bash
+docker compose -f compose.prod.yml logs --since 30m --no-log-prefix web | grep -iE "db_request_error|error_type|short_message|request_id|path"
+```
+
+6. Check bot action latency and contention symptoms:
+
+```bash
+docker compose -f compose.prod.yml logs --since 30m --no-log-prefix bot | grep -iE "bot_action duration_ms|DB issue" | tail -n 300
+```
+
+7. Runtime env/DB probes inside containers (no `PYTHONPATH` required):
+
+```bash
+docker compose -f compose.prod.yml exec -T web python scripts/runtime_env_probe.py
+docker compose -f compose.prod.yml exec -T bot python scripts/runtime_env_probe.py
+docker compose -f compose.prod.yml exec -T web python scripts/db_activity_probe.py
+```
+
+## Runbook: test payment 10 RUB (admin)
+
+Important: test mode must stay disabled in production by default.
+
+Environment flags:
+- `PAYMENTS_TEST_ENABLED=false` (default)
+- `PAYMENTS_TEST_AMOUNT_RUB=10`
+- `BOT_ADMIN_IDS=123,456` (Telegram user ids allowed to run admin test payment)
+- `BOT_USERNAME=<your_bot_username>` (for payment return deep-link from YooKassa)
+
+Enable test mode only for diagnostics:
+
+```bash
+# update .env and restart services
+docker compose -f compose.prod.yml up -d --build
+```
+
+In bot (admin only):
+- run `/testpay10` (alias `/testpay`)
+- bot returns payment link for a test amount
+- after payment, press `✅ Я оплатил — проверить` to trigger status recheck and access delivery without waiting for webhook
+- if bank redirects back, bot opens `/start pay_return` and shows the same check step with “В меню”
+
+Check backend results without printing invite links:
+
+```bash
+docker compose -f compose.prod.yml logs --since 30m --no-log-prefix web | grep -iE "invite_sent|invite_failed|error_type|payment_id=" | tail -n 200
+```
+
+After diagnostics, disable test mode again:
+- set `PAYMENTS_TEST_ENABLED=false`
+- restart services
+
+## Runbook: recheck payment by payment_id
+
+Use local internal script inside `web` container (no HTTP auth needed, no `PYTHONPATH` required):
+
+```bash
+docker compose -f compose.prod.yml exec -T web python scripts/admin_recheck_yookassa_payment.py <payment_id>
+```
+
+```bash
+docker compose -f compose.prod.yml exec -T web python -c "import yookassa; print('yookassa OK')"
+```
+
+Output is safe and limited to:
+- `payment_id`
+- `tg_id`
+- `status`
+- `outcome` (`invite_sent` / `invite_failed` / etc.)
+- `error_type` (if present)
+
+## Mojibake diagnostics
+
+Run source check locally:
+
+```bash
+python scripts/mojibake_doctor.py
 ```
