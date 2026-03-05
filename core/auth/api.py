@@ -3,7 +3,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.api.deps import get_db
-from core.auth.deps import get_current_admin_user, _get_jwt_secret, _get_jwt_exp_minutes
+from core.auth.deps import (
+    get_current_admin_user,
+    _get_jwt_secret,
+    _get_jwt_exp_minutes,
+    is_email_allowed,
+)
 from core.auth.models import AdminUser
 from core.auth.schemas import LoginRequest, LoginResponse, AuthMeResponse
 from core.auth.security import verify_password, create_access_token
@@ -13,6 +18,9 @@ router = APIRouter()
 
 @router.post("/login", response_model=LoginResponse)
 async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
+    if not is_email_allowed(payload.email):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
     res = await db.execute(select(AdminUser).where(AdminUser.email == payload.email))
     user = res.scalar_one_or_none()
     if not user or not user.is_active:
