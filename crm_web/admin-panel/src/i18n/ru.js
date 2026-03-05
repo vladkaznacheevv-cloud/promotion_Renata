@@ -93,6 +93,7 @@
     topClients: "Топ клиентов",
     botPageTitle: "Активность AI / бота",
     responses: "Ответов",
+    aiResponsesAllTime: "AI ответов (за все время)",
     activeUsers: "Активных пользователей",
     recentBotActivity: "Последняя активность",
     user: "Пользователь",

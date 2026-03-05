@@ -464,7 +464,7 @@ export default function BotPage() {
         <CardContent>
           <div className="grid grid-cols-2 gap-4">
             <div className="rounded-xl border border-slate-200 p-4">
-              <p className="text-sm text-slate-500">{RU.labels.responses}</p>
+              <p className="text-sm text-slate-500">{RU.labels.aiResponsesAllTime}</p>
               <p className="text-2xl font-semibold text-slate-900">{stats.totalResponses}</p>
             </div>
             <div className="rounded-xl border border-slate-200 p-4">

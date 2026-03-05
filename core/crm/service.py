@@ -130,6 +130,28 @@ class CRMService:
         return ("paid", "succeeded")
 
     @staticmethod
+    def _activity_timestamp_expr():
+        return func.coalesce(
+            CRMUserActivity.last_activity_at,
+            CRMUserActivity.updated_at,
+            CRMUserActivity.created_at,
+        )
+
+    def _ai_answers_statement(
+        self,
+        *,
+        start_ts: datetime | None = None,
+        end_ts: datetime | None = None,
+    ):
+        stmt = select(func.coalesce(func.sum(CRMUserActivity.ai_chats), 0))
+        activity_ts = self._activity_timestamp_expr()
+        if start_ts is not None:
+            stmt = stmt.where(activity_ts >= start_ts)
+        if end_ts is not None:
+            stmt = stmt.where(activity_ts <= end_ts)
+        return stmt
+
+    @staticmethod
     def _normalize_schedule_type(value: str | None) -> str:
         normalized = (value or "").strip().lower()
         if normalized in EVENT_SCHEDULE_CHOICES:
@@ -561,8 +583,9 @@ class CRMService:
 
     async def get_ai_stats(self) -> dict[str, Any]:
         active_users = await self.db.scalar(select(func.count(User.id)))
+        total_responses = await self.db.scalar(self._ai_answers_statement())
         return {
-            "totalResponses": 0,
+            "totalResponses": int(total_responses or 0),
             "activeUsers": int(active_users or 0),
             "avgRating": 0.0,
             "responseTime": 0.0,
@@ -572,16 +595,8 @@ class CRMService:
     async def get_dashboard_summary(self, days: Literal[7, 30, 90] = 7) -> dict[str, Any]:
         start_ts, end_ts = self._dashboard_bounds(days)
 
-        activity_ts = func.coalesce(
-            CRMUserActivity.last_activity_at,
-            CRMUserActivity.updated_at,
-            CRMUserActivity.created_at,
-        )
         ai_answers = await self.db.scalar(
-            select(func.coalesce(func.sum(CRMUserActivity.ai_chats), 0)).where(
-                activity_ts >= start_ts,
-                activity_ts <= end_ts,
-            )
+            self._ai_answers_statement(start_ts=start_ts, end_ts=end_ts)
         )
 
         user_created_ts = func.coalesce(User.created_at, User.updated_at)
