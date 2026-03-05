@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import { createClient, getClients } from "../api/clients";
+import { getEvents } from "../api/events";
 import { createPayment, getPayments, updatePayment } from "../api/payments";
 import { useAuth } from "../auth/AuthContext";
 import EmptyState from "../components/EmptyState";
@@ -139,6 +140,25 @@ export default function PaymentsPage({ clients = [], events = [], role }) {
   const [newTelegram, setNewTelegram] = useState("");
   const [createEventId, setCreateEventId] = useState("");
   const [createAmount, setCreateAmount] = useState("");
+  const [modalEvents, setModalEvents] = useState([]);
+  const [modalEventsLoaded, setModalEventsLoaded] = useState(false);
+
+  const loadModalEvents = useCallback(async () => {
+    try {
+      const data = await getEvents();
+      const items = data?.items ?? data ?? [];
+      const activeSorted = items
+        .filter((eventItem) => eventItem?.status === "active")
+        .sort((a, b) =>
+          String(a?.title || "").localeCompare(String(b?.title || ""), "ru"),
+        );
+      setModalEvents(activeSorted);
+    } catch (_error) {
+      setModalEvents([]);
+    } finally {
+      setModalEventsLoaded(true);
+    }
+  }, []);
 
   const fetchPayments = useCallback(async () => {
     try {
@@ -167,12 +187,15 @@ export default function PaymentsPage({ clients = [], events = [], role }) {
     if (canManagePayments) {
       setModalError("");
       setIsCreateModalOpen(true);
+      if (!modalEventsLoaded && modalEvents.length === 0) {
+        loadModalEvents();
+      }
     }
 
     const next = new URLSearchParams(searchParams);
     next.delete("create");
     setSearchParams(next, { replace: true });
-  }, [searchParams, setSearchParams, canManagePayments]);
+  }, [searchParams, setSearchParams, canManagePayments, modalEventsLoaded, modalEvents.length, loadModalEvents]);
 
   const filteredPayments = useMemo(() => {
     if (!search.trim()) return payments;
@@ -621,8 +644,8 @@ export default function PaymentsPage({ clients = [], events = [], role }) {
                     onChange={(e) => setCreateEventId(e.target.value)}
                   >
                     <option value="">{UI_TEXT.noEvent}</option>
-                    {events.map((eventItem) => (
-                      <option key={eventItem.id} value={eventItem.id}>
+                    {modalEvents.map((eventItem) => (
+                      <option key={eventItem.id} value={String(eventItem.id)}>
                         {eventItem.title}
                       </option>
                     ))}
