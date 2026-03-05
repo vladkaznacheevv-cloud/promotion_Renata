@@ -152,8 +152,11 @@ chat_histories :dict [int ,list [dict ]]={}
 # User states
 WAITING_LEAD_KEY ="waiting_lead"# None | "individual" | "group"
 AI_MODE_KEY ="assistant_mode"# bool
+ASSISTANT_TOPIC_KEY ="assistant_topic"
 ASSISTANT_SOURCE_KEY ="assistant_source"# None | "course"
 ASSISTANT_EVENT_ID_KEY ="assistant_event_id"
+ASSISTANT_LAST_ACTIVITY_TS_KEY ="assistant_last_activity_ts"
+ASSISTANT_INTRO_SHOWN_KEY ="assistant_intro_shown"
 WAITING_CONTACT_PHONE_KEY ="waiting_contact_phone"
 WAITING_CONTACT_EMAIL_KEY ="waiting_contact_email"
 CONTACT_PHONE_KEY ="contact_phone"
@@ -186,6 +189,7 @@ SCREEN_EVENT_ID_KEY ="screen_event_id"
 AUTO_AI_REPLY_TIMESTAMPS_KEY ="auto_ai_reply_timestamps"
 AUTO_AI_RATE_LIMIT_WINDOW_SEC =12
 AUTO_AI_RATE_LIMIT_MAX =3
+ASSISTANT_TIMEOUT_SEC =60 *60
 
 PAYMENT_CREATING_SCREEN ="Создаю оплату..."
 PAYMENT_NEED_CONTACT_SCREEN ="Для оплаты нужен телефон или email (для отправки чека). Выберите вариант."
@@ -953,9 +957,7 @@ GAME10_DESCRIPTION_SCREEN_TEXT ="""\u0424\u043e\u0440\u043c\u0430\u0442 \u0440\u
 
 def _reset_states (context :ContextTypes .DEFAULT_TYPE ):
     context .user_data [WAITING_LEAD_KEY ]=None 
-    context .user_data [AI_MODE_KEY ]=False 
-    context .user_data .pop (ASSISTANT_SOURCE_KEY ,None )
-    context .user_data .pop (ASSISTANT_EVENT_ID_KEY ,None )
+    _assistant_exit (context )
     context .user_data [WAITING_CONTACT_PHONE_KEY ]=False 
     context .user_data [WAITING_CONTACT_EMAIL_KEY ]=False 
     context .user_data .pop (CONTACT_FLOW_KEY ,None )
@@ -980,6 +982,56 @@ def _apply_focus_timeout (context :ContextTypes .DEFAULT_TYPE )->bool :
 
 def _clear_product_focus (context :ContextTypes .DEFAULT_TYPE )->None :
     context .user_data .pop (PRODUCT_FOCUS_KEY ,None )
+
+
+def _assistant_enter (
+context :ContextTypes .DEFAULT_TYPE ,
+*,
+topic :str ,
+event_id :int |None =None ,
+)->None :
+    context .user_data [WAITING_LEAD_KEY ]=None
+    context .user_data [AI_MODE_KEY ]=True
+    context .user_data [ASSISTANT_TOPIC_KEY ]=topic
+    context .user_data [ASSISTANT_SOURCE_KEY ]=topic
+    if event_id is None :
+        context .user_data .pop (ASSISTANT_EVENT_ID_KEY ,None )
+    else :
+        context .user_data [ASSISTANT_EVENT_ID_KEY ]=int (event_id )
+    context .user_data [ASSISTANT_LAST_ACTIVITY_TS_KEY ]=int (time .time ())
+    context .user_data [ASSISTANT_INTRO_SHOWN_KEY ]=False
+
+
+def _assistant_touch (context :ContextTypes .DEFAULT_TYPE )->None :
+    if context .user_data .get (AI_MODE_KEY ):
+        context .user_data [ASSISTANT_LAST_ACTIVITY_TS_KEY ]=int (time .time ())
+
+
+def _assistant_is_expired (context :ContextTypes .DEFAULT_TYPE )->bool :
+    if not context .user_data .get (AI_MODE_KEY ):
+        return False
+    last_ts_raw =context .user_data .get (ASSISTANT_LAST_ACTIVITY_TS_KEY )
+    try :
+        last_ts =int (last_ts_raw )
+    except Exception :
+        return True
+    return int (time .time ())-last_ts >ASSISTANT_TIMEOUT_SEC
+
+
+def _assistant_exit (context :ContextTypes .DEFAULT_TYPE )->None :
+    context .user_data [AI_MODE_KEY ]=False
+    context .user_data .pop (ASSISTANT_TOPIC_KEY ,None )
+    context .user_data .pop (ASSISTANT_SOURCE_KEY ,None )
+    context .user_data .pop (ASSISTANT_EVENT_ID_KEY ,None )
+    context .user_data .pop (ASSISTANT_LAST_ACTIVITY_TS_KEY ,None )
+    context .user_data .pop (ASSISTANT_INTRO_SHOWN_KEY ,None )
+
+
+def _assistant_intro_reply_markup (context :ContextTypes .DEFAULT_TYPE ):
+    if context .user_data .get (ASSISTANT_INTRO_SHOWN_KEY ):
+        return None
+    context .user_data [ASSISTANT_INTRO_SHOWN_KEY ]=True
+    return get_back_to_menu_kb ()
 
 
 def _is_db_exception (exc :Exception |None )->bool :
@@ -1065,6 +1117,16 @@ async def _handle_busy_update (update :Update ,context :ContextTypes .DEFAULT_TY
         pass
 
 
+async def _assistant_expire_if_needed (update :Update ,context :ContextTypes .DEFAULT_TYPE )->bool :
+    if not context .user_data .get (AI_MODE_KEY ):
+        return False
+    if not _assistant_is_expired (context ):
+        return False
+    _assistant_exit (context )
+    await _show_main_menu_bottom (update ,context )
+    return True
+
+
 def _guard_user_handler (handler ,*,action :str |None =None ,busy_mode :str ="notify"):
     async def _wrapped (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
         tg_user =getattr (update ,"effective_user",None )
@@ -1074,6 +1136,8 @@ def _guard_user_handler (handler ,*,action :str |None =None ,busy_mode :str ="no
             raise ApplicationHandlerStop
         started_at =time .perf_counter ()
         try :
+            if await _assistant_expire_if_needed (update ,context ):
+                raise ApplicationHandlerStop
             return await handler (update ,context )
         finally :
             if user_id is not None :
@@ -1317,28 +1381,46 @@ async def ensure_user_on_message (update :Update ,context :ContextTypes .DEFAULT
 
 async def start (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
 # ensure user exists in DB
+    chat =update .effective_chat
+    chat_id =getattr (chat ,"id",None )
+    if chat_id is None :
+        return
 
     screen_manager .clear_screen (context )
     _reset_states (context )
+    context .user_data [AI_MODE_KEY ]=False
 
     start_payload =str ((context .args [0 ]if context .args else "")or "").strip ()
-    if start_payload .startswith ("pay_"):
-        payment_id =""
-        if start_payload !="pay_return":
-            payment_id =start_payload [4 :].strip ()
-        if payment_id :
-            context .user_data ["last_payment_id"]=payment_id
-        await _show_screen (
-        update ,
-        context ,
-        "\u0421\u043f\u0430\u0441\u0438\u0431\u043e \u0437\u0430 \u043e\u043f\u043b\u0430\u0442\u0443. \u041d\u0430\u0436\u043c\u0438\u0442\u0435 \u00ab\u2705 \u042f \u043e\u043f\u043b\u0430\u0442\u0438\u043b \u2014 \u043f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c\u00bb.",
-        parse_mode =None ,
-        reply_markup =_payment_return_kb (payment_id ),
-        )
-        return
+    try :
+        if start_payload .startswith ("pay_"):
+            payment_id =""
+            if start_payload !="pay_return":
+                payment_id =start_payload [4 :].strip ()
+            if payment_id :
+                context .user_data ["last_payment_id"]=payment_id
+            await _show_screen (
+            update ,
+            context ,
+            "\u0421\u043f\u0430\u0441\u0438\u0431\u043e \u0437\u0430 \u043e\u043f\u043b\u0430\u0442\u0443. \u041d\u0430\u0436\u043c\u0438\u0442\u0435 \u00ab\u2705 \u042f \u043e\u043f\u043b\u0430\u0442\u0438\u043b \u2014 \u043f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c\u00bb.",
+            parse_mode =None ,
+            reply_markup =_payment_return_kb (payment_id ),
+            prefer_new_on_message =True ,
+            )
+            logger .info ("start: welcome sent")
+            return
 
-    text ="\u0410\u0441\u0441\u0438\u0441\u0442\u0435\u043d\u0442 \u0433\u043e\u0442\u043e\u0432 \u043f\u043e\u043c\u043e\u0447\u044c \u0441 \u0432\u044b\u0431\u043e\u0440\u043e\u043c \u0440\u0430\u0437\u0434\u0435\u043b\u0430."
-    await _show_screen (update ,context ,text ,reply_markup =get_main_menu ())
+        text ="\u0410\u0441\u0441\u0438\u0441\u0442\u0435\u043d\u0442 \u0433\u043e\u0442\u043e\u0432 \u043f\u043e\u043c\u043e\u0447\u044c \u0441 \u0432\u044b\u0431\u043e\u0440\u043e\u043c \u0440\u0430\u0437\u0434\u0435\u043b\u0430."
+        if update .message is None :
+            await _show_main_menu_bottom (update ,context ,text =text )
+        else :
+            await _show_main_menu_bottom (update ,context ,text =text )
+        logger .info ("start: welcome sent")
+    except Exception :
+        logger .exception ("start handler: failed to send welcome/menu")
+        try :
+            await _send (context .bot ,chat_id =int (chat_id ),text ="\u041e\u0448\u0438\u0431\u043a\u0430. \u041d\u0430\u0436\u043c\u0438\u0442\u0435 /start \u0435\u0449\u0451 \u0440\u0430\u0437.",parse_mode =None )
+        except Exception :
+            pass
 
 
 async def main_menu (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
@@ -1967,10 +2049,7 @@ async def event_questions (update :Update ,context :ContextTypes .DEFAULT_TYPE )
         return
     user_id =update .effective_user .id
     chat_histories [user_id ]=[]
-    context .user_data [WAITING_LEAD_KEY ]=None
-    context .user_data [AI_MODE_KEY ]=True
-    context .user_data [ASSISTANT_SOURCE_KEY ]="event"
-    context .user_data [ASSISTANT_EVENT_ID_KEY ]=event_id
+    _assistant_enter (context ,topic ="event",event_id =event_id )
     context .user_data .pop (PRODUCT_FOCUS_KEY ,None )
     event =_find_cached_event (context ,event_id )
     if event is None :
@@ -1980,7 +2059,14 @@ async def event_questions (update :Update ,context :ContextTypes .DEFAULT_TYPE )
     prompt ="\u0417\u0430\u0434\u0430\u0439\u0442\u0435 \u0432\u043e\u043f\u0440\u043e\u0441 \u043f\u043e \u043c\u0435\u0440\u043e\u043f\u0440\u0438\u044f\u0442\u0438\u044e \u2014 \u044f \u043f\u043e\u043c\u043e\u0433\u0443 \u043f\u043e \u0440\u0430\u0441\u043f\u0438\u0441\u0430\u043d\u0438\u044e, \u0444\u043e\u0440\u043c\u0430\u0442\u0443 \u0438 \u0437\u0430\u043f\u0438\u0441\u0438."
     if title :
         prompt =f"\u0412\u043e\u043f\u0440\u043e\u0441\u044b \u043f\u043e \u043c\u0435\u0440\u043e\u043f\u0440\u0438\u044f\u0442\u0438\u044e: {title }\n\n{prompt }"
-    await _show_screen (update ,context ,prompt ,reply_markup =get_back_to_menu_kb ())
+    await _show_screen (
+    update ,
+    context ,
+    prompt ,
+    reply_markup =_assistant_intro_reply_markup (context ),
+    parse_mode =None ,
+    ui_mode =False ,
+    )
 
 
 
@@ -2301,7 +2387,7 @@ parsed :ParsedContacts ,
 async def begin_booking_individual (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     query =update .callback_query 
     await _answer (query )
-    context .user_data [AI_MODE_KEY ]=False 
+    _assistant_exit (context )
     context .user_data [WAITING_LEAD_KEY ]="individual"
     has_email =await _has_saved_email_for_user (update )
 
@@ -2324,7 +2410,7 @@ async def begin_booking_individual (update :Update ,context :ContextTypes .DEFAU
 async def begin_booking_group (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     query =update .callback_query 
     await _answer (query )
-    context .user_data [AI_MODE_KEY ]=False 
+    _assistant_exit (context )
     context .user_data [WAITING_LEAD_KEY ]="group"
     has_email =await _has_saved_email_for_user (update )
 
@@ -2427,15 +2513,14 @@ async def show_ai_chat (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     user_id =update .effective_user .id 
     chat_histories [user_id ]=[]# reset in-memory history on /start
 
-    context .user_data [WAITING_LEAD_KEY ]=None 
-    context .user_data [AI_MODE_KEY ]=True 
-    context .user_data [ASSISTANT_SOURCE_KEY ]="consult"
-    context .user_data .pop (ASSISTANT_EVENT_ID_KEY ,None )
+    _assistant_enter (context ,topic ="consult")
     context .user_data [PRODUCT_FOCUS_KEY ]="gestalt"
 
     await _show_screen (update ,context ,
     ASSISTANT_GREETING ,
-    reply_markup =get_back_to_menu_kb (),
+    reply_markup =_assistant_intro_reply_markup (context ),
+    parse_mode =None ,
+    ui_mode =False ,
     )
 
 
@@ -2447,17 +2532,16 @@ async def show_course_questions (update :Update ,context :ContextTypes .DEFAULT_
     user_id =update .effective_user .id 
     chat_histories [user_id ]=[]
 
-    context .user_data [WAITING_LEAD_KEY ]=None 
-    context .user_data [AI_MODE_KEY ]=True 
-    context .user_data [ASSISTANT_SOURCE_KEY ]="course"
-    context .user_data .pop (ASSISTANT_EVENT_ID_KEY ,None )
+    _assistant_enter (context ,topic ="course")
     context .user_data [PRODUCT_FOCUS_KEY ]="getcourse"
 
     await _show_screen (
     update ,
     context ,
     COURSE_ASSISTANT_GREETING ,
-    reply_markup =get_back_to_menu_kb (),
+    reply_markup =_assistant_intro_reply_markup (context ),
+    parse_mode =None ,
+    ui_mode =False ,
     )
 
 
@@ -2469,18 +2553,16 @@ async def game10_questions (update :Update ,context :ContextTypes .DEFAULT_TYPE 
     user_id =update .effective_user .id
     chat_histories [user_id ]=[]
 
-    context .user_data [WAITING_LEAD_KEY ]=None
-    context .user_data [AI_MODE_KEY ]=True
-    context .user_data [ASSISTANT_SOURCE_KEY ]="game10"
-    context .user_data .pop (ASSISTANT_EVENT_ID_KEY ,None )
+    _assistant_enter (context ,topic ="game10")
     context .user_data [PRODUCT_FOCUS_KEY ]="game10"
 
     await _show_screen (
     update ,
     context ,
     GAME10_ASSISTANT_GREETING ,
-    parse_mode ="Markdown",
-    reply_markup =get_back_to_menu_kb (),
+    parse_mode =None,
+    reply_markup =_assistant_intro_reply_markup (context ),
+    ui_mode =False ,
     )
 
 
@@ -2511,7 +2593,11 @@ def _auto_ai_rate_limited (context :ContextTypes .DEFAULT_TYPE )->bool :
 
 
 def _build_ai_request_message (context :ContextTypes .DEFAULT_TYPE ,user_message :str ,*,response_mode :str ="default")->str :
-    assistant_source =str (context .user_data .get (ASSISTANT_SOURCE_KEY )or "").strip ().lower ()
+    assistant_source =str (
+    context .user_data .get (ASSISTANT_TOPIC_KEY )
+    or context .user_data .get (ASSISTANT_SOURCE_KEY )
+    or ""
+    ).strip ().lower ()
     ai_message =user_message
     if assistant_source =="consult":
         ai_message =f"[FOCUS:GESTALT]\n{user_message }"
@@ -2599,7 +2685,7 @@ reply_markup =None ,
                     await session .commit ()
             except Exception as e :
                 _log_db_issue ("ai_activity",e )
-        await _reply (message ,response ,reply_markup =reply_markup )
+        await _reply (message ,response ,reply_markup =reply_markup ,parse_mode =None )
         return True
     except Exception as e :
         logger .exception ("Assistant error: %s",e )
@@ -2607,6 +2693,7 @@ reply_markup =None ,
         message ,
         "\u0421\u0435\u0439\u0447\u0430\u0441 \u043d\u0435 \u043f\u043e\u043b\u0443\u0447\u0438\u043b\u043e\u0441\u044c \u043e\u0442\u0432\u0435\u0442\u0438\u0442\u044c. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u0447\u0443\u0442\u044c \u043f\u043e\u0437\u0436\u0435.",
         reply_markup =reply_markup ,
+        parse_mode =None ,
         )
         return False
     finally :
@@ -2615,9 +2702,7 @@ reply_markup =None ,
 
 
 async def _route_detected_intent (update :Update ,context :ContextTypes .DEFAULT_TYPE ,intent :str )->bool :
-    context .user_data [AI_MODE_KEY ]=False
-    context .user_data .pop (ASSISTANT_SOURCE_KEY ,None )
-    context .user_data .pop (ASSISTANT_EVENT_ID_KEY ,None )
+    _assistant_exit (context )
     _clear_product_focus (context )
     if intent =="MENU":
         await menu_command (update ,context )
@@ -2665,6 +2750,8 @@ async def handle_navigation_text_message (update :Update ,context :ContextTypes 
     _apply_focus_timeout (context )
     if context .user_data .get (WAITING_LEAD_KEY ):
         return
+    if context .user_data .get (AI_MODE_KEY ):
+        return
     intent =_extract_navigation_intent_from_text_message (update )
     if not intent :
         return
@@ -2688,18 +2775,20 @@ async def handle_ai_message (update :Update ,context :ContextTypes .DEFAULT_TYPE
     if not user_message or user_message .startswith ("/"):
         return
 
-    intent =detect_intent (user_message )
-    if intent :
-        return
+    _assistant_touch (context )
 
-    assistant_source =str (context .user_data .get (ASSISTANT_SOURCE_KEY )or "").strip ().lower ()
+    assistant_source =str (
+    context .user_data .get (ASSISTANT_TOPIC_KEY )
+    or context .user_data .get (ASSISTANT_SOURCE_KEY )
+    or ""
+    ).strip ().lower ()
     product_focus =str (context .user_data .get (PRODUCT_FOCUS_KEY )or "").strip ().lower ()
     if not assistant_source and not product_focus :
-        context .user_data [AI_MODE_KEY ]=False
+        _assistant_exit (context )
         await _show_screen (update ,context ,ASSISTANT_ENTRY_HINT_TEXT ,reply_markup =get_back_to_menu_kb (),ui_mode =False )
         return
 
-    if not context .user_data .get (ASSISTANT_SOURCE_KEY )and not context .user_data .get (PRODUCT_FOCUS_KEY ):
+    if not context .user_data .get (ASSISTANT_TOPIC_KEY )and not context .user_data .get (ASSISTANT_SOURCE_KEY )and not context .user_data .get (PRODUCT_FOCUS_KEY ):
         focus_candidate =detect_product_focus (user_message )
         if focus_candidate :
             context .user_data [PRODUCT_FOCUS_KEY ]=focus_candidate

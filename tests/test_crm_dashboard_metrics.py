@@ -1,6 +1,8 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 
+import core.models  # noqa: F401
+
 from core.crm.service import CRMService
 
 
@@ -56,3 +58,31 @@ def test_dashboard_summary_uses_paid_and_succeeded_with_paid_timestamp():
     assert result["new_clients"] == 4
     assert result["payments_count"] == 3
     assert result["revenue_total"] == 15000
+
+
+def test_get_ai_stats_uses_all_time_ai_answers_source():
+    class _FakeDB:
+        def __init__(self):
+            self.scalar_calls = []
+
+        async def scalar(self, query):
+            self.scalar_calls.append(query)
+            call_no = len(self.scalar_calls)
+            if call_no == 1:
+                return 5
+            if call_no == 2:
+                return 42
+            return 0
+
+    fake_db = _FakeDB()
+    service = CRMService(fake_db)  # type: ignore[arg-type]
+
+    result = asyncio.run(service.get_ai_stats())
+
+    assert result["activeUsers"] == 5
+    assert result["totalResponses"] == 42
+    ai_query_sql = str(fake_db.scalar_calls[1]).lower()
+    assert "crm_user_activity.ai_chats" in ai_query_sql
+    assert "sum(" in ai_query_sql
+    assert ">=" not in ai_query_sql
+    assert "<=" not in ai_query_sql

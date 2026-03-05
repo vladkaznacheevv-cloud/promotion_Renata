@@ -1,4 +1,5 @@
 import os
+import re
 
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -24,6 +25,29 @@ def _get_jwt_exp_minutes() -> int:
         return 1440
 
 
+_ALLOWED_EMAIL_SPLIT_RE = re.compile(r"[,\s;]+")
+
+
+def _get_crm_allowed_emails() -> set[str] | None:
+    raw = (os.getenv("CRM_ALLOWED_EMAILS") or "").strip()
+    if not raw:
+        return None
+    items = [
+        part.strip().lower()
+        for part in _ALLOWED_EMAIL_SPLIT_RE.split(raw)
+        if part and part.strip()
+    ]
+    return set(items) or None
+
+
+def is_email_allowed(email: str | None) -> bool:
+    allowed = _get_crm_allowed_emails()
+    if not allowed:
+        return True
+    normalized = (email or "").strip().lower()
+    return normalized in allowed
+
+
 async def get_current_admin_user(
     creds: HTTPAuthorizationCredentials | None = Depends(auth_scheme),
     db: AsyncSession = Depends(get_db),
@@ -47,6 +71,8 @@ async def get_current_admin_user(
     user = res.scalar_one_or_none()
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="Inactive user")
+    if not is_email_allowed(user.email):
+        raise HTTPException(status_code=403, detail="Forbidden")
     return user
 
 

@@ -73,7 +73,7 @@ export default function AppLayout({ children }) {
       items.push({ label: RU.buttons.createEvent, to: "/events?create=1" });
     }
     if (role === "admin") {
-      items.push({ label: RU.buttons.createPayment, to: "/payments" });
+      items.push({ label: RU.buttons.createPayment, to: "/payments?create=1" });
     }
     return items;
   }, [canManage, role]);

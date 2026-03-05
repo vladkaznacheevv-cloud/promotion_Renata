@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -31,15 +32,38 @@ def test_navigation_handler_routes_and_stops_chain(monkeypatch):
     route_mock.assert_awaited_once_with(update, context, "MENU")
 
 
-def test_ai_handler_does_not_call_ai_for_navigation_text(monkeypatch):
-    update = _fake_text_update("главное меню")
-    context = _fake_context({bot_main.AI_MODE_KEY: True})
-    ai_mock = AsyncMock()
+def test_navigation_handler_ignored_when_assistant_mode(monkeypatch):
+    update = _fake_text_update("меню")
+    context = _fake_context(
+        {
+            bot_main.AI_MODE_KEY: True,
+            bot_main.ASSISTANT_TOPIC_KEY: "game10",
+            bot_main.ASSISTANT_LAST_ACTIVITY_TS_KEY: int(time.time()),
+        }
+    )
+    route_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(bot_main, "_route_detected_intent", route_mock)
+
+    asyncio.run(bot_main.handle_navigation_text_message(update, context))
+
+    route_mock.assert_not_called()
+
+
+def test_ai_handler_calls_ai_for_navigation_text_in_assistant_mode(monkeypatch):
+    update = _fake_text_update("меню")
+    context = _fake_context(
+        {
+            bot_main.AI_MODE_KEY: True,
+            bot_main.ASSISTANT_TOPIC_KEY: "game10",
+            bot_main.ASSISTANT_LAST_ACTIVITY_TS_KEY: int(time.time()),
+        }
+    )
+    ai_mock = AsyncMock(return_value=True)
     monkeypatch.setattr(bot_main, "_send_ai_response", ai_mock)
 
     asyncio.run(bot_main.handle_ai_message(update, context))
 
-    ai_mock.assert_not_called()
+    ai_mock.assert_awaited_once()
 
 
 def test_no_ai_outside_assistant(monkeypatch):
@@ -63,6 +87,7 @@ def test_ai_only_in_assistant_mode_with_focus(monkeypatch):
         {
             bot_main.AI_MODE_KEY: True,
             bot_main.PRODUCT_FOCUS_KEY: "game10",
+            bot_main.ASSISTANT_LAST_ACTIVITY_TS_KEY: int(time.time()),
         }
     )
     ai_mock = AsyncMock(return_value=True)

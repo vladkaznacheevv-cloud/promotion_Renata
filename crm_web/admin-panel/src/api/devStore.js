@@ -523,6 +523,23 @@ export function getAiStats() {
   return clone(aiStats);
 }
 
+export function getOpenRouterMetrics() {
+  return {
+    credits: {
+      data: {
+        total_credits: 0,
+        total_usage: 0,
+      },
+    },
+    activity: {
+      spend_usd: 0,
+      requests: 0,
+      tokens: 0,
+    },
+    error: null,
+  };
+}
+
 export function getDashboardSummary(days = 7) {
   const safeDays = [7, 30, 90].includes(Number(days)) ? Number(days) : 7;
   const now = new Date();

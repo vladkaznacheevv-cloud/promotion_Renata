@@ -12,3 +12,15 @@ export async function getAiStats() {
     throw error;
   }
 }
+
+export async function getOpenRouterMetrics() {
+  try {
+    return await apiGet("/api/crm/ai/openrouter");
+  } catch (error) {
+    if (shouldFallback(error)) {
+      markDevFallbackUsed();
+      return devStore.getOpenRouterMetrics();
+    }
+    throw error;
+  }
+}
