@@ -72,7 +72,10 @@ def test_start_with_pay_deeplink_shows_check_button(monkeypatch):
     show_screen_mock = AsyncMock()
     monkeypatch.setattr(bot_main, "_show_screen", show_screen_mock)
 
-    update = SimpleNamespace(effective_user=SimpleNamespace(id=321))
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=321),
+        effective_chat=SimpleNamespace(id=777),
+    )
     context = SimpleNamespace(args=["pay_yk_777"], user_data={})
 
     asyncio.run(bot_main.start(update, context))

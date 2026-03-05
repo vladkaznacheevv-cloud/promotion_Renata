@@ -1381,28 +1381,46 @@ async def ensure_user_on_message (update :Update ,context :ContextTypes .DEFAULT
 
 async def start (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
 # ensure user exists in DB
+    chat =update .effective_chat
+    chat_id =getattr (chat ,"id",None )
+    if chat_id is None :
+        return
 
     screen_manager .clear_screen (context )
     _reset_states (context )
+    context .user_data [AI_MODE_KEY ]=False
 
     start_payload =str ((context .args [0 ]if context .args else "")or "").strip ()
-    if start_payload .startswith ("pay_"):
-        payment_id =""
-        if start_payload !="pay_return":
-            payment_id =start_payload [4 :].strip ()
-        if payment_id :
-            context .user_data ["last_payment_id"]=payment_id
-        await _show_screen (
-        update ,
-        context ,
-        "\u0421\u043f\u0430\u0441\u0438\u0431\u043e \u0437\u0430 \u043e\u043f\u043b\u0430\u0442\u0443. \u041d\u0430\u0436\u043c\u0438\u0442\u0435 \u00ab\u2705 \u042f \u043e\u043f\u043b\u0430\u0442\u0438\u043b \u2014 \u043f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c\u00bb.",
-        parse_mode =None ,
-        reply_markup =_payment_return_kb (payment_id ),
-        )
-        return
+    try :
+        if start_payload .startswith ("pay_"):
+            payment_id =""
+            if start_payload !="pay_return":
+                payment_id =start_payload [4 :].strip ()
+            if payment_id :
+                context .user_data ["last_payment_id"]=payment_id
+            await _show_screen (
+            update ,
+            context ,
+            "\u0421\u043f\u0430\u0441\u0438\u0431\u043e \u0437\u0430 \u043e\u043f\u043b\u0430\u0442\u0443. \u041d\u0430\u0436\u043c\u0438\u0442\u0435 \u00ab\u2705 \u042f \u043e\u043f\u043b\u0430\u0442\u0438\u043b \u2014 \u043f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c\u00bb.",
+            parse_mode =None ,
+            reply_markup =_payment_return_kb (payment_id ),
+            prefer_new_on_message =True ,
+            )
+            logger .info ("start: welcome sent")
+            return
 
-    text ="\u0410\u0441\u0441\u0438\u0441\u0442\u0435\u043d\u0442 \u0433\u043e\u0442\u043e\u0432 \u043f\u043e\u043c\u043e\u0447\u044c \u0441 \u0432\u044b\u0431\u043e\u0440\u043e\u043c \u0440\u0430\u0437\u0434\u0435\u043b\u0430."
-    await _show_screen (update ,context ,text ,reply_markup =get_main_menu ())
+        text ="\u0410\u0441\u0441\u0438\u0441\u0442\u0435\u043d\u0442 \u0433\u043e\u0442\u043e\u0432 \u043f\u043e\u043c\u043e\u0447\u044c \u0441 \u0432\u044b\u0431\u043e\u0440\u043e\u043c \u0440\u0430\u0437\u0434\u0435\u043b\u0430."
+        if update .message is None :
+            await _show_main_menu_bottom (update ,context ,text =text )
+        else :
+            await _show_main_menu_bottom (update ,context ,text =text )
+        logger .info ("start: welcome sent")
+    except Exception :
+        logger .exception ("start handler: failed to send welcome/menu")
+        try :
+            await _send (context .bot ,chat_id =int (chat_id ),text ="\u041e\u0448\u0438\u0431\u043a\u0430. \u041d\u0430\u0436\u043c\u0438\u0442\u0435 /start \u0435\u0449\u0451 \u0440\u0430\u0437.",parse_mode =None )
+        except Exception :
+            pass
 
 
 async def main_menu (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
