@@ -34,9 +34,51 @@ function normalizeTelegram(value) {
   return String(value || "").trim().replace(/^@+/, "").toLowerCase();
 }
 
+function normalizeEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function normalizePhone(value) {
+  const digits = String(value || "").replace(/\D+/g, "");
+  if (digits.length === 11 && digits.startsWith("8")) {
+    return `7${digits.slice(1)}`;
+  }
+  return digits;
+}
+
+function normalizeLookup(field, value) {
+  if (field === "phone") return normalizePhone(value);
+  if (field === "email") return normalizeEmail(value);
+  return normalizeTelegram(value);
+}
+
+function matchesStrict(field, client, needle) {
+  if (field === "phone") {
+    return normalizePhone(client?.phone) === needle;
+  }
+  if (field === "email") {
+    return normalizeEmail(client?.email) === needle;
+  }
+  return normalizeTelegram(client?.telegram) === needle;
+}
+
+function formatExistingClientOption(client) {
+  const name = String(client?.name || "").trim() || "\u0411\u0435\u0437 \u0438\u043c\u0435\u043d\u0438";
+  const parts = [name];
+  const telegram = normalizeTelegram(client?.telegram);
+  const phone = normalizePhone(client?.phone);
+  const email = normalizeEmail(client?.email);
+  if (telegram) parts.push(`@${telegram}`);
+  if (phone) parts.push(phone);
+  if (email) parts.push(email);
+  return parts.join(" \u2022 ");
+}
+
 const UI_TEXT = {
-  telegramRequired: "\u0423\u043a\u0430\u0436\u0438\u0442\u0435 Telegram username \u0432 \u0444\u043e\u0440\u043c\u0430\u0442\u0435 @nick",
+  lookupRequired: "\u0423\u043a\u0430\u0436\u0438\u0442\u0435 \u0437\u043d\u0430\u0447\u0435\u043d\u0438\u0435 \u0434\u043b\u044f \u043f\u043e\u0438\u0441\u043a\u0430",
   clientNotFound: "\u041a\u043b\u0438\u0435\u043d\u0442 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d",
+  findClientFirst: "\u0421\u043d\u0430\u0447\u0430\u043b\u0430 \u043d\u0430\u0439\u0434\u0438\u0442\u0435 \u043a\u043b\u0438\u0435\u043d\u0442\u0430",
+  chooseClientFromList: "\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u043a\u043b\u0438\u0435\u043d\u0442\u0430 \u0438\u0437 \u0441\u043f\u0438\u0441\u043a\u0430",
   amountInvalid: "\u0421\u0443\u043c\u043c\u0430 \u0434\u043e\u043b\u0436\u043d\u0430 \u0431\u044b\u0442\u044c \u0446\u0435\u043b\u044b\u043c \u0447\u0438\u0441\u043b\u043e\u043c \u0431\u043e\u043b\u044c\u0448\u0435 0",
   nameRequired: "\u0423\u043a\u0430\u0436\u0438\u0442\u0435 \u0438\u043c\u044f \u043a\u043b\u0438\u0435\u043d\u0442\u0430",
   cashSource: "\u043d\u0430\u043b\u0438\u0447\u043a\u0430",
@@ -50,6 +92,16 @@ const UI_TEXT = {
   namePlaceholder: "\u0418\u043c\u044f \u043a\u043b\u0438\u0435\u043d\u0442\u0430",
   phoneOptional: "\u0422\u0435\u043b\u0435\u0444\u043e\u043d (\u043e\u043f\u0446\u0438\u043e\u043d\u0430\u043b\u044c\u043d\u043e)",
   telegramOptional: "Telegram username (\u043e\u043f\u0446\u0438\u043e\u043d\u0430\u043b\u044c\u043d\u043e)",
+  lookupBy: "\u0418\u0441\u043a\u0430\u0442\u044c \u043f\u043e",
+  lookupTelegram: "Telegram username (@nick)",
+  lookupPhone: "\u0422\u0435\u043b\u0435\u0444\u043e\u043d",
+  lookupEmail: "Email",
+  lookupValue: "\u0417\u043d\u0430\u0447\u0435\u043d\u0438\u0435",
+  lookupTelegramPlaceholder: "@nickname",
+  lookupPhonePlaceholder: "+7 (999) 123-45-67",
+  lookupEmailPlaceholder: "name@example.com",
+  find: "\u041d\u0430\u0439\u0442\u0438",
+  chooseClient: "\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u043a\u043b\u0438\u0435\u043d\u0442\u0430",
   event: "\u041c\u0435\u0440\u043e\u043f\u0440\u0438\u044f\u0442\u0438\u0435",
   noEvent: "\u0411\u0435\u0437 \u043c\u0435\u0440\u043e\u043f\u0440\u0438\u044f\u0442\u0438\u044f",
   amount: "\u0421\u0443\u043c\u043c\u0430",
@@ -78,7 +130,10 @@ export default function PaymentsPage({ clients = [], events = [], role }) {
   const [modalError, setModalError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [createMode, setCreateMode] = useState("existing");
-  const [existingTelegram, setExistingTelegram] = useState("");
+  const [existingLookupField, setExistingLookupField] = useState("telegram");
+  const [existingLookupValue, setExistingLookupValue] = useState("");
+  const [existingMatches, setExistingMatches] = useState([]);
+  const [selectedExistingClientId, setSelectedExistingClientId] = useState("");
   const [newName, setNewName] = useState("");
   const [newPhone, setNewPhone] = useState("");
   const [newTelegram, setNewTelegram] = useState("");
@@ -133,7 +188,10 @@ export default function PaymentsPage({ clients = [], events = [], role }) {
 
   const resetCreateForm = useCallback(() => {
     setCreateMode("existing");
-    setExistingTelegram("");
+    setExistingLookupField("telegram");
+    setExistingLookupValue("");
+    setExistingMatches([]);
+    setSelectedExistingClientId("");
     setNewName("");
     setNewPhone("");
     setNewTelegram("");
@@ -148,21 +206,44 @@ export default function PaymentsPage({ clients = [], events = [], role }) {
     resetCreateForm();
   }, [resetCreateForm]);
 
-  const resolveClientByTelegram = useCallback(async () => {
-    const normalized = normalizeTelegram(existingTelegram);
-    if (!normalized) {
-      throw new Error(UI_TEXT.telegramRequired);
+  const handleFindExistingClient = useCallback(async () => {
+    const needle = normalizeLookup(existingLookupField, existingLookupValue);
+    if (!needle) {
+      setExistingMatches([]);
+      setSelectedExistingClientId("");
+      setModalError(UI_TEXT.lookupRequired);
+      return;
     }
-
-    const result = await getClients({ limit: 10, offset: 0, search: normalized });
+    setModalError("");
+    const result = await getClients({ limit: 50, offset: 0, search: needle });
     const items = result?.items ?? result ?? [];
-    const found = items.find((item) => normalizeTelegram(item?.telegram) === normalized);
-    if (!found) {
-      throw new Error(UI_TEXT.clientNotFound);
+    const matches = items.filter((item) => matchesStrict(existingLookupField, item, needle));
+    setExistingMatches(matches);
+    if (matches.length === 0) {
+      setSelectedExistingClientId("");
+      setModalError(UI_TEXT.clientNotFound);
+      return;
     }
+    if (matches.length === 1) {
+      setSelectedExistingClientId(String(matches[0].id));
+      return;
+    }
+    setSelectedExistingClientId("");
+  }, [existingLookupField, existingLookupValue]);
 
-    return found;
-  }, [existingTelegram]);
+  const handleExistingLookupFieldChange = useCallback((event) => {
+    setExistingLookupField(event.target.value);
+    setExistingMatches([]);
+    setSelectedExistingClientId("");
+    setModalError("");
+  }, []);
+
+  const handleExistingLookupValueChange = useCallback((event) => {
+    setExistingLookupValue(event.target.value);
+    setExistingMatches([]);
+    setSelectedExistingClientId("");
+    setModalError("");
+  }, []);
 
   const handleSubmitCreatePayment = async (event) => {
     event.preventDefault();
@@ -180,7 +261,24 @@ export default function PaymentsPage({ clients = [], events = [], role }) {
 
       let client;
       if (createMode === "existing") {
-        client = await resolveClientByTelegram();
+        if (existingMatches.length === 0) {
+          setModalError(UI_TEXT.findClientFirst);
+          return;
+        }
+        if (existingMatches.length > 1 && !selectedExistingClientId) {
+          setModalError(UI_TEXT.chooseClientFromList);
+          return;
+        }
+        client =
+          existingMatches.length === 1
+            ? existingMatches[0]
+            : existingMatches.find(
+                (item) => String(item.id) === String(selectedExistingClientId),
+              );
+        if (!client) {
+          setModalError(UI_TEXT.chooseClientFromList);
+          return;
+        }
       } else {
         const trimmedName = String(newName || "").trim();
         if (!trimmedName) {
@@ -416,13 +514,74 @@ export default function PaymentsPage({ clients = [], events = [], role }) {
               </div>
 
               {createMode === "existing" ? (
-                <div className="space-y-1.5">
-                  <label className="text-sm text-slate-700">Telegram username (@nick)</label>
-                  <Input
-                    value={existingTelegram}
-                    onChange={(e) => setExistingTelegram(e.target.value)}
-                    placeholder="@nickname"
-                  />
+                <div className="space-y-3">
+                  <div className="grid gap-3 md:grid-cols-[220px_1fr_auto]">
+                    <div className="space-y-1.5">
+                      <label className="text-sm text-slate-700">{UI_TEXT.lookupBy}</label>
+                      <select
+                        className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-700"
+                        value={existingLookupField}
+                        onChange={handleExistingLookupFieldChange}
+                        disabled={submitting}
+                      >
+                        <option value="telegram">{UI_TEXT.lookupTelegram}</option>
+                        <option value="phone">{UI_TEXT.lookupPhone}</option>
+                        <option value="email">{UI_TEXT.lookupEmail}</option>
+                      </select>
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-sm text-slate-700">{UI_TEXT.lookupValue}</label>
+                      <Input
+                        value={existingLookupValue}
+                        onChange={handleExistingLookupValueChange}
+                        placeholder={
+                          existingLookupField === "phone"
+                            ? UI_TEXT.lookupPhonePlaceholder
+                            : existingLookupField === "email"
+                              ? UI_TEXT.lookupEmailPlaceholder
+                              : UI_TEXT.lookupTelegramPlaceholder
+                        }
+                        disabled={submitting}
+                        onKeyDown={(event) => {
+                          if (event.key !== "Enter") return;
+                          event.preventDefault();
+                          if (submitting) return;
+                          handleFindExistingClient();
+                        }}
+                      />
+                    </div>
+                    <div className="flex items-end">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={handleFindExistingClient}
+                        disabled={submitting}
+                      >
+                        {UI_TEXT.find}
+                      </Button>
+                    </div>
+                  </div>
+                  {existingMatches.length > 1 && (
+                    <div className="space-y-1.5">
+                      <label className="text-sm text-slate-700">{UI_TEXT.chooseClient}</label>
+                      <select
+                        className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-700"
+                        value={selectedExistingClientId}
+                        onChange={(event) => {
+                          setSelectedExistingClientId(event.target.value);
+                          setModalError("");
+                        }}
+                        disabled={submitting}
+                      >
+                        <option value="">{UI_TEXT.chooseClient}</option>
+                        {existingMatches.map((item) => (
+                          <option key={item.id} value={String(item.id)}>
+                            {formatExistingClientOption(item)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="grid gap-3 md:grid-cols-2">
