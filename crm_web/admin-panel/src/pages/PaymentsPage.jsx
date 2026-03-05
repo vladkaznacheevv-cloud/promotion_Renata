@@ -1,15 +1,17 @@
-﻿import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 
-import { getPayments, updatePayment } from "../api/payments";
+import { createClient, getClients } from "../api/clients";
+import { createPayment, getPayments, updatePayment } from "../api/payments";
 import { useAuth } from "../auth/AuthContext";
-import { RU, formatCurrencyRub, formatDateRu } from "../i18n/ru";
 import EmptyState from "../components/EmptyState";
 import SkeletonCard from "../components/SkeletonCard";
 import Badge from "../components/ui/Badge";
 import Button from "../components/ui/Button";
-import { Card, CardHeader, CardContent } from "../components/ui/Card";
+import { Card, CardContent, CardHeader } from "../components/ui/Card";
 import Input from "../components/ui/Input";
-import { Table, THead, TBody, TR, TH, TD } from "../components/ui/Table";
+import { Table, TBody, TD, TH, THead, TR } from "../components/ui/Table";
+import { RU, formatCurrencyRub, formatDateRu } from "../i18n/ru";
 
 const statusVariant = (status) => {
   if (status === "paid") return "paid";
@@ -28,9 +30,40 @@ const statusLabel = (status) => {
   return status;
 };
 
+function normalizeTelegram(value) {
+  return String(value || "").trim().replace(/^@+/, "").toLowerCase();
+}
+
+const UI_TEXT = {
+  telegramRequired: "\u0423\u043a\u0430\u0436\u0438\u0442\u0435 Telegram username \u0432 \u0444\u043e\u0440\u043c\u0430\u0442\u0435 @nick",
+  clientNotFound: "\u041a\u043b\u0438\u0435\u043d\u0442 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d",
+  amountInvalid: "\u0421\u0443\u043c\u043c\u0430 \u0434\u043e\u043b\u0436\u043d\u0430 \u0431\u044b\u0442\u044c \u0446\u0435\u043b\u044b\u043c \u0447\u0438\u0441\u043b\u043e\u043c \u0431\u043e\u043b\u044c\u0448\u0435 0",
+  nameRequired: "\u0423\u043a\u0430\u0436\u0438\u0442\u0435 \u0438\u043c\u044f \u043a\u043b\u0438\u0435\u043d\u0442\u0430",
+  cashSource: "\u043d\u0430\u043b\u0438\u0447\u043a\u0430",
+  createTitle: "\u0421\u043e\u0437\u0434\u0430\u0442\u044c \u043f\u043b\u0430\u0442\u0435\u0436 (\u043d\u0430\u043b\u0438\u0447\u043a\u0430)",
+  createSubtitle: "\u0421\u0442\u0430\u0442\u0443\u0441 \u0431\u0443\u0434\u0435\u0442 \u0443\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d \u043a\u0430\u043a \u043e\u043f\u043b\u0430\u0447\u0435\u043d\u043e \u043f\u043e\u0441\u043b\u0435 \u0441\u043e\u0437\u0434\u0430\u043d\u0438\u044f.",
+  cancel: "\u041e\u0442\u043c\u0435\u043d\u0430",
+  clientExists: "\u041a\u043b\u0438\u0435\u043d\u0442 \u0443\u0436\u0435 \u0435\u0441\u0442\u044c \u0432 \u0431\u0430\u0437\u0435?",
+  yes: "\u0414\u0430",
+  no: "\u041d\u0435\u0442",
+  name: "\u0418\u043c\u044f",
+  namePlaceholder: "\u0418\u043c\u044f \u043a\u043b\u0438\u0435\u043d\u0442\u0430",
+  phoneOptional: "\u0422\u0435\u043b\u0435\u0444\u043e\u043d (\u043e\u043f\u0446\u0438\u043e\u043d\u0430\u043b\u044c\u043d\u043e)",
+  telegramOptional: "Telegram username (\u043e\u043f\u0446\u0438\u043e\u043d\u0430\u043b\u044c\u043d\u043e)",
+  event: "\u041c\u0435\u0440\u043e\u043f\u0440\u0438\u044f\u0442\u0438\u0435",
+  noEvent: "\u0411\u0435\u0437 \u043c\u0435\u0440\u043e\u043f\u0440\u0438\u044f\u0442\u0438\u044f",
+  amount: "\u0421\u0443\u043c\u043c\u0430",
+  paidStatus: "\u0421\u0442\u0430\u0442\u0443\u0441: \u041e\u043f\u043b\u0430\u0447\u0435\u043d\u043e",
+  sourceLine: "\u0418\u0441\u0442\u043e\u0447\u043d\u0438\u043a: \u043d\u0430\u043b\u0438\u0447\u043a\u0430",
+  dateLine: "\u0414\u0430\u0442\u0430: \u0442\u0435\u043a\u0443\u0449\u0430\u044f",
+  create: "\u0421\u043e\u0437\u0434\u0430\u0442\u044c",
+};
+
 export default function PaymentsPage({ clients = [], events = [], role }) {
   const auth = useAuth();
   const effectiveRole = role || auth.currentUser?.role || "viewer";
+  const canManagePayments = effectiveRole === "admin";
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [payments, setPayments] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -40,6 +73,17 @@ export default function PaymentsPage({ clients = [], events = [], role }) {
   const [eventFilter, setEventFilter] = useState("");
   const [clientFilter, setClientFilter] = useState("");
   const [search, setSearch] = useState("");
+
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [modalError, setModalError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [createMode, setCreateMode] = useState("existing");
+  const [existingTelegram, setExistingTelegram] = useState("");
+  const [newName, setNewName] = useState("");
+  const [newPhone, setNewPhone] = useState("");
+  const [newTelegram, setNewTelegram] = useState("");
+  const [createEventId, setCreateEventId] = useState("");
+  const [createAmount, setCreateAmount] = useState("");
 
   const fetchPayments = useCallback(async () => {
     try {
@@ -62,6 +106,19 @@ export default function PaymentsPage({ clients = [], events = [], role }) {
     fetchPayments();
   }, [fetchPayments]);
 
+  useEffect(() => {
+    if (searchParams.get("create") !== "1") return;
+
+    if (canManagePayments) {
+      setModalError("");
+      setIsCreateModalOpen(true);
+    }
+
+    const next = new URLSearchParams(searchParams);
+    next.delete("create");
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams, canManagePayments]);
+
   const filteredPayments = useMemo(() => {
     if (!search.trim()) return payments;
     const term = search.trim().toLowerCase();
@@ -74,7 +131,89 @@ export default function PaymentsPage({ clients = [], events = [], role }) {
     });
   }, [payments, search]);
 
-  const canManagePayments = effectiveRole === "admin";
+  const resetCreateForm = useCallback(() => {
+    setCreateMode("existing");
+    setExistingTelegram("");
+    setNewName("");
+    setNewPhone("");
+    setNewTelegram("");
+    setCreateEventId("");
+    setCreateAmount("");
+    setModalError("");
+  }, []);
+
+  const closeCreateModal = useCallback(() => {
+    setIsCreateModalOpen(false);
+    setSubmitting(false);
+    resetCreateForm();
+  }, [resetCreateForm]);
+
+  const resolveClientByTelegram = useCallback(async () => {
+    const normalized = normalizeTelegram(existingTelegram);
+    if (!normalized) {
+      throw new Error(UI_TEXT.telegramRequired);
+    }
+
+    const result = await getClients({ limit: 10, offset: 0, search: normalized });
+    const items = result?.items ?? result ?? [];
+    const found = items.find((item) => normalizeTelegram(item?.telegram) === normalized);
+    if (!found) {
+      throw new Error(UI_TEXT.clientNotFound);
+    }
+
+    return found;
+  }, [existingTelegram]);
+
+  const handleSubmitCreatePayment = async (event) => {
+    event.preventDefault();
+    if (!canManagePayments) return;
+
+    const amountText = String(createAmount || "").trim();
+    if (!/^\d+$/.test(amountText) || Number(amountText) <= 0) {
+      setModalError(UI_TEXT.amountInvalid);
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      setModalError("");
+
+      let client;
+      if (createMode === "existing") {
+        client = await resolveClientByTelegram();
+      } else {
+        const trimmedName = String(newName || "").trim();
+        if (!trimmedName) {
+          setModalError(UI_TEXT.nameRequired);
+          return;
+        }
+        client = await createClient({
+          name: trimmedName,
+          phone: String(newPhone || "").trim() || null,
+          telegram: String(newTelegram || "").trim() || null,
+        });
+      }
+
+      const created = await createPayment({
+        user_id: client.id,
+        event_id: createEventId ? Number(createEventId) : null,
+        amount: Number(amountText),
+        currency: "RUB",
+        source: UI_TEXT.cashSource,
+      });
+      const paid =
+        created?.status === "paid"
+          ? created
+          : await updatePayment(created.id, { status: "paid" });
+
+      setPayments((prev) => [paid, ...prev.filter((item) => item.id !== paid.id)]);
+      closeCreateModal();
+    } catch (err) {
+      setModalError(err?.message || RU.messages.paymentUpdateError);
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   const handleUpdateStatus = async (paymentId, status) => {
     try {
@@ -117,8 +256,10 @@ export default function PaymentsPage({ clients = [], events = [], role }) {
               onChange={(e) => setEventFilter(e.target.value)}
             >
               <option value="">{RU.labels.allEvents}</option>
-              {events.map((event) => (
-                <option key={event.id} value={event.id}>{event.title}</option>
+              {events.map((eventItem) => (
+                <option key={eventItem.id} value={eventItem.id}>
+                  {eventItem.title}
+                </option>
               ))}
             </select>
             <select
@@ -128,7 +269,9 @@ export default function PaymentsPage({ clients = [], events = [], role }) {
             >
               <option value="">{RU.labels.allClients}</option>
               {clients.map((client) => (
-                <option key={client.id} value={client.id}>{client.name}</option>
+                <option key={client.id} value={client.id}>
+                  {client.name}
+                </option>
               ))}
             </select>
           </div>
@@ -162,13 +305,19 @@ export default function PaymentsPage({ clients = [], events = [], role }) {
                 {filteredPayments.map((payment) => (
                   <TR key={payment.id}>
                     <TD>
-                      <div className="font-medium text-slate-900">{payment.client_name || RU.messages.emDash}</div>
-                      <div className="text-xs text-slate-500">{payment.tg_id ? `tg_id ${payment.tg_id}` : ""}</div>
+                      <div className="font-medium text-slate-900">
+                        {payment.client_name || RU.messages.emDash}
+                      </div>
+                      <div className="text-xs text-slate-500">
+                        {payment.tg_id ? `tg_id ${payment.tg_id}` : ""}
+                      </div>
                     </TD>
                     <TD>{payment.event_title || RU.labels.noEvent}</TD>
                     <TD className="font-semibold">{formatCurrencyRub(payment.amount)}</TD>
                     <TD>
-                      <Badge variant={statusVariant(payment.status)}>{statusLabel(payment.status)}</Badge>
+                      <Badge variant={statusVariant(payment.status)}>
+                        {statusLabel(payment.status)}
+                      </Badge>
                     </TD>
                     <TD>{payment.source || RU.messages.emDash}</TD>
                     <TD>
@@ -217,8 +366,143 @@ export default function PaymentsPage({ clients = [], events = [], role }) {
           )}
         </CardContent>
       </Card>
+
+      {isCreateModalOpen && canManagePayments && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
+          <div className="w-full max-w-2xl rounded-2xl bg-white shadow-xl">
+            <form onSubmit={handleSubmitCreatePayment} className="space-y-4 p-5">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-lg font-semibold text-slate-900">{UI_TEXT.createTitle}</h3>
+                  <p className="text-sm text-slate-500">{UI_TEXT.createSubtitle}</p>
+                </div>
+                <Button type="button" variant="ghost" onClick={closeCreateModal}>
+                  {UI_TEXT.cancel}
+                </Button>
+              </div>
+
+              {modalError && (
+                <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
+                  {modalError}
+                </div>
+              )}
+
+              <div className="space-y-2">
+                <p className="text-sm font-medium text-slate-700">{UI_TEXT.clientExists}</p>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className={`h-10 rounded-xl border px-4 text-sm ${
+                      createMode === "existing"
+                        ? "border-indigo-600 bg-indigo-50 text-indigo-700"
+                        : "border-slate-300 bg-white text-slate-700"
+                    }`}
+                    onClick={() => setCreateMode("existing")}
+                  >
+                    {UI_TEXT.yes}
+                  </button>
+                  <button
+                    type="button"
+                    className={`h-10 rounded-xl border px-4 text-sm ${
+                      createMode === "new"
+                        ? "border-indigo-600 bg-indigo-50 text-indigo-700"
+                        : "border-slate-300 bg-white text-slate-700"
+                    }`}
+                    onClick={() => setCreateMode("new")}
+                  >
+                    {UI_TEXT.no}
+                  </button>
+                </div>
+              </div>
+
+              {createMode === "existing" ? (
+                <div className="space-y-1.5">
+                  <label className="text-sm text-slate-700">Telegram username (@nick)</label>
+                  <Input
+                    value={existingTelegram}
+                    onChange={(e) => setExistingTelegram(e.target.value)}
+                    placeholder="@nickname"
+                  />
+                </div>
+              ) : (
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="space-y-1.5 md:col-span-2">
+                    <label className="text-sm text-slate-700">{UI_TEXT.name}</label>
+                    <Input
+                      value={newName}
+                      onChange={(e) => setNewName(e.target.value)}
+                      placeholder={UI_TEXT.namePlaceholder}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-sm text-slate-700">{UI_TEXT.phoneOptional}</label>
+                    <Input
+                      value={newPhone}
+                      onChange={(e) => setNewPhone(e.target.value)}
+                      placeholder="+7..."
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-sm text-slate-700">{UI_TEXT.telegramOptional}</label>
+                    <Input
+                      value={newTelegram}
+                      onChange={(e) => setNewTelegram(e.target.value)}
+                      placeholder="@nickname"
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-1.5">
+                  <label className="text-sm text-slate-700">{UI_TEXT.event}</label>
+                  <select
+                    className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-700"
+                    value={createEventId}
+                    onChange={(e) => setCreateEventId(e.target.value)}
+                  >
+                    <option value="">{UI_TEXT.noEvent}</option>
+                    {events.map((eventItem) => (
+                      <option key={eventItem.id} value={eventItem.id}>
+                        {eventItem.title}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-sm text-slate-700">{UI_TEXT.amount}</label>
+                  <Input
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={createAmount}
+                    onChange={(e) => setCreateAmount(e.target.value)}
+                    placeholder="5000"
+                  />
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                <div>{UI_TEXT.paidStatus}</div>
+                <div>{UI_TEXT.sourceLine}</div>
+                <div>{UI_TEXT.dateLine}</div>
+              </div>
+
+              <div className="flex justify-end gap-2">
+                <Button type="button" variant="secondary" onClick={closeCreateModal}>
+                  {UI_TEXT.cancel}
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={submitting || !/^\d+$/.test(String(createAmount || "").trim())}
+                >
+                  {submitting ? RU.messages.loading : UI_TEXT.create}
+                </Button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
-
-
