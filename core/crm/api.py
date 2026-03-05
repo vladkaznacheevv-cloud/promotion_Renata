@@ -38,6 +38,7 @@ from core.crm.service import (
     GetCourseSyncAlreadyRunningError,
     GetCourseSyncCooldownError,
 )
+from core.integrations.openrouter_metrics import fetch_openrouter_metrics
 
 router = APIRouter()
 
@@ -303,6 +304,13 @@ async def get_ai_stats(
 ):
     service = CRMService(db)
     return await service.get_ai_stats()
+
+
+@router.get("/ai/openrouter")
+async def get_openrouter_metrics(
+    _: object = Depends(require_roles("admin", "manager", "viewer")),
+):
+    return await fetch_openrouter_metrics()
 
 
 @router.get("/dashboard", response_model=DashboardSummaryOut)
