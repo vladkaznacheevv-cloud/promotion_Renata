@@ -33,3 +33,5 @@ __all__ = [
     "AdminUser",
     "CatalogItem",
 ]
+
+from core.consultations import models as _consultations_models  # noqa: F401
