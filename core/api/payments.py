@@ -29,6 +29,7 @@ GAME10_PRODUCT = "game10"
 GAME10_TEST_PRODUCT = "game10_test"
 _YOOKASSA_CONFIGURED = False
 _URL_RE = re.compile(r"https?://\S+")
+_DEFAULT_BOT_PUBLIC_URL = "https://t.me/RenataMinakova_bot"
 
 
 class Game10PaymentCreateIn(BaseModel):
@@ -149,6 +150,7 @@ def ensure_yookassa_configured() -> bool:
 
 
 def _telegram_return_url(payment_id: str | None = None) -> str | None:
+    _ = payment_id
     username = (
         (os.getenv("BOT_USERNAME") or "").strip()
         or (os.getenv("TELEGRAM_BOT_USERNAME") or "").strip()
@@ -156,24 +158,23 @@ def _telegram_return_url(payment_id: str | None = None) -> str | None:
     username = username.lstrip("@").strip()
     if not username:
         return None
-    payment_suffix = re.sub(r"[^A-Za-z0-9_-]", "", str(payment_id or "").strip())[:48]
-    start_payload = f"pay_{payment_suffix}" if payment_suffix else "pay_return"
-    return f"https://t.me/{username}?start={start_payload}"
+    return f"https://t.me/{username}"
 
 
 def _public_return_url(payment_id: str | None = None) -> str:
-    bot_return = (os.getenv("TELEGRAM_BOT_RETURN_URL") or "").strip()
+    _ = payment_id
+    bot_return = (
+        (os.getenv("TELEGRAM_BOT_RETURN_URL") or "").strip()
+        or (os.getenv("BOT_PUBLIC_URL") or "").strip()
+    )
     if bot_return:
         if not bot_return.lower().startswith(("http://", "https://")):
             bot_return = f"https://{bot_return}"
         return bot_return
-    tg_deep_link = _telegram_return_url(payment_id=payment_id)
-    if tg_deep_link:
-        return tg_deep_link
-    base = _normalized_public_base_url()
-    if base:
-        return f"{base}/"
-    return "https://example.com/"
+    telegram_public_url = _telegram_return_url()
+    if telegram_public_url:
+        return telegram_public_url
+    return _DEFAULT_BOT_PUBLIC_URL
 
 
 def _yookassa_notification_url() -> str | None:

@@ -155,18 +155,12 @@ export default function DashboardPage() {
         icon: <TrendingUp className="h-6 w-6" />,
       },
       {
-        title: RU.labels.stageReadyToPay,
-        value: stageCounters.READY_TO_PAY.toLocaleString("ru-RU"),
-        change: "—",
-        changeType: "neutral",
-        icon: <TrendingUp className="h-6 w-6" />,
-      },
-      {
         title: RU.labels.stagePaid,
         value: (dashboardSummary?.payments_count ?? 0).toLocaleString("ru-RU"),
         change: "—",
         changeType: "positive",
         icon: <TrendingUp className="h-6 w-6" />,
+        fullWidth: true,
       },
     ],
     [clients.length, dashboardSummary, events.length, stageCounters]
@@ -294,8 +288,18 @@ export default function DashboardPage() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {loading
-          ? Array.from({ length: 8 }).map((_, index) => <SkeletonCard key={index} rows={3} />)
-          : dashboardStats.map((stat) => <DashboardStatCard key={stat.title} {...stat} />)}
+          ? Array.from({ length: dashboardStats.length }).map((_, index) => (
+              <SkeletonCard key={index} rows={3} />
+            ))
+          : dashboardStats.map((stat) =>
+              stat.fullWidth ? (
+                <div key={stat.title} className="col-span-full">
+                  <DashboardStatCard {...stat} />
+                </div>
+              ) : (
+                <DashboardStatCard key={stat.title} {...stat} />
+              )
+            )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
