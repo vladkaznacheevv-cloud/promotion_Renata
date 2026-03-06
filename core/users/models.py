@@ -8,8 +8,10 @@ from sqlalchemy import (
     BigInteger,
     ForeignKey,
     Text,
+    JSON,
     func,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 
 from core.db import Base
@@ -47,7 +49,10 @@ class User(Base):
         CRM_STAGE_INACTIVE,
     ]
     crm_stage = Column(String(32), nullable=False, server_default=CRM_STAGE_NEW, index=True)
+    tags = Column(JSON().with_variant(JSONB, "postgresql"), nullable=False, default=list, server_default="[]")
+    needs_manager_call = Column(Boolean, nullable=False, server_default="false", index=True)
     last_activity_at = Column(DateTime(timezone=True), nullable=True)
+    last_payment_at = Column(DateTime(timezone=True), nullable=True)
 
     # VIP
     is_vip = Column(Boolean, nullable=False, server_default="false")

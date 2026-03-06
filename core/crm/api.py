@@ -9,7 +9,9 @@ from core.crm.schemas import (
     AiStatsOut,
     AttendeeCreate,
     AttendeesOut,
+    ClientActivityOut,
     ClientCreate,
+    ClientNeedsCallIn,
     ClientOut,
     ClientUpdate,
     ClientsOut,
@@ -53,12 +55,19 @@ async def get_clients(
     limit: int = Query(10, ge=1, le=100),
     offset: int = Query(0, ge=0),
     stage: str | None = Query(None),
+    needs_call: bool | None = Query(None),
     search: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
     _: object = Depends(require_roles("admin", "manager", "viewer")),
 ):
     service = CRMService(db)
-    return await service.list_clients(limit=limit, offset=offset, stage=stage, search=search)
+    return await service.list_clients(
+        limit=limit,
+        offset=offset,
+        stage=stage,
+        needs_call=needs_call,
+        search=search,
+    )
 
 
 @router.post("/clients", response_model=ClientOut)
@@ -80,6 +89,38 @@ async def update_client(
 ):
     service = CRMService(db)
     result = await service.update_client(client_id, payload)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Client not found")
+    return result
+
+
+@router.post("/clients/{client_id}/needs_call", response_model=ClientOut)
+async def set_client_needs_call(
+    client_id: int,
+    payload: ClientNeedsCallIn,
+    db: AsyncSession = Depends(get_db),
+    _: object = Depends(require_roles("admin", "manager")),
+):
+    service = CRMService(db)
+    result = await service.set_client_needs_manager_call(
+        client_id,
+        payload.value,
+        actor="crm_admin",
+        reason="crm_endpoint",
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Client not found")
+    return result
+
+
+@router.get("/clients/{client_id}/activity", response_model=list[ClientActivityOut])
+async def get_client_activity(
+    client_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: object = Depends(require_roles("admin", "manager", "viewer")),
+):
+    service = CRMService(db)
+    result = await service.list_client_activity(client_id, limit=50)
     if result is None:
         raise HTTPException(status_code=404, detail="Client not found")
     return result

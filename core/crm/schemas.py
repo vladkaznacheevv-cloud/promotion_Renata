@@ -23,6 +23,7 @@ class ClientCreate(BaseModel):
     phone: Optional[str] = None
     email: Optional[str] = None
     stage: Optional[ClientStage] = None
+    tags: Optional[List[str]] = None
 
 
 class ClientUpdate(BaseModel):
@@ -32,7 +33,8 @@ class ClientUpdate(BaseModel):
     interested_event_id: Optional[int] = None
     phone: Optional[str] = None
     email: Optional[str] = None
-    stage: Optional[ClientStage] = None
+    tags: Optional[List[str]] = None
+    needs_manager_call: Optional[bool] = None
 
 
 class ClientFlags(BaseModel):
@@ -47,6 +49,8 @@ class ClientOut(BaseModel):
     telegram: Optional[str]
     status: str
     stage: ClientStage
+    tags: List[str] = Field(default_factory=list)
+    needs_manager_call: bool = False
     phone: Optional[str]
     email: Optional[str]
     registered: Optional[str]
@@ -60,6 +64,19 @@ class ClientOut(BaseModel):
 class ClientsOut(BaseModel):
     items: List[ClientOut]
     total: int
+
+
+class ClientNeedsCallIn(BaseModel):
+    value: bool
+
+
+class ClientActivityOut(BaseModel):
+    id: int
+    client_id: int
+    created_at: datetime
+    actor: str
+    action: str
+    meta: dict[str, Any] = Field(default_factory=dict)
 
 
 class PricingOption(BaseModel):

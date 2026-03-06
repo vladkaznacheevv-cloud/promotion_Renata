@@ -76,6 +76,26 @@ MIGRATIONS = [
         "UPDATE users SET crm_stage = 'NEW' WHERE crm_stage IS NULL",
         "CREATE INDEX IF NOT EXISTS ix_users_crm_stage ON users (crm_stage)",
     ]),
+    ("crm_client_tags_activity", [
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS tags JSONB DEFAULT '[]'::jsonb",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS needs_manager_call BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_payment_at TIMESTAMPTZ",
+        "UPDATE users SET tags = '[]'::jsonb WHERE tags IS NULL",
+        "UPDATE users SET needs_manager_call = FALSE WHERE needs_manager_call IS NULL",
+        "CREATE INDEX IF NOT EXISTS ix_users_needs_manager_call ON users (needs_manager_call)",
+        """
+        CREATE TABLE IF NOT EXISTS client_activity_log (
+            id BIGSERIAL PRIMARY KEY,
+            client_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            actor VARCHAR(32) NOT NULL,
+            action VARCHAR(64) NOT NULL,
+            meta JSONB NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_client_activity_log_client_id ON client_activity_log (client_id)",
+        "CREATE INDEX IF NOT EXISTS ix_client_activity_log_created_at ON client_activity_log (created_at)",
+    ]),
     ("catalog", [
         "ALTER TABLE catalog_items ADD COLUMN IF NOT EXISTS title TEXT",
         "ALTER TABLE catalog_items ADD COLUMN IF NOT EXISTS description TEXT",

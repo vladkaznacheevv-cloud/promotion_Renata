@@ -4,12 +4,14 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    JSON,
     Numeric,
     String,
     Text,
     UniqueConstraint,
     func,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 
 from core.db import Base
@@ -31,6 +33,22 @@ class CRMUserActivity(Base):
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     user = relationship("User", lazy="joined")
+
+
+class ClientActivityLog(Base):
+    __tablename__ = "client_activity_log"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+    client_id = Column(
+        BigInteger,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+    actor = Column(String(32), nullable=False, index=True)
+    action = Column(String(64), nullable=False, index=True)
+    meta = Column(JSON().with_variant(JSONB, "postgresql"), nullable=True)
 
 
 class IntegrationState(Base):

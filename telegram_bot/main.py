@@ -34,7 +34,6 @@ from core .consultations .service import ConsultationService
 from core .crm .service import CRMService 
 from core .crm .models import YooKassaPayment
 from core .ai .ai_service import AIService 
-from core .crm .activity_service import ActivityService 
 from core .payments .models import Payment 
 from core .catalog .models import CatalogItem 
 from core .integrations .getcourse .url_utils import normalize_getcourse_url 
@@ -1341,19 +1340,14 @@ async def ensure_user (update :Update ,source :str ="bot",ai_increment :int =0 ,
             source =source ,
             update_if_exists =True ,
             )
-            now =datetime .utcnow ()
-            if not user .crm_stage :
-                user .crm_stage =User .CRM_STAGE_NEW 
-            user .crm_stage =CRMService .stage_after_message (user .crm_stage )
-            user .last_activity_at =now 
-            user .updated_at =now 
-
-            activity_service =ActivityService (session )
-            await activity_service .upsert (
-            user_id =user .id ,
-            last_activity_at =now ,
+            crm_service =CRMService (session )
+            touched_user =await crm_service .touch_client_activity_by_tg_id (
+            tg_id =tg_user .id ,
             ai_increment =ai_increment ,
             )
+            if touched_user is not None :
+                user =touched_user
+            user .updated_at =datetime .utcnow ()
             await session .commit ()
             return user 
     except Exception as e :
@@ -1455,12 +1449,48 @@ async def show_contacts_request (update :Update ,context :ContextTypes .DEFAULT_
     )
 
 
+async def _mark_needs_manager_call_from_bot (update :Update ,*,reason :str )->None :
+    tg_user =update .effective_user
+    if tg_user is None :
+        return
+    try :
+        db .init_db ()
+        async with db .async_session ()as session :
+            crm_service =CRMService (session )
+            updated =await crm_service .set_client_needs_manager_call_by_tg_id (
+            tg_id =tg_user .id ,
+            value =True ,
+            actor ="bot",
+            reason =reason ,
+            )
+            if updated is None :
+                user_service =UserService (session )
+                await user_service .get_or_create_by_tg_id (
+                tg_id =tg_user .id ,
+                first_name =tg_user .first_name ,
+                last_name =tg_user .last_name ,
+                username =tg_user .username ,
+                source ="bot",
+                update_if_exists =True ,
+                )
+                await crm_service .set_client_needs_manager_call_by_tg_id (
+                tg_id =tg_user .id ,
+                value =True ,
+                actor ="bot",
+                reason =reason ,
+                )
+            await session .commit ()
+    except Exception as e :
+        _log_db_issue ("needs_manager_call",e )
+
+
 async def contact_manager (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     query =update .callback_query 
     if query :
         await _answer (query )
 
     _reset_states (context )
+    await _mark_needs_manager_call_from_bot (update ,reason ="contact_manager")
     text =(
     "\u0421\u0432\u044f\u0436\u0443 \u0441 \u043c\u0435\u043d\u0435\u0434\u0436\u0435\u0440\u043e\u043c.\n"
     "\u041e\u0441\u0442\u0430\u0432\u044c\u0442\u0435 \u043a\u043e\u043d\u0442\u0430\u043a\u0442\u044b \u2014 \u043c\u0435\u043d\u0435\u0434\u0436\u0435\u0440 \u0441\u0432\u044f\u0436\u0435\u0442\u0441\u044f \u0441 \u0432\u0430\u043c\u0438 \u0432 \u0431\u043b\u0438\u0436\u0430\u0439\u0448\u0435\u0435 \u0432\u0440\u0435\u043c\u044f."
@@ -2221,6 +2251,7 @@ async def pay_contact_phone (update :Update ,context :ContextTypes .DEFAULT_TYPE
     if query is None :
         return
     await _answer (query )
+    await _mark_needs_manager_call_from_bot (update ,reason ="pay_contact_phone")
     if not context .user_data .get (PAYMENT_CONTACT_FLOW_KEY ):
         await _request_payment_contact_screen (update ,context ,variant =_payment_variant_normalized (context .user_data .get (PAYMENT_VARIANT_KEY )))
         return
@@ -2479,6 +2510,7 @@ async def handle_lead_message (update :Update ,context :ContextTypes .DEFAULT_TY
         )
         return
 
+    await _mark_needs_manager_call_from_bot (update ,reason ="consultation_lead")
     lead_type ="\u0418\u043d\u0434\u0438\u0432\u0438\u0434\u0443\u0430\u043b\u044c\u043d\u043e"if mode =="individual"else "\u0413\u0440\u0443\u043f\u043f\u0430"
     lead_payload =(
     f"NEW lead: {lead_type }\n"
@@ -2676,10 +2708,9 @@ reply_markup =None ,
         if user_db is not None :
             try :
                 async with db .async_session ()as session :
-                    activity_service =ActivityService (session )
-                    await activity_service .upsert (
-                    user_id =user_db .id ,
-                    last_activity_at =datetime .utcnow (),
+                    crm_service =CRMService (session )
+                    await crm_service .touch_client_activity_by_tg_id (
+                    tg_id =tg_user .id ,
                     ai_increment =1 ,
                     )
                     await session .commit ()

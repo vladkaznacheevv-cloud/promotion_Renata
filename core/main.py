@@ -5,8 +5,8 @@ import os
 import re
 import time
 import uuid
-from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from contextlib import asynccontextmanager, suppress
+from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
@@ -19,7 +19,9 @@ from core.db import Base
 from core.db import database as db
 from core.auth.models import AdminUser
 from core.crm.api import router as crm_router
+from core.crm.service import CRMService
 from core.crm.models import (
+    ClientActivityLog,
     CRMUserActivity,
     ChannelInvite,
     GetCourseWebhookEvent,
@@ -154,9 +156,67 @@ def _configure_logging() -> None:
 _configure_logging()
 
 
+def _seconds_until_next_stage_recompute(*, hour: int = 3, minute: int = 0) -> float:
+    now_local = datetime.now()
+    next_run = now_local.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if now_local >= next_run:
+        next_run = next_run + timedelta(days=1)
+    return max((next_run - now_local).total_seconds(), 1.0)
+
+
+async def _run_stage_recompute_once() -> dict[str, int]:
+    if db.async_session is None:
+        db.init_db()
+    if db.async_session is None:
+        return {"checked": 0, "updated": 0}
+    async with db.async_session() as session:
+        service = CRMService(session)
+        stats = await service.run_recompute_all_clients(batch_size=500)
+        await session.commit()
+        return stats
+
+
+async def _crm_stage_recompute_loop(stop_event: asyncio.Event) -> None:
+    try:
+        startup_stats = await _run_stage_recompute_once()
+        logger.info(
+            "crm_stage_recompute_startup",
+            extra={
+                "event": "crm_stage_recompute_startup",
+                "checked": int(startup_stats.get("checked", 0)),
+                "updated": int(startup_stats.get("updated", 0)),
+            },
+        )
+    except Exception:
+        logger.exception("crm_stage_recompute_startup_failed", extra={"event": "crm_stage_recompute_startup_failed"})
+
+    while not stop_event.is_set():
+        sleep_seconds = _seconds_until_next_stage_recompute(hour=3, minute=0)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=sleep_seconds)
+            break
+        except asyncio.TimeoutError:
+            pass
+
+        try:
+            stats = await _run_stage_recompute_once()
+            logger.info(
+                "crm_stage_recompute_done",
+                extra={
+                    "event": "crm_stage_recompute_done",
+                    "checked": int(stats.get("checked", 0)),
+                    "updated": int(stats.get("updated", 0)),
+                },
+            )
+        except Exception:
+            logger.exception("crm_stage_recompute_failed", extra={"event": "crm_stage_recompute_failed"})
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.started_at = datetime.now(tz=timezone.utc)
+    app.state.crm_stage_recompute_stop_event = asyncio.Event()
+    app.state.crm_stage_recompute_task = None
     logger.info("startup", extra={"event": "startup"})
     try:
         db.init_db()
@@ -166,6 +226,7 @@ async def lifespan(app: FastAPI):
                     Base.metadata.create_all,
                     tables=[
                         CRMUserActivity.__table__,
+                        ClientActivityLog.__table__,
                         GetCourseWebhookEvent.__table__,
                         IntegrationState.__table__,
                         UserSubscription.__table__,
@@ -176,9 +237,20 @@ async def lifespan(app: FastAPI):
                         CatalogItem.__table__,
                     ],
                 )
+        app.state.crm_stage_recompute_task = asyncio.create_task(
+            _crm_stage_recompute_loop(app.state.crm_stage_recompute_stop_event)
+        )
     except Exception:
         logger.exception("startup_failed", extra={"event": "startup_failed"})
     yield
+    stop_event = getattr(app.state, "crm_stage_recompute_stop_event", None)
+    if stop_event is not None:
+        stop_event.set()
+    task = getattr(app.state, "crm_stage_recompute_task", None)
+    if task is not None:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
     logger.info("shutdown", extra={"event": "shutdown"})
 
 

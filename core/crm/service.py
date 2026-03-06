@@ -15,7 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.crm.schemas import ClientCreate, ClientUpdate, EventCreate, EventUpdate
-from core.crm.models import CRMUserActivity, ChannelInvite, UserSubscription
+from core.crm.models import ClientActivityLog, CRMUserActivity, ChannelInvite, UserSubscription
 from core.crm.activity_service import ActivityService
 from core.catalog.models import CatalogItem
 from core.events.models import Event, UserEvent
@@ -109,6 +109,44 @@ class CRMService:
         return User.CRM_STAGE_PAID
 
     @staticmethod
+    def _normalize_dt_utc(value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    @staticmethod
+    def has_ai_activity(ai_chats_count: int | None) -> bool:
+        return int(ai_chats_count or 0) > 0
+
+    @classmethod
+    def compute_stage(
+        cls,
+        user: User,
+        *,
+        ai_chats_count: int = 0,
+        now_utc: datetime | None = None,
+    ) -> tuple[str, str]:
+        now = cls._normalize_dt_utc(now_utc) or cls._utc_now()
+        last_payment_at = cls._normalize_dt_utc(getattr(user, "last_payment_at", None))
+        last_activity_at = cls._normalize_dt_utc(getattr(user, "last_activity_at", None))
+        ttl = timedelta(days=7)
+
+        if last_payment_at is not None:
+            if now - last_payment_at >= ttl:
+                return User.CRM_STAGE_MANAGER_FOLLOWUP, "payment_older_than_7d"
+            return User.CRM_STAGE_PAID, "payment_recent"
+
+        if last_activity_at is not None and now - last_activity_at >= ttl:
+            return User.CRM_STAGE_INACTIVE, "inactive_7d"
+
+        if cls.has_ai_activity(ai_chats_count):
+            return User.CRM_STAGE_ENGAGED, "ai_activity_detected"
+
+        return User.CRM_STAGE_NEW, "new_client"
+
+    @staticmethod
     def _utc_now() -> datetime:
         return datetime.now(timezone.utc)
 
@@ -150,6 +188,218 @@ class CRMService:
         if end_ts is not None:
             stmt = stmt.where(activity_ts <= end_ts)
         return stmt
+
+    @staticmethod
+    def _normalize_actor(actor: str | None) -> str:
+        value = str(actor or "").strip().lower()
+        if value in {"system", "crm_admin", "bot"}:
+            return value
+        return "system"
+
+    @staticmethod
+    def _normalize_tags(value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            raw_items: list[Any] = [value]
+        elif isinstance(value, (list, tuple, set)):
+            raw_items = list(value)
+        else:
+            return []
+
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in raw_items:
+            text_value = str(item or "").strip()
+            if not text_value or text_value in seen:
+                continue
+            seen.add(text_value)
+            normalized.append(text_value)
+        return normalized
+
+    @classmethod
+    def _user_tags(cls, user: User) -> list[str]:
+        return cls._normalize_tags(getattr(user, "tags", None))
+
+    async def log_client_event(
+        self,
+        client_id: int,
+        actor: str,
+        action: str,
+        meta: dict[str, Any] | None = None,
+    ) -> ClientActivityLog:
+        log_row = ClientActivityLog(
+            client_id=int(client_id),
+            actor=self._normalize_actor(actor),
+            action=str(action or "").strip() or "activity_recorded",
+            meta=meta or {},
+        )
+        self.db.add(log_row)
+        await self.db.flush()
+        return log_row
+
+    async def _set_user_stage(
+        self,
+        user: User,
+        stage: str,
+        *,
+        actor: str,
+        reason: str | None = None,
+    ) -> bool:
+        new_stage = self.normalize_stage(stage)
+        previous_raw = user.crm_stage
+        previous_stage = self.normalize_stage(previous_raw)
+        if previous_raw == new_stage:
+            return False
+        user.crm_stage = new_stage
+        payload: dict[str, Any] = {
+            "old": previous_stage,
+            "new": new_stage,
+            "old_stage": previous_stage,
+            "new_stage": new_stage,
+        }
+        if reason:
+            payload["reason"] = reason
+        await self.log_client_event(
+            int(user.id),
+            actor="system",
+            action="stage_change",
+            meta=payload,
+        )
+        return True
+
+    async def _set_user_tags(
+        self,
+        user: User,
+        tags: list[str] | None,
+        *,
+        actor: str,
+        reason: str | None = None,
+    ) -> bool:
+        old_tags = self._user_tags(user)
+        new_tags = self._normalize_tags(tags)
+        if old_tags == new_tags:
+            return False
+        user.tags = new_tags
+        payload: dict[str, Any] = {
+            "old_tags": old_tags,
+            "new_tags": new_tags,
+        }
+        if reason:
+            payload["reason"] = reason
+        await self.log_client_event(
+            int(user.id),
+            actor=self._normalize_actor(actor),
+            action="tags_update",
+            meta=payload,
+        )
+        return True
+
+    async def _set_user_needs_manager_call(
+        self,
+        user: User,
+        value: bool,
+        *,
+        actor: str,
+        reason: str | None = None,
+    ) -> bool:
+        old_value = bool(getattr(user, "needs_manager_call", False))
+        new_value = bool(value)
+        if old_value == new_value:
+            return False
+        user.needs_manager_call = new_value
+        payload: dict[str, Any] = {
+            "old_value": old_value,
+            "new_value": new_value,
+        }
+        if reason:
+            payload["reason"] = reason
+        await self.log_client_event(
+            int(user.id),
+            actor=self._normalize_actor(actor),
+            action="needs_call_on" if new_value else "needs_call_off",
+            meta=payload,
+        )
+        return True
+
+    async def _get_ai_chats_count(self, user_id: int) -> int:
+        value = await self.db.scalar(
+            select(func.coalesce(CRMUserActivity.ai_chats, 0)).where(CRMUserActivity.user_id == int(user_id))
+        )
+        return int(value or 0)
+
+    async def _refresh_last_payment_at_for_user(self, user: User) -> datetime | None:
+        paid_statuses = self._dashboard_paid_statuses()
+        paid_ts = func.coalesce(Payment.paid_at, Payment.updated_at, Payment.created_at)
+        value = await self.db.scalar(
+            select(func.max(paid_ts))
+            .where(Payment.user_id == int(user.id))
+            .where(func.lower(func.coalesce(Payment.status, "")).in_(paid_statuses))
+        )
+        user.last_payment_at = value
+        return value
+
+    async def recompute_stage_for_user(
+        self,
+        user: User,
+        *,
+        ai_chats_count: int | None = None,
+        reason: str | None = None,
+        now_utc: datetime | None = None,
+    ) -> bool:
+        chats_count = int(ai_chats_count) if ai_chats_count is not None else await self._get_ai_chats_count(int(user.id))
+        computed_stage, computed_reason = self.compute_stage(
+            user,
+            ai_chats_count=chats_count,
+            now_utc=now_utc,
+        )
+        return await self._set_user_stage(
+            user,
+            computed_stage,
+            actor="system",
+            reason=reason or computed_reason,
+        )
+
+    async def run_recompute_all_clients(
+        self,
+        *,
+        batch_size: int = 500,
+        now_utc: datetime | None = None,
+    ) -> dict[str, int]:
+        checked = 0
+        updated = 0
+        cursor = 0
+        safe_batch_size = max(1, min(int(batch_size), 5000))
+        computed_now = self._normalize_dt_utc(now_utc) or self._utc_now()
+
+        while True:
+            rows = await self.db.execute(
+                select(User, func.coalesce(CRMUserActivity.ai_chats, 0))
+                .outerjoin(CRMUserActivity, CRMUserActivity.user_id == User.id)
+                .where(User.id > int(cursor))
+                .where(User.status != User.STATUS_ARCHIVED)
+                .order_by(User.id.asc())
+                .limit(safe_batch_size)
+            )
+            items = rows.all()
+            if not items:
+                break
+
+            for user, ai_chats in items:
+                checked += 1
+                changed = await self.recompute_stage_for_user(
+                    user,
+                    ai_chats_count=int(ai_chats or 0),
+                    reason="scheduled_recompute",
+                    now_utc=computed_now,
+                )
+                if changed:
+                    updated += 1
+                cursor = int(user.id)
+
+            await self.db.flush()
+
+        return {"checked": checked, "updated": updated}
 
     @staticmethod
     def _normalize_schedule_type(value: str | None) -> str:
@@ -453,16 +703,21 @@ class CRMService:
         limit: int = 10,
         offset: int = 0,
         stage: str | None = None,
+        needs_call: bool | None = None,
         search: str | None = None,
     ) -> dict[str, Any]:
         query = select(User).where(User.status != User.STATUS_ARCHIVED)
 
         if stage:
             query = query.where(User.crm_stage == self.normalize_stage(stage))
+        if needs_call is not None:
+            query = query.where(User.needs_manager_call.is_(bool(needs_call)))
 
         search_text = (search or "").strip()
         if search_text:
             pattern = f"%{search_text}%"
+            tag_lookup = search_text[1:].strip() if search_text.startswith("#") else search_text
+            tag_pattern = f"%{tag_lookup}%" if tag_lookup else pattern
             query = query.where(
                 or_(
                     User.first_name.ilike(pattern),
@@ -471,6 +726,7 @@ class CRMService:
                     User.email.ilike(pattern),
                     User.phone.ilike(pattern),
                     cast(User.tg_id, String).ilike(pattern),
+                    cast(User.tags, String).ilike(tag_pattern),
                 )
             )
 
@@ -645,9 +901,6 @@ class CRMService:
         username = self._normalize_username(payload.get("telegram"))
         status_label = payload.get("status") or "\u041d\u043e\u0432\u044b\u0439"
         status_code = STATUS_TO_DB.get(status_label, User.STATUS_NEW)
-        stage = payload.get("stage")
-        if not stage and (payload.get("phone") or payload.get("email")):
-            stage = User.CRM_STAGE_READY_TO_PAY
         now = datetime.utcnow()
 
         user = User(
@@ -661,11 +914,21 @@ class CRMService:
             source="crm",
             is_vip=status_code == User.STATUS_VIP,
             interested_event_id=payload.get("interested_event_id"),
-            crm_stage=self.normalize_stage(stage),
+            crm_stage=User.CRM_STAGE_NEW,
+            tags=[],
+            needs_manager_call=False,
             last_activity_at=now,
         )
         self.db.add(user)
         await self.db.flush()
+
+        if "tags" in payload:
+            await self._set_user_tags(
+                user,
+                payload.get("tags"),
+                actor="crm_admin",
+                reason="client_created",
+            )
 
         activity_service = ActivityService(self.db)
         activity = await activity_service.upsert(
@@ -714,36 +977,44 @@ class CRMService:
             user.interested_event_id = payload.get("interested_event_id")
             changed = True
 
-        contacts_updated = False
         if "phone" in payload:
             user.phone = payload.get("phone") or None
-            contacts_updated = True
             changed = True
         if "email" in payload:
             user.email = payload.get("email") or None
-            contacts_updated = True
             changed = True
 
-        if "stage" in payload and payload.get("stage"):
-            user.crm_stage = self.normalize_stage(payload.get("stage"))
-            changed = True
-        elif contacts_updated and (user.phone or user.email):
-            user.crm_stage = self.stage_after_contacts(user.crm_stage)
-            changed = True
-        elif not user.crm_stage:
-            user.crm_stage = User.CRM_STAGE_NEW
-            changed = True
+        if "tags" in payload:
+            changed = (
+                await self._set_user_tags(
+                    user,
+                    payload.get("tags"),
+                    actor="crm_admin",
+                    reason="crm_patch",
+                )
+                or changed
+            )
+
+        if "needs_manager_call" in payload and payload.get("needs_manager_call") is not None:
+            changed = (
+                await self._set_user_needs_manager_call(
+                    user,
+                    bool(payload.get("needs_manager_call")),
+                    actor="crm_admin",
+                    reason="crm_patch",
+                )
+                or changed
+            )
 
         now = datetime.utcnow()
-        if changed:
-            user.last_activity_at = now
+        activity_ts = user.last_activity_at or now
 
         await self.db.flush()
 
         activity_service = ActivityService(self.db)
         activity = await activity_service.upsert(
             user_id=user.id,
-            last_activity_at=now,
+            last_activity_at=activity_ts,
             ai_increment=0,
         )
 
@@ -762,6 +1033,104 @@ class CRMService:
             activity=(activity.ai_chats or 0, activity.last_activity_at),
         )
 
+    async def set_client_needs_manager_call(
+        self,
+        client_id: int,
+        value: bool,
+        *,
+        actor: str = "crm_admin",
+        reason: str | None = None,
+    ) -> dict[str, Any] | None:
+        user = await self._get_user(client_id)
+        if user is None:
+            return None
+
+        await self._set_user_needs_manager_call(
+            user,
+            bool(value),
+            actor=actor,
+            reason=reason,
+        )
+        activity_ts = user.last_activity_at or datetime.utcnow()
+        await self.db.flush()
+
+        activity_service = ActivityService(self.db)
+        activity = await activity_service.upsert(
+            user_id=user.id,
+            last_activity_at=activity_ts,
+            ai_increment=0,
+        )
+
+        revenue = await self._get_revenue(user.id)
+        interested_title = None
+        if user.interested_event_id:
+            row = await self.db.execute(
+                select(Event.title).where(Event.id == user.interested_event_id)
+            )
+            interested_title = row.scalar_one_or_none()
+
+        return self._client_out(
+            user,
+            revenue=revenue,
+            interested=interested_title,
+            activity=(activity.ai_chats or 0, activity.last_activity_at),
+        )
+
+    async def set_client_needs_manager_call_by_tg_id(
+        self,
+        tg_id: int,
+        value: bool,
+        *,
+        actor: str = "bot",
+        reason: str | None = None,
+    ) -> User | None:
+        user = await self._get_user_by_tg_id(tg_id)
+        if user is None:
+            return None
+
+        changed = await self._set_user_needs_manager_call(
+            user,
+            bool(value),
+            actor=actor,
+            reason=reason,
+        )
+        if changed and user.last_activity_at is not None:
+            activity_service = ActivityService(self.db)
+            await activity_service.upsert(
+                user_id=user.id,
+                last_activity_at=user.last_activity_at,
+                ai_increment=0,
+            )
+        await self.db.flush()
+        return user
+
+    async def list_client_activity(self, client_id: int, *, limit: int = 50) -> list[dict[str, Any]] | None:
+        user = await self._get_user(client_id)
+        if user is None:
+            return None
+
+        safe_limit = max(1, min(int(limit), 200))
+        rows = await self.db.execute(
+            select(ClientActivityLog)
+            .where(ClientActivityLog.client_id == user.id)
+            .order_by(ClientActivityLog.created_at.desc(), ClientActivityLog.id.desc())
+            .limit(safe_limit)
+        )
+        items: list[dict[str, Any]] = []
+        for row in rows.scalars().all():
+            meta_payload = row.meta if isinstance(row.meta, dict) else {}
+            items.append(
+                {
+                    "id": int(row.id),
+                    "client_id": int(row.client_id),
+                    "created_at": row.created_at,
+                    "actor": row.actor,
+                    "action": row.action,
+                    "meta": meta_payload,
+                }
+            )
+        return items
+
     async def update_client_contacts(
         self,
         tg_id: int,
@@ -778,8 +1147,14 @@ class CRMService:
             user.email = email or None
 
         now = datetime.utcnow()
-        user.crm_stage = self.stage_after_contacts(user.crm_stage)
         user.last_activity_at = now
+        ai_chats_count = await self._get_ai_chats_count(int(user.id))
+        await self.recompute_stage_for_user(
+            user,
+            ai_chats_count=ai_chats_count,
+            reason="contacts_shared",
+            now_utc=self._normalize_dt_utc(now),
+        )
         await self.db.flush()
 
         activity_service = ActivityService(self.db)
@@ -802,14 +1177,27 @@ class CRMService:
             activity=(activity.ai_chats or 0, activity.last_activity_at),
         )
 
-    async def set_client_stage(self, user_id: int, stage: str) -> dict[str, Any] | None:
+    async def set_client_stage(
+        self,
+        user_id: int,
+        stage: str,
+        *,
+        actor: str = "system",
+        reason: str | None = None,
+    ) -> dict[str, Any] | None:
         user = await self._get_user(user_id)
         if user is None:
             return None
 
         now = datetime.utcnow()
-        user.crm_stage = self.normalize_stage(stage)
-        user.last_activity_at = now
+        _ = stage
+        ai_chats_count = await self._get_ai_chats_count(int(user.id))
+        await self.recompute_stage_for_user(
+            user,
+            ai_chats_count=ai_chats_count,
+            reason=reason or "manual_stage_update_blocked",
+            now_utc=self._normalize_dt_utc(now),
+        )
         await self.db.flush()
 
         activity_service = ActivityService(self.db)
@@ -832,18 +1220,31 @@ class CRMService:
             activity=(activity.ai_chats or 0, activity.last_activity_at),
         )
 
-    async def set_client_stage_by_tg_id(self, tg_id: int, stage: str) -> User | None:
+    async def set_client_stage_by_tg_id(
+        self,
+        tg_id: int,
+        stage: str,
+        *,
+        actor: str = "system",
+        reason: str | None = None,
+    ) -> User | None:
         user = await self._get_user_by_tg_id(tg_id)
         if user is None:
             return None
 
         now = datetime.utcnow()
-        user.crm_stage = self.normalize_stage(stage)
-        user.last_activity_at = now
+        _ = stage
+        ai_chats_count = await self._get_ai_chats_count(int(user.id))
+        await self.recompute_stage_for_user(
+            user,
+            ai_chats_count=ai_chats_count,
+            reason=reason or "manual_stage_update_blocked",
+            now_utc=self._normalize_dt_utc(now),
+        )
         activity_service = ActivityService(self.db)
         await activity_service.upsert(
             user_id=user.id,
-            last_activity_at=now,
+            last_activity_at=user.last_activity_at or now,
             ai_increment=0,
         )
         await self.db.flush()
@@ -859,15 +1260,27 @@ class CRMService:
             return None
 
         now = datetime.utcnow()
-        user.crm_stage = self.stage_after_message(user.crm_stage)
         user.last_activity_at = now
 
         activity_service = ActivityService(self.db)
-        await activity_service.upsert(
+        activity = await activity_service.upsert(
             user_id=user.id,
             last_activity_at=now,
             ai_increment=max(ai_increment, 0),
         )
+        await self.recompute_stage_for_user(
+            user,
+            ai_chats_count=int(activity.ai_chats or 0),
+            reason="incoming_message",
+            now_utc=self._normalize_dt_utc(now),
+        )
+        if ai_increment > 0:
+            await self.log_client_event(
+                int(user.id),
+                actor="bot",
+                action="activity_recorded",
+                meta={"ai_increment": int(ai_increment)},
+            )
         await self.db.flush()
         return user
 
@@ -895,7 +1308,12 @@ class CRMService:
         user.email = None
         user.is_vip = False
         user.status = User.STATUS_ARCHIVED
-        user.crm_stage = User.CRM_STAGE_INACTIVE
+        await self._set_user_stage(
+            user,
+            User.CRM_STAGE_INACTIVE,
+            actor="system",
+            reason="client_archived",
+        )
         user.last_activity_at = now
         await self.db.flush()
         return True
@@ -1363,10 +1781,28 @@ class CRMService:
                 "paid_at": row["paid_at"],
             }
 
+        payment_ref = payment_out.get("id") if payment_out else None
+        await self.log_client_event(
+            int(user.id),
+            actor="system",
+            action="payment_recorded",
+            meta={
+                "payment_id": int(payment_ref) if payment_ref is not None else None,
+                "status": "pending",
+                "event_id": int(event_id) if event_id is not None else None,
+                "source": source or "admin",
+            },
+        )
+
         now = datetime.utcnow()
         user.last_activity_at = now
-        if not user.crm_stage:
-            user.crm_stage = User.CRM_STAGE_NEW
+        ai_chats_count = await self._get_ai_chats_count(int(user.id))
+        await self.recompute_stage_for_user(
+            user,
+            ai_chats_count=ai_chats_count,
+            reason="payment_recorded",
+            now_utc=self._normalize_dt_utc(now),
+        )
         activity_service = ActivityService(self.db)
         await activity_service.upsert(
             user_id=user.id,
@@ -1384,14 +1820,29 @@ class CRMService:
                 return None
 
             payment.status = status
+            user = await self._get_user(payment.user_id)
             if status == "paid":
                 payment.paid_at = now
-                user = await self._get_user(payment.user_id)
-                if user is not None:
-                    user.crm_stage = self.stage_after_payment_paid(user.crm_stage)
-                    user.last_activity_at = now
             else:
                 payment.paid_at = None
+            if user is not None:
+                await self._refresh_last_payment_at_for_user(user)
+                ai_chats_count = await self._get_ai_chats_count(int(user.id))
+                await self.recompute_stage_for_user(
+                    user,
+                    ai_chats_count=ai_chats_count,
+                    reason="payment_marked_paid" if status == "paid" else "payment_status_changed",
+                    now_utc=self._normalize_dt_utc(now),
+                )
+            await self.log_client_event(
+                int(payment.user_id),
+                actor="system",
+                action="payment_recorded",
+                meta={
+                    "payment_id": int(payment.id),
+                    "status": status,
+                },
+            )
             await self.db.flush()
             if status == "paid":
                 activity_service = ActivityService(self.db)
@@ -1426,15 +1877,31 @@ class CRMService:
             return None
 
         user = await self._get_user(int(row["user_id"]))
+        if user is not None:
+            await self._refresh_last_payment_at_for_user(user)
+            ai_chats_count = await self._get_ai_chats_count(int(user.id))
+            await self.recompute_stage_for_user(
+                user,
+                ai_chats_count=ai_chats_count,
+                reason="payment_marked_paid" if status == "paid" else "payment_status_changed",
+                now_utc=self._normalize_dt_utc(now),
+            )
         if status == "paid" and user is not None:
-            user.crm_stage = self.stage_after_payment_paid(user.crm_stage)
-            user.last_activity_at = now
             activity_service = ActivityService(self.db)
             await activity_service.upsert(
                 user_id=user.id,
                 last_activity_at=now,
                 ai_increment=0,
             )
+        await self.log_client_event(
+            int(row["user_id"]),
+            actor="system",
+            action="payment_recorded",
+            meta={
+                "payment_id": int(row["id"]),
+                "status": status,
+            },
+        )
         await self.db.flush()
 
         name_parts = [user.first_name or "", user.last_name or ""] if user else []
@@ -1894,7 +2361,6 @@ class CRMService:
         first_name = str(payload_user.get("first_name") or payload_user.get("name") or "").strip() or None
         last_name = str(payload_user.get("last_name") or "").strip() or None
         username = str(payload_user.get("username") or payload_user.get("login") or "").strip().lstrip("@") or None
-        stage = self._normalize_gc_stage(payload_user.get("crm_stage"))
         updated_at = self._to_datetime(payload_user.get("updated_at") or payload_user.get("created_at"))
 
         user: User | None = None
@@ -1914,10 +2380,19 @@ class CRMService:
                 email=email,
                 phone=phone,
                 source=User.SOURCE_COURSE,
-                crm_stage=stage,
+                crm_stage=User.CRM_STAGE_NEW,
+                tags=[],
+                needs_manager_call=False,
                 last_activity_at=updated_at,
             )
             self.db.add(user)
+            await self.db.flush()
+            await self.recompute_stage_for_user(
+                user,
+                ai_chats_count=0,
+                reason="getcourse_sync",
+                now_utc=self._utc_now(),
+            )
             return "created"
 
         has_changes = False
@@ -1931,12 +2406,16 @@ class CRMService:
             if new_value and getattr(user, field_name) != new_value:
                 setattr(user, field_name, new_value)
                 has_changes = True
-        if user.crm_stage != stage:
-            user.crm_stage = stage
-            has_changes = True
         if updated_at and user.last_activity_at != updated_at:
             user.last_activity_at = updated_at
             has_changes = True
+        stage_changed = await self.recompute_stage_for_user(
+            user,
+            ai_chats_count=await self._get_ai_chats_count(int(user.id)),
+            reason="getcourse_sync",
+            now_utc=self._utc_now(),
+        )
+        has_changes = stage_changed or has_changes
         return "updated" if has_changes else "skipped"
 
     async def upsert_payment_from_getcourse(self, payload_payment: dict[str, Any]) -> str:
@@ -1992,11 +2471,31 @@ class CRMService:
                 currency=str(payload_payment.get("currency") or "RUB"),
             )
             self.db.add(payment)
+            await self.db.flush()
             if status == "paid":
-                user.crm_stage = User.CRM_STAGE_PAID
+                now = datetime.utcnow()
+                await self._refresh_last_payment_at_for_user(user)
+                ai_chats_count = await self._get_ai_chats_count(int(user.id))
+                await self.recompute_stage_for_user(
+                    user,
+                    ai_chats_count=ai_chats_count,
+                    reason="getcourse_payment_paid",
+                    now_utc=self._normalize_dt_utc(now),
+                )
+            await self.log_client_event(
+                int(user.id),
+                actor="system",
+                action="payment_recorded",
+                meta={
+                    "payment_id": external_id,
+                    "status": status,
+                    "source": "getcourse",
+                },
+            )
             return "created"
 
         has_changes = False
+        status_before = str(payment.status or "").strip().lower()
         for field_name, new_value in (
             ("amount", amount_value),
             ("status", status),
@@ -2005,8 +2504,30 @@ class CRMService:
             if getattr(payment, field_name) != new_value:
                 setattr(payment, field_name, new_value)
                 has_changes = True
-        if status == "paid" and user.crm_stage != User.CRM_STAGE_PAID:
-            user.crm_stage = User.CRM_STAGE_PAID
+        if status == "paid" or status_before == "paid":
+            now = datetime.utcnow()
+            previous_last_payment = user.last_payment_at
+            await self._refresh_last_payment_at_for_user(user)
+            ai_chats_count = await self._get_ai_chats_count(int(user.id))
+            stage_changed = await self.recompute_stage_for_user(
+                user,
+                ai_chats_count=ai_chats_count,
+                reason="getcourse_payment_paid" if status == "paid" else "getcourse_payment_status_changed",
+                now_utc=self._normalize_dt_utc(now),
+            )
+            if previous_last_payment != user.last_payment_at or stage_changed:
+                has_changes = True
+        if has_changes:
+            await self.log_client_event(
+                int(user.id),
+                actor="system",
+                action="payment_recorded",
+                meta={
+                    "payment_id": external_id,
+                    "status": status,
+                    "source": "getcourse",
+                },
+            )
         return "updated" if has_changes else "skipped"
 
     async def upsert_catalog_item_from_getcourse(self, payload_program: dict[str, Any], integration: GetCourseService) -> str:
@@ -2397,7 +2918,9 @@ class CRMService:
             User.CRM_STAGE_MANAGER_FOLLOWUP,
             User.CRM_STAGE_PAID,
         }
-        needs_manager = stage_value == User.CRM_STAGE_MANAGER_FOLLOWUP
+        tags = self._user_tags(user)
+        needs_manager_call = bool(getattr(user, "needs_manager_call", False))
+        needs_manager = needs_manager_call
 
         return {
             "id": user.id,
@@ -2406,6 +2929,8 @@ class CRMService:
             "telegram": f"@{user.username}" if user.username else None,
             "status": status_label,
             "stage": stage_value,
+            "tags": tags,
+            "needs_manager_call": needs_manager_call,
             "phone": user.phone,
             "email": user.email,
             "registered": registered,

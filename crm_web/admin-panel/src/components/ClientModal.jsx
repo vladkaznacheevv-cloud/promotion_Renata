@@ -1,27 +1,17 @@
 ﻿/* eslint-disable react-hooks/set-state-in-effect */
 import { useEffect, useState } from "react";
 
-import { RU, stageLabel } from "../i18n/ru";
+import { RU } from "../i18n/ru";
 import Button from "./ui/Button";
 import Input from "./ui/Input";
 import Modal from "./ui/Modal";
 
 const STATUS_OPTIONS = ["Новый", "В работе", "Клиент", "VIP Клиент"];
-const STAGE_OPTIONS = [
-  "NEW",
-  "ENGAGED",
-  "READY_TO_PAY",
-  "PAID",
-  "INACTIVE",
-];
 
-export default function ClientModal({ open, onClose, onSubmit, initialData, error, role = "viewer" }) {
-  const canManage = role === "admin" || role === "manager";
-
+export default function ClientModal({ open, onClose, onSubmit, initialData, error }) {
   const [name, setName] = useState("");
   const [telegram, setTelegram] = useState("");
   const [status, setStatus] = useState("Новый");
-  const [stage, setStage] = useState("NEW");
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
   const [tgId, setTgId] = useState("");
@@ -31,7 +21,6 @@ export default function ClientModal({ open, onClose, onSubmit, initialData, erro
       setName(initialData.name || "");
       setTelegram(initialData.telegram || "");
       setStatus(initialData.status || "Новый");
-      setStage(initialData.stage || "NEW");
       setPhone(initialData.phone || "");
       setEmail(initialData.email || "");
       setTgId("");
@@ -39,7 +28,6 @@ export default function ClientModal({ open, onClose, onSubmit, initialData, erro
       setName("");
       setTelegram("");
       setStatus("Новый");
-      setStage("NEW");
       setPhone("");
       setEmail("");
       setTgId("");
@@ -54,7 +42,6 @@ export default function ClientModal({ open, onClose, onSubmit, initialData, erro
       phone: phone.trim() || null,
       email: email.trim().toLowerCase() || null,
       status,
-      stage,
       tg_id: tgId ? Number(tgId) : undefined,
     };
     onSubmit(payload);
@@ -119,21 +106,6 @@ export default function ClientModal({ open, onClose, onSubmit, initialData, erro
           </select>
         </label>
 
-        <label className="block text-sm font-medium text-slate-700">
-          {RU.labels.stage}
-          <select
-            className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500"
-            value={stage}
-            onChange={(e) => setStage(e.target.value)}
-            disabled={!canManage}
-          >
-            {STAGE_OPTIONS.map((value) => (
-              <option key={value} value={value}>
-                {stageLabel(value)}
-              </option>
-            ))}
-          </select>
-        </label>
       </form>
     </Modal>
   );

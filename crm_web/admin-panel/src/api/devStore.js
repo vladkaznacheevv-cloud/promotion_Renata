@@ -11,6 +11,8 @@ const clients = [
     phone: "+79991112233",
     email: "anna@example.com",
     stage: "PAID",
+    needs_manager_call: false,
+    tags: ["game10", "events"],
     status: "VIP Клиент",
     registered: "2026-01-05",
     interested: "Концерт \"Ностальгия\"",
@@ -26,6 +28,8 @@ const clients = [
     phone: null,
     email: null,
     stage: "ENGAGED",
+    needs_manager_call: true,
+    tags: ["gestalt"],
     status: "В работе",
     registered: "2026-01-04",
     interested: "Мастер-класс SMM",
@@ -41,6 +45,8 @@ const clients = [
     phone: "+79994445566",
     email: "ekat@example.com",
     stage: "READY_TO_PAY",
+    needs_manager_call: false,
+    tags: ["vip", "consult"],
     status: "VIP Клиент",
     registered: "2026-01-03",
     interested: "VIP-канал",
@@ -358,6 +364,10 @@ const deriveClient = (client) => {
   const stage = client.stage || "NEW";
   const phone = client.phone || null;
   const email = client.email || null;
+  const tags = Array.isArray(client.tags)
+    ? client.tags.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  const needsManagerCall = Boolean(client.needs_manager_call);
   const readyToPay =
     Boolean(phone || email) || ["READY_TO_PAY", "MANAGER_FOLLOWUP", "PAID"].includes(stage);
   return {
@@ -365,16 +375,20 @@ const deriveClient = (client) => {
     stage,
     phone,
     email,
+    tags,
+    needs_manager_call: needsManagerCall,
     flags: {
       readyToPay,
-      needsManager: stage === "MANAGER_FOLLOWUP",
+      needsManager: needsManagerCall || stage === "MANAGER_FOLLOWUP",
     },
   };
 };
 
 export function getClients(params = {}) {
   const stage = typeof params.stage === "string" ? params.stage.trim() : "";
-  const search = typeof params.search === "string" ? params.search.trim().toLowerCase() : "";
+  const searchRaw = typeof params.search === "string" ? params.search.trim().toLowerCase() : "";
+  const search = searchRaw.startsWith("#") ? searchRaw.slice(1).trim() : searchRaw;
+  const needsCall = typeof params.needs_call === "boolean" ? params.needs_call : null;
   const rawLimit = Number(params.limit);
   const rawOffset = Number(params.offset);
   const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.trunc(rawLimit) : null;
@@ -384,9 +398,19 @@ export function getClients(params = {}) {
   if (stage) {
     items = items.filter((item) => item.stage === stage);
   }
+  if (needsCall !== null) {
+    items = items.filter((item) => Boolean(item.needs_manager_call) === needsCall);
+  }
   if (search) {
     items = items.filter((item) =>
-      [item.name, item.telegram, item.phone, item.email, item.tg_id ? String(item.tg_id) : ""]
+      [
+        item.name,
+        item.telegram,
+        item.phone,
+        item.email,
+        item.tg_id ? String(item.tg_id) : "",
+        ...(Array.isArray(item.tags) ? item.tags : []),
+      ]
         .filter(Boolean)
         .join(" ")
         .toLowerCase()
@@ -409,6 +433,8 @@ export function createClient(payload) {
     email: payload.email || null,
     status: payload.status || "Новый",
     stage: payload.stage || (payload.phone || payload.email ? "READY_TO_PAY" : "NEW"),
+    tags: Array.isArray(payload.tags) ? payload.tags : [],
+    needs_manager_call: Boolean(payload.needs_manager_call),
     registered: now,
     interested: payload.interested || null,
     aiChats: 0,
@@ -427,9 +453,19 @@ export function updateClient(id, payload) {
   if (payload.phone || payload.email) {
     next.stage = payload.stage || "READY_TO_PAY";
   }
+  if (Object.prototype.hasOwnProperty.call(payload, "tags")) {
+    next.tags = Array.isArray(payload.tags) ? payload.tags : [];
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, "needs_manager_call")) {
+    next.needs_manager_call = Boolean(payload.needs_manager_call);
+  }
   clients[idx] = next;
   aiStats.activeUsers = clients.filter((c) => c.status !== "archived").length;
   return clone(deriveClient(clients[idx]));
+}
+
+export function setClientNeedsCall(id, value) {
+  return updateClient(id, { needs_manager_call: Boolean(value) });
 }
 
 export function deleteClient(id) {
@@ -751,6 +787,8 @@ export function syncGetCourse() {
   getcourseState = { ...getcourseState, status: "OK", lastError: null, ok: true };
   return clone(getcourseState);
 }
+
+
 
 
 

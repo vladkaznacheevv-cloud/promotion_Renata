@@ -6,6 +6,7 @@ export async function getClients(params = {}) {
     const query = new URLSearchParams();
     if (params.stage) query.set("stage", params.stage);
     if (params.search) query.set("search", params.search);
+    if (typeof params.needs_call === "boolean") query.set("needs_call", String(params.needs_call));
     if (params.limit) query.set("limit", String(params.limit));
     if (typeof params.offset === "number" && params.offset >= 0) query.set("offset", String(params.offset));
     const suffix = query.toString() ? `?${query.toString()}` : "";
@@ -38,6 +39,18 @@ export async function updateClient(clientId, payload) {
     if (shouldFallback(error)) {
       markDevFallbackUsed();
       return devStore.updateClient(clientId, payload);
+    }
+    throw error;
+  }
+}
+
+export async function setClientNeedsCall(clientId, value) {
+  try {
+    return await apiPost(`/api/crm/clients/${clientId}/needs_call`, { value: Boolean(value) });
+  } catch (error) {
+    if (shouldFallback(error)) {
+      markDevFallbackUsed();
+      return devStore.setClientNeedsCall(clientId, value);
     }
     throw error;
   }

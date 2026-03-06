@@ -208,9 +208,9 @@
     NEW: "Новый",
     ENGAGED: "Общается с AI",
     READY_TO_PAY: "Готов к оплате",
-    MANAGER_FOLLOWUP: "Нужен звонок менеджера",
+    MANAGER_FOLLOWUP: "Горячий клиент",
     PAID: "Оплатил",
-    INACTIVE: "Неактивен",
+    INACTIVE: "Холодный клиент",
   },
   messages: {
     backendUnavailableDemo: "Сервер/БД недоступны, используются демо-данные.",

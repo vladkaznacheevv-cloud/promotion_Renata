@@ -250,7 +250,9 @@ async def _upsert_crm_game10_payment(*, db: AsyncSession, tg_id: int, payment_id
         .limit(1)
     )
     crm_payment = row.scalar_one_or_none()
+    service = CRMService(db)
     now = datetime.now(timezone.utc)
+    created = False
     if crm_payment is None:
         crm_payment = Payment(
             user_id=int(user.id),
@@ -264,22 +266,41 @@ async def _upsert_crm_game10_payment(*, db: AsyncSession, tg_id: int, payment_id
             updated_at=now,
         )
         db.add(crm_payment)
-        await db.flush()
-        return "created"
+        created = True
+    else:
+        crm_payment.user_id = int(user.id)
+        if amount_rub > 0:
+            crm_payment.amount = amount_rub
+        crm_payment.provider = crm_payment.provider or "yookassa"
+        crm_payment.external_id = payment_id
+        crm_payment.currency = crm_payment.currency or "RUB"
+        crm_payment.source = crm_payment.source or "game10"
+        crm_payment.status = "paid" if status in {"succeeded", "paid"} else (crm_payment.status or "paid")
+        crm_payment.updated_at = now
+        if crm_payment.paid_at is None:
+            crm_payment.paid_at = now
 
-    crm_payment.user_id = int(user.id)
-    if amount_rub > 0:
-        crm_payment.amount = amount_rub
-    crm_payment.provider = crm_payment.provider or "yookassa"
-    crm_payment.external_id = payment_id
-    crm_payment.currency = crm_payment.currency or "RUB"
-    crm_payment.source = crm_payment.source or "game10"
-    crm_payment.status = "paid" if status in {"succeeded", "paid"} else (crm_payment.status or "paid")
-    crm_payment.updated_at = now
-    if crm_payment.paid_at is None:
-        crm_payment.paid_at = now
+    if status in {"succeeded", "paid"}:
+        user.last_payment_at = now
+        ai_chats_count = await service._get_ai_chats_count(int(user.id))
+        await service.recompute_stage_for_user(
+            user,
+            ai_chats_count=ai_chats_count,
+            reason="yookassa_webhook_paid",
+            now_utc=now,
+        )
+    await service.log_client_event(
+        int(user.id),
+        actor="system",
+        action="payment_recorded",
+        meta={
+            "payment_id": payment_id,
+            "status": crm_payment.status,
+            "source": "yookassa",
+        },
+    )
     await db.flush()
-    return "updated"
+    return "created" if created else "updated"
 
 
 async def process_game10_payment_success(*, db: AsyncSession, payment_id: str, tg_id: int) -> dict[str, Any]:
