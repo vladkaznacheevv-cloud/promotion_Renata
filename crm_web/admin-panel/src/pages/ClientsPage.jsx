@@ -22,13 +22,23 @@ import { Table, TBody, TD, TH, THead, TR } from "../components/ui/Table";
 
 const STAGE_FILTER_ALL = "all";
 const STAGE_FILTER_NEEDS_CALL = "needs_call";
+const STAGE_LABELS = {
+  NEW: "Новый",
+  ENGAGED: "Общается с AI",
+  READY_TO_PAY: "Общается с AI",
+  INACTIVE: "Холодный клиент",
+  PAID: "Оплатил",
+  HOT: "Горячий клиент",
+  MANAGER_FOLLOWUP: "Горячий клиент",
+};
 
 const STAGE_FILTER_OPTIONS = [
   { value: STAGE_FILTER_ALL, label: "Все стадии" },
   { value: STAGE_FILTER_NEEDS_CALL, label: "Нужен звонок менеджера" },
+  { value: "NEW", label: "Новый" },
   { value: "ENGAGED", label: "Общается с AI" },
   { value: "INACTIVE", label: "Холодный клиент" },
-  { value: "MANAGER_FOLLOWUP", label: "Горячий клиент" },
+  { value: "HOT", label: "Горячий клиент" },
   { value: "PAID", label: "Оплатил" },
 ];
 
@@ -71,11 +81,6 @@ function normalizeTags(tags) {
     result.push(next);
   });
   return result;
-}
-
-function hasClientSignupIndicator(client) {
-  // TODO: Replace this heuristic with explicit registration/consultation flag from backend.
-  return Boolean(client?.interested || client?.flags?.readyToPay);
 }
 
 export default function ClientsPage() {
@@ -412,7 +417,6 @@ export default function ClientsPage() {
                   {clients.map((client) => {
                     const displayTags = normalizeTags(client.tags);
                     const tagsEditorOpen = editingTagsClientId === client.id;
-                    const hasSignupBadge = hasClientSignupIndicator(client);
                     const isSavingTags = savingTagsClientId === client.id;
                     const isUpdatingCall = updatingCallClientId === client.id;
 
@@ -433,7 +437,7 @@ export default function ClientsPage() {
                                   Нужен звонок менеджера
                                 </Badge>
                               )}
-                              <Badge variant="default">{client.stage || "NEW"}</Badge>
+                              <Badge variant="default">{STAGE_LABELS[client.stage] || client.stage || "NEW"}</Badge>
                             </div>
                             {client.needs_manager_call && canManage && (
                               <Button
@@ -458,11 +462,6 @@ export default function ClientsPage() {
                                 ))
                               ) : (
                                 <span className="text-xs text-slate-400">{RU.messages.notSet}</span>
-                              )}
-                              {hasSignupBadge && (
-                                <Badge variant="cancelled" className="border-red-200 bg-red-50 text-red-700">
-                                  Есть запись
-                                </Badge>
                               )}
                             </div>
 

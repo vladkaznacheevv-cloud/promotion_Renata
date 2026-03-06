@@ -87,8 +87,13 @@ class CRMService:
 
     @staticmethod
     def normalize_stage(stage: str | None) -> str:
-        if stage in User.CRM_STAGE_CHOICES:
-            return stage
+        raw = str(stage or "").strip().upper()
+        if raw == User.CRM_STAGE_MANAGER_FOLLOWUP:
+            return User.CRM_STAGE_HOT
+        if raw == User.CRM_STAGE_READY_TO_PAY:
+            return User.CRM_STAGE_ENGAGED
+        if raw in User.CRM_STAGE_CHOICES:
+            return raw
         return User.CRM_STAGE_NEW
 
     @classmethod
@@ -101,7 +106,7 @@ class CRMService:
     @classmethod
     def stage_after_contacts(cls, current_stage: str | None) -> str:
         _ = cls.normalize_stage(current_stage)
-        return User.CRM_STAGE_READY_TO_PAY
+        return User.CRM_STAGE_ENGAGED
 
     @classmethod
     def stage_after_payment_paid(cls, current_stage: str | None) -> str:
@@ -134,9 +139,9 @@ class CRMService:
         ttl = timedelta(days=7)
 
         if last_payment_at is not None:
-            if now - last_payment_at >= ttl:
-                return User.CRM_STAGE_MANAGER_FOLLOWUP, "payment_older_than_7d"
-            return User.CRM_STAGE_PAID, "payment_recent"
+            if now - last_payment_at < ttl:
+                return User.CRM_STAGE_PAID, "payment_recent"
+            return User.CRM_STAGE_HOT, "payment_older_than_7d"
 
         if last_activity_at is not None and now - last_activity_at >= ttl:
             return User.CRM_STAGE_INACTIVE, "inactive_7d"
@@ -249,7 +254,9 @@ class CRMService:
         new_stage = self.normalize_stage(stage)
         previous_raw = user.crm_stage
         previous_stage = self.normalize_stage(previous_raw)
-        if previous_raw == new_stage:
+        if previous_stage == new_stage:
+            if previous_raw != new_stage:
+                user.crm_stage = new_stage
             return False
         user.crm_stage = new_stage
         payload: dict[str, Any] = {
@@ -330,7 +337,7 @@ class CRMService:
 
     async def _refresh_last_payment_at_for_user(self, user: User) -> datetime | None:
         paid_statuses = self._dashboard_paid_statuses()
-        paid_ts = func.coalesce(Payment.paid_at, Payment.updated_at, Payment.created_at)
+        paid_ts = func.coalesce(Payment.paid_at, Payment.created_at)
         value = await self.db.scalar(
             select(func.max(paid_ts))
             .where(Payment.user_id == int(user.id))
@@ -338,6 +345,49 @@ class CRMService:
         )
         user.last_payment_at = value
         return value
+
+    async def backfill_last_payment_at(self, *, batch_size: int = 200) -> dict[str, int]:
+        paid_statuses = self._dashboard_paid_statuses()
+        safe_batch_size = max(1, min(int(batch_size), 5000))
+        paid_ts = func.coalesce(Payment.paid_at, Payment.created_at)
+        max_paid_subquery = (
+            select(
+                Payment.user_id.label("user_id"),
+                func.max(paid_ts).label("max_paid_at"),
+            )
+            .where(func.lower(func.coalesce(Payment.status, "")).in_(paid_statuses))
+            .group_by(Payment.user_id)
+            .subquery()
+        )
+
+        cursor = 0
+        checked = 0
+        updated = 0
+
+        while True:
+            rows = await self.db.execute(
+                select(User, max_paid_subquery.c.max_paid_at)
+                .join(max_paid_subquery, max_paid_subquery.c.user_id == User.id)
+                .where(User.id > int(cursor))
+                .order_by(User.id.asc())
+                .limit(safe_batch_size)
+            )
+            items = rows.all()
+            if not items:
+                break
+
+            for user, max_paid_at in items:
+                checked += 1
+                target_dt = self._normalize_dt_utc(max_paid_at)
+                current_dt = self._normalize_dt_utc(user.last_payment_at)
+                if target_dt is not None and (current_dt is None or current_dt < target_dt):
+                    user.last_payment_at = target_dt
+                    updated += 1
+                cursor = int(user.id)
+
+            await self.db.flush()
+
+        return {"checked": checked, "updated": updated}
 
     async def recompute_stage_for_user(
         self,
@@ -709,7 +759,23 @@ class CRMService:
         query = select(User).where(User.status != User.STATUS_ARCHIVED)
 
         if stage:
-            query = query.where(User.crm_stage == self.normalize_stage(stage))
+            normalized_stage = self.normalize_stage(stage)
+            if normalized_stage == User.CRM_STAGE_HOT:
+                query = query.where(
+                    or_(
+                        User.crm_stage == User.CRM_STAGE_HOT,
+                        User.crm_stage == User.CRM_STAGE_MANAGER_FOLLOWUP,
+                    )
+                )
+            elif normalized_stage == User.CRM_STAGE_ENGAGED:
+                query = query.where(
+                    or_(
+                        User.crm_stage == User.CRM_STAGE_ENGAGED,
+                        User.crm_stage == User.CRM_STAGE_READY_TO_PAY,
+                    )
+                )
+            else:
+                query = query.where(User.crm_stage == normalized_stage)
         if needs_call is not None:
             query = query.where(User.needs_manager_call.is_(bool(needs_call)))
 
@@ -2336,9 +2402,10 @@ class CRMService:
                 await self._release_getcourse_sync_lock()
     def _normalize_gc_stage(self, value: Any) -> str:
         raw = str(value or "").strip().upper()
-        if raw in User.CRM_STAGE_CHOICES:
-            return raw
-        return User.CRM_STAGE_ENGAGED
+        normalized = self.normalize_stage(raw)
+        if normalized == User.CRM_STAGE_NEW and raw not in {"", User.CRM_STAGE_NEW}:
+            return User.CRM_STAGE_ENGAGED
+        return normalized
 
     def _normalize_gc_email(self, value: Any) -> str | None:
         text = str(value or "").strip().lower()
@@ -2914,9 +2981,8 @@ class CRMService:
         last_activity = last_activity_at.isoformat() if last_activity_at else None
 
         ready_to_pay = bool(user.phone or user.email) or stage_value in {
-            User.CRM_STAGE_READY_TO_PAY,
-            User.CRM_STAGE_MANAGER_FOLLOWUP,
             User.CRM_STAGE_PAID,
+            User.CRM_STAGE_HOT,
         }
         tags = self._user_tags(user)
         needs_manager_call = bool(getattr(user, "needs_manager_call", False))

@@ -80,7 +80,7 @@ def test_patch_client_smoke(monkeypatch):
                 "name": "Test",
                 "telegram": "@test",
                 "status": "New",
-                "stage": "READY_TO_PAY",
+                "stage": "ENGAGED",
                 "phone": "+79991234567",
                 "email": "test@example.com",
                 "registered": "2026-01-01",
@@ -96,10 +96,10 @@ def test_patch_client_smoke(monkeypatch):
     client = TestClient(app)
     response = client.patch(
         "/api/crm/clients/1",
-        json={"stage": "READY_TO_PAY", "phone": "+79991234567", "email": "test@example.com"},
+        json={"stage": "ENGAGED", "phone": "+79991234567", "email": "test@example.com"},
     )
     assert response.status_code == 200
-    assert response.json()["stage"] == "READY_TO_PAY"
+    assert response.json()["stage"] == "ENGAGED"
 
 
 def test_create_payment_then_mark_paid_smoke(monkeypatch):

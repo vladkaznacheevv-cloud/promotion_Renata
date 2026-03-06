@@ -36,17 +36,18 @@ class User(Base):
     # CRM funnel stage
     CRM_STAGE_NEW = "NEW"
     CRM_STAGE_ENGAGED = "ENGAGED"
+    CRM_STAGE_INACTIVE = "INACTIVE"
+    CRM_STAGE_PAID = "PAID"
+    CRM_STAGE_HOT = "HOT"
+    # Legacy values kept for backwards compatibility with existing DB rows.
     CRM_STAGE_READY_TO_PAY = "READY_TO_PAY"
     CRM_STAGE_MANAGER_FOLLOWUP = "MANAGER_FOLLOWUP"
-    CRM_STAGE_PAID = "PAID"
-    CRM_STAGE_INACTIVE = "INACTIVE"
     CRM_STAGE_CHOICES = [
         CRM_STAGE_NEW,
         CRM_STAGE_ENGAGED,
-        CRM_STAGE_READY_TO_PAY,
-        CRM_STAGE_MANAGER_FOLLOWUP,
-        CRM_STAGE_PAID,
         CRM_STAGE_INACTIVE,
+        CRM_STAGE_PAID,
+        CRM_STAGE_HOT,
     ]
     crm_stage = Column(String(32), nullable=False, server_default=CRM_STAGE_NEW, index=True)
     tags = Column(JSON().with_variant(JSONB, "postgresql"), nullable=False, default=list, server_default="[]")

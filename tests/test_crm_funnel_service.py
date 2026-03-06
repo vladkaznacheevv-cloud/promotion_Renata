@@ -10,12 +10,12 @@ def test_stage_new_to_engaged_on_message():
     assert CRMService.stage_after_message(User.CRM_STAGE_NEW) == User.CRM_STAGE_ENGAGED
 
 
-def test_contacts_set_ready_to_pay():
-    assert CRMService.stage_after_contacts(User.CRM_STAGE_ENGAGED) == User.CRM_STAGE_READY_TO_PAY
+def test_contacts_keep_engaged():
+    assert CRMService.stage_after_contacts(User.CRM_STAGE_ENGAGED) == User.CRM_STAGE_ENGAGED
 
 
 def test_payment_paid_sets_paid_stage():
-    assert CRMService.stage_after_payment_paid(User.CRM_STAGE_READY_TO_PAY) == User.CRM_STAGE_PAID
+    assert CRMService.stage_after_payment_paid(User.CRM_STAGE_ENGAGED) == User.CRM_STAGE_PAID
 
 
 def _user_stub(*, last_activity_at=None, last_payment_at=None):
@@ -62,7 +62,15 @@ def test_compute_stage_hot_after_7_days_from_payment():
     now = datetime.now(timezone.utc)
     user = _user_stub(last_activity_at=now - timedelta(days=20), last_payment_at=now - timedelta(days=8))
     stage, reason = CRMService.compute_stage(user, ai_chats_count=0, now_utc=now)
-    assert stage == User.CRM_STAGE_MANAGER_FOLLOWUP
+    assert stage == User.CRM_STAGE_HOT
+    assert reason == "payment_older_than_7d"
+
+
+def test_compute_stage_hot_not_downgraded_to_engaged_by_ai():
+    now = datetime.now(timezone.utc)
+    user = _user_stub(last_activity_at=now - timedelta(days=1), last_payment_at=now - timedelta(days=10))
+    stage, reason = CRMService.compute_stage(user, ai_chats_count=100, now_utc=now)
+    assert stage == User.CRM_STAGE_HOT
     assert reason == "payment_older_than_7d"
 
 

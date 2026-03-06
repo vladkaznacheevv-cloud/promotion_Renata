@@ -44,7 +44,7 @@ const clients = [
     tg_id: 10003,
     phone: "+79994445566",
     email: "ekat@example.com",
-    stage: "READY_TO_PAY",
+    stage: "ENGAGED",
     needs_manager_call: false,
     tags: ["vip", "consult"],
     status: "VIP Клиент",
@@ -310,7 +310,7 @@ const formatScheduleText = (event) => {
   if (occurrenceDates?.length) {
     const datesText = occurrenceDates
       .map((value) => {
-        const [yyyy, mm, dd] = value.split("-");
+        const [_YYYY, mm, dd] = value.split("-");
         return `${dd}.${mm}`;
       })
       .join(", ");
@@ -360,8 +360,17 @@ const normalizeEventShape = (event) => {
   };
 };
 
+const normalizeClientStage = (value) => {
+  const stage = String(value || "NEW").trim().toUpperCase();
+  if (stage === "MANAGER_FOLLOWUP") return "HOT";
+  if (stage === "READY_TO_PAY") return "ENGAGED";
+  if (["NEW", "ENGAGED", "INACTIVE", "PAID", "HOT"].includes(stage)) return stage;
+  return "NEW";
+};
+
 const deriveClient = (client) => {
-  const stage = client.stage || "NEW";
+  const rawStage = String(client.stage || "NEW").trim().toUpperCase();
+  const stage = normalizeClientStage(rawStage);
   const phone = client.phone || null;
   const email = client.email || null;
   const tags = Array.isArray(client.tags)
@@ -369,7 +378,7 @@ const deriveClient = (client) => {
     : [];
   const needsManagerCall = Boolean(client.needs_manager_call);
   const readyToPay =
-    Boolean(phone || email) || ["READY_TO_PAY", "MANAGER_FOLLOWUP", "PAID"].includes(stage);
+    Boolean(phone || email) || ["PAID", "HOT"].includes(stage) || ["READY_TO_PAY", "MANAGER_FOLLOWUP"].includes(rawStage);
   return {
     ...client,
     stage,
@@ -379,7 +388,7 @@ const deriveClient = (client) => {
     needs_manager_call: needsManagerCall,
     flags: {
       readyToPay,
-      needsManager: needsManagerCall || stage === "MANAGER_FOLLOWUP",
+      needsManager: needsManagerCall || stage === "HOT" || rawStage === "MANAGER_FOLLOWUP",
     },
   };
 };
@@ -432,7 +441,7 @@ export function createClient(payload) {
     phone: payload.phone || null,
     email: payload.email || null,
     status: payload.status || "Новый",
-    stage: payload.stage || (payload.phone || payload.email ? "READY_TO_PAY" : "NEW"),
+    stage: normalizeClientStage(payload.stage || (payload.phone || payload.email ? "ENGAGED" : "NEW")),
     tags: Array.isArray(payload.tags) ? payload.tags : [],
     needs_manager_call: Boolean(payload.needs_manager_call),
     registered: now,
@@ -450,8 +459,11 @@ export function updateClient(id, payload) {
   const idx = clients.findIndex((c) => c.id === id);
   if (idx === -1) return null;
   const next = { ...clients[idx], ...payload };
+  if (Object.prototype.hasOwnProperty.call(payload, "stage")) {
+    next.stage = normalizeClientStage(payload.stage);
+  }
   if (payload.phone || payload.email) {
-    next.stage = payload.stage || "READY_TO_PAY";
+    next.stage = normalizeClientStage(payload.stage || "ENGAGED");
   }
   if (Object.prototype.hasOwnProperty.call(payload, "tags")) {
     next.tags = Array.isArray(payload.tags) ? payload.tags : [];

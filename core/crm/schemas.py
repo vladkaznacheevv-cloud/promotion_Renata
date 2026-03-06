@@ -7,7 +7,8 @@ from pydantic import BaseModel, Field, model_validator
 
 
 ClientStatus = Literal["Новый", "В работе", "Клиент", "VIP Клиент"]
-ClientStage = Literal["NEW", "ENGAGED", "READY_TO_PAY", "MANAGER_FOLLOWUP", "PAID", "INACTIVE"]
+ClientStage = Literal["NEW", "ENGAGED", "INACTIVE", "PAID", "HOT"]
+ClientStageInput = Literal["NEW", "ENGAGED", "INACTIVE", "PAID", "HOT", "READY_TO_PAY", "MANAGER_FOLLOWUP"]
 EventStatus = Literal["active", "finished"]
 EventScheduleType = Literal["one_time", "recurring", "rolling"]
 CatalogType = Literal["course", "product"]
@@ -22,7 +23,7 @@ class ClientCreate(BaseModel):
     interested_event_id: Optional[int] = None
     phone: Optional[str] = None
     email: Optional[str] = None
-    stage: Optional[ClientStage] = None
+    stage: Optional[ClientStageInput] = None
     tags: Optional[List[str]] = None
 
 
