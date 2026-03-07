@@ -1,0 +1,24 @@
+﻿[
+  {
+    "slug": "gestalt-main-card",
+    "title": "Гештальт: постоянное направление",
+    "doc_type": "card",
+    "status": "active",
+    "updated_at": "2026-03-01",
+    "priority": 8,
+    "section": "gestalt",
+    "summary": "Постоянное направление и регулярные группы.",
+    "registration_route": "Раздел Консультации/Гештальт -> карточка направления."
+  },
+  {
+    "slug": "gestalt-main-form",
+    "title": "Форма: гештальт направление",
+    "doc_type": "form",
+    "status": "draft",
+    "updated_at": "2026-03-01",
+    "priority": 5,
+    "section": "gestalt/forms",
+    "summary": "Форма обновляется, пока в черновике.",
+    "registration_route": "Если нужна запись сейчас — направить к менеджеру."
+  }
+]

@@ -5,36 +5,37 @@ import json
 import logging
 import os
 import re
+from collections import Counter
 from datetime import date as dt_date, datetime, time as dt_time
 from typing import List, Tuple
 
 from openai import OpenAI
 from sqlalchemy import select
 
+from core.ai.prompt_bridge import load_policy_prompt, rag_policy_hint
 from core.ai.prompts import SYSTEM_PROMPT
 from core.catalog.models import CatalogItem
 from core.consultations.models import Consultation, UserConsultation
 from core.crm.models import GetCourseWebhookEvent
 from core.db import database as db
 from core.events.models import Event, UserEvent
-from core.rag import RagRetriever, RagStore
+from core.rag import RagRetriever, RagRouter, RagStore
 from core.users.models import User
 
 logger = logging.getLogger(__name__)
 
 
 _DEFAULT_SYSTEM_PROMPT = (
-    "Ты — Ассистент Ренаты Минаковой. "
-    "Отвечай дружелюбно, коротко и по делу. "
-    "Если не хватает данных, честно скажи об этом и задай уточняющий вопрос."
+    "РўС‹ вЂ” РђСЃСЃРёСЃС‚РµРЅС‚ Р РµРЅР°С‚С‹ РњРёРЅР°РєРѕРІРѕР№. "
+    "РћС‚РІРµС‡Р°Р№ РґСЂСѓР¶РµР»СЋР±РЅРѕ, РєРѕСЂРѕС‚РєРѕ Рё РїРѕ РґРµР»Сѓ. "
+    "Р•СЃР»Рё РЅРµ С…РІР°С‚Р°РµС‚ РґР°РЅРЅС‹С…, С‡РµСЃС‚РЅРѕ СЃРєР°Р¶Рё РѕР± СЌС‚РѕРј Рё Р·Р°РґР°Р№ СѓС‚РѕС‡РЅСЏСЋС‰РёР№ РІРѕРїСЂРѕСЃ."
 )
 
 _MOJIBAKE_RE = re.compile(r"(?:\u00D0.|\u00D1.|\u0420[\u0410-\u044FA-Za-z]|\u0421[\u0410-\u044FA-Za-z])")
-_RAG_FOCUS_PREFIX_RE = re.compile(r"^\s*\[FOCUS:(?P<name>[A-Z0-9_/-]+)\]\s*", re.IGNORECASE)
 
 
 class AIService:
-    UNAVAILABLE_MESSAGE = "Ассистент временно недоступен"
+    UNAVAILABLE_MESSAGE = "РђСЃСЃРёСЃС‚РµРЅС‚ РІСЂРµРјРµРЅРЅРѕ РЅРµРґРѕСЃС‚СѓРїРµРЅ"
 
     def __init__(self, api_key: str | None = None, model: str | None = None):
         provider = (os.getenv("AI_PROVIDER", "openrouter") or "openrouter").strip().lower()
@@ -51,16 +52,26 @@ class AIService:
                 or (os.getenv("AI_MODEL") or "").strip()
                 or "gpt-4o-mini"
             )
-        self.system_prompt = self._safe_system_prompt(SYSTEM_PROMPT)
+        policy_prompt = load_policy_prompt()
+        source_prompt = policy_prompt.content or SYSTEM_PROMPT
+        self.system_prompt = self._safe_system_prompt(source_prompt)
+        self.policy_prompt_source = policy_prompt.source
+        self.rag_policy_message = rag_policy_hint()
         self.reasoning_enabled = self._env_bool("OPENROUTER_REASONING", default=False)
 
         self.rag_enabled = self._env_bool("RAG_ENABLED", default=True)
         self.rag_top_k = self._env_int("RAG_TOP_K", default=6, min_value=1, max_value=20)
         self.rag_min_score = self._env_float("RAG_MIN_SCORE", default=0.08)
         self.rag_max_context_chars = self._env_int("RAG_MAX_CONTEXT_CHARS", default=3800, min_value=800, max_value=12000)
+        self.rag_response_statuses = self._env_csv("RAG_RESPONSE_STATUSES", default=("active",))
+        self.rag_diagnostic_statuses = self._env_csv(
+            "RAG_DIAGNOSTIC_STATUSES",
+            default=("active", "draft", "archived"),
+        )
         rag_dir = (os.getenv("RAG_DATA_DIR") or "rag_data").strip() or "rag_data"
         self.rag_data_dir = rag_dir
         self.rag_retriever: RagRetriever | None = None
+        self.rag_router = RagRouter()
         self._last_trace: dict[str, object] = {}
         if self.rag_enabled:
             self.rag_retriever = RagRetriever(store=RagStore(data_dir=rag_dir))
@@ -101,28 +112,34 @@ class AIService:
             store = self.rag_retriever.store
             collections = store.list_collections(self.rag_data_dir)
             docs_total = 0
+            status_totals: Counter[str] = Counter()
             for collection_dir in collections.values():
-                docs_total += len(list(store._iter_files(collection_dir=collection_dir)))
+                docs = store.list_collection_documents(collection_dir=collection_dir)
+                docs_total += len(docs)
+                for item in docs:
+                    status = str(item.get("status") or "active").strip().lower() or "active"
+                    status_totals[status] += 1
             logger.info(
-                "RAG startup: enabled=%s collections=%s docs=%s",
+                "RAG startup: enabled=%s collections=%s docs=%s statuses=%s",
                 True,
                 len(collections),
                 docs_total,
+                dict(status_totals),
             )
         except Exception as e:
             logger.warning("RAG startup summary failed: %s", e.__class__.__name__)
 
     @staticmethod
     def _detect_need_themes(text: str | None) -> list[str]:
-        normalized = (text or "").lower().replace("ё", "е")
+        normalized = (text or "").lower().replace("С‘", "Рµ")
         groups: list[tuple[str, tuple[str, ...]]] = [
-            ("relationships", ("отношен", "партнер", "муж", "жена", "развод", "конфликт", "семья")),
-            ("anxiety", ("тревог", "страх", "паник", "напряжен", "беспокой", "тревожно")),
-            ("self_esteem", ("самооцен", "уверенн", "неуверенн", "стыд", "вина", "ценност")),
-            ("career", ("карьер", "работ", "бизнес", "деньг", "доход", "професс", "реализац")),
-            ("burnout", ("выгоран", "устал", "нет сил", "апат", "истощ", "перегруз")),
-            ("crisis", ("кризис", "тупик", "не понимаю", "развал", "потеря", "сломал")),
-            ("psychologist_growth", ("психолог", "клиент", "супервиз", "практик", "терапевт", "кейс")),
+            ("relationships", ("РѕС‚РЅРѕС€РµРЅ", "РїР°СЂС‚РЅРµСЂ", "РјСѓР¶", "Р¶РµРЅР°", "СЂР°Р·РІРѕРґ", "РєРѕРЅС„Р»РёРєС‚", "СЃРµРјСЊСЏ")),
+            ("anxiety", ("С‚СЂРµРІРѕРі", "СЃС‚СЂР°С…", "РїР°РЅРёРє", "РЅР°РїСЂСЏР¶РµРЅ", "Р±РµСЃРїРѕРєРѕР№", "С‚СЂРµРІРѕР¶РЅРѕ")),
+            ("self_esteem", ("СЃР°РјРѕРѕС†РµРЅ", "СѓРІРµСЂРµРЅРЅ", "РЅРµСѓРІРµСЂРµРЅРЅ", "СЃС‚С‹Рґ", "РІРёРЅР°", "С†РµРЅРЅРѕСЃС‚")),
+            ("career", ("РєР°СЂСЊРµСЂ", "СЂР°Р±РѕС‚", "Р±РёР·РЅРµСЃ", "РґРµРЅСЊРі", "РґРѕС…РѕРґ", "РїСЂРѕС„РµСЃСЃ", "СЂРµР°Р»РёР·Р°С†")),
+            ("burnout", ("РІС‹РіРѕСЂР°РЅ", "СѓСЃС‚Р°Р»", "РЅРµС‚ СЃРёР»", "Р°РїР°С‚", "РёСЃС‚РѕС‰", "РїРµСЂРµРіСЂСѓР·")),
+            ("crisis", ("РєСЂРёР·РёСЃ", "С‚СѓРїРёРє", "РЅРµ РїРѕРЅРёРјР°СЋ", "СЂР°Р·РІР°Р»", "РїРѕС‚РµСЂСЏ", "СЃР»РѕРјР°Р»")),
+            ("psychologist_growth", ("РїСЃРёС…РѕР»РѕРі", "РєР»РёРµРЅС‚", "СЃСѓРїРµСЂРІРёР·", "РїСЂР°РєС‚РёРє", "С‚РµСЂР°РїРµРІС‚", "РєРµР№СЃ")),
         ]
         detected: list[str] = []
         for name, keywords in groups:
@@ -135,13 +152,13 @@ class AIService:
         if not themes:
             return ""
         labels = {
-            "relationships": "отношения",
-            "anxiety": "тревога/напряжение",
-            "self_esteem": "самооценка/уверенность",
-            "career": "карьера/бизнес/деньги",
-            "burnout": "выгорание/истощение",
-            "crisis": "кризис/тупик",
-            "psychologist_growth": "профрост психолога/супервизия",
+            "relationships": "РѕС‚РЅРѕС€РµРЅРёСЏ",
+            "anxiety": "С‚СЂРµРІРѕРіР°/РЅР°РїСЂСЏР¶РµРЅРёРµ",
+            "self_esteem": "СЃР°РјРѕРѕС†РµРЅРєР°/СѓРІРµСЂРµРЅРЅРѕСЃС‚СЊ",
+            "career": "РєР°СЂСЊРµСЂР°/Р±РёР·РЅРµСЃ/РґРµРЅСЊРіРё",
+            "burnout": "РІС‹РіРѕСЂР°РЅРёРµ/РёСЃС‚РѕС‰РµРЅРёРµ",
+            "crisis": "РєСЂРёР·РёСЃ/С‚СѓРїРёРє",
+            "psychologist_growth": "РїСЂРѕС„СЂРѕСЃС‚ РїСЃРёС…РѕР»РѕРіР°/СЃСѓРїРµСЂРІРёР·РёСЏ",
         }
         return ", ".join(labels.get(item, item) for item in themes)
 
@@ -151,13 +168,13 @@ class AIService:
         themes = self._detect_need_themes(clean_message)
         themes_text = self._themes_hint_text(themes)
         base = (
-            "Задача: помочь с выбором по потребности, не навязывать один продукт. "
-            "Если есть релевантные данные в CRM/RAG, предложи 1-3 варианта и кратко объясни, почему они подходят. "
-            "Обязательно укажи следующий шаг: перейти в раздел, записаться, задать уточняющий вопрос или оставить контакты менеджеру. "
-            "Если точных данных о ведущих/цене/расписании нет в контексте, прямо скажи, что не видишь данных, и не выдумывай."
+            "Р—Р°РґР°С‡Р°: РїРѕРјРѕС‡СЊ СЃ РІС‹Р±РѕСЂРѕРј РїРѕ РїРѕС‚СЂРµР±РЅРѕСЃС‚Рё, РЅРµ РЅР°РІСЏР·С‹РІР°С‚СЊ РѕРґРёРЅ РїСЂРѕРґСѓРєС‚. "
+            "Р•СЃР»Рё РµСЃС‚СЊ СЂРµР»РµРІР°РЅС‚РЅС‹Рµ РґР°РЅРЅС‹Рµ РІ CRM/RAG, РїСЂРµРґР»РѕР¶Рё 1-3 РІР°СЂРёР°РЅС‚Р° Рё РєСЂР°С‚РєРѕ РѕР±СЉСЏСЃРЅРё, РїРѕС‡РµРјСѓ РѕРЅРё РїРѕРґС…РѕРґСЏС‚. "
+            "РћР±СЏР·Р°С‚РµР»СЊРЅРѕ СѓРєР°Р¶Рё СЃР»РµРґСѓСЋС‰РёР№ С€Р°Рі: РїРµСЂРµР№С‚Рё РІ СЂР°Р·РґРµР», Р·Р°РїРёСЃР°С‚СЊСЃСЏ, Р·Р°РґР°С‚СЊ СѓС‚РѕС‡РЅСЏСЋС‰РёР№ РІРѕРїСЂРѕСЃ РёР»Рё РѕСЃС‚Р°РІРёС‚СЊ РєРѕРЅС‚Р°РєС‚С‹ РјРµРЅРµРґР¶РµСЂСѓ. "
+            "Р•СЃР»Рё С‚РѕС‡РЅС‹С… РґР°РЅРЅС‹С… Рѕ РІРµРґСѓС‰РёС…/С†РµРЅРµ/СЂР°СЃРїРёСЃР°РЅРёРё РЅРµС‚ РІ РєРѕРЅС‚РµРєСЃС‚Рµ, РїСЂСЏРјРѕ СЃРєР°Р¶Рё, С‡С‚Рѕ РЅРµ РІРёРґРёС€СЊ РґР°РЅРЅС‹С…, Рё РЅРµ РІС‹РґСѓРјС‹РІР°Р№."
         )
         if themes_text:
-            base += f" Определи это как вероятную потребность пользователя: {themes_text}."
+            base += f" РћРїСЂРµРґРµР»Рё СЌС‚Рѕ РєР°Рє РІРµСЂРѕСЏС‚РЅСѓСЋ РїРѕС‚СЂРµР±РЅРѕСЃС‚СЊ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ: {themes_text}."
         if sales_mode:
             base += (
                 " SALES MODE: ask at most one clarifying question about the need, "
@@ -167,8 +184,8 @@ class AIService:
             )
         elif response_mode == "auto_lite":
             base += (
-                " Формат ответа для свободного текста: 3-7 коротких предложений, "
-                "без длинных вводных. Можно использовать список из 1-3 пунктов."
+                " Р¤РѕСЂРјР°С‚ РѕС‚РІРµС‚Р° РґР»СЏ СЃРІРѕР±РѕРґРЅРѕРіРѕ С‚РµРєСЃС‚Р°: 3-7 РєРѕСЂРѕС‚РєРёС… РїСЂРµРґР»РѕР¶РµРЅРёР№, "
+                "Р±РµР· РґР»РёРЅРЅС‹С… РІРІРѕРґРЅС‹С…. РњРѕР¶РЅРѕ РёСЃРїРѕР»СЊР·РѕРІР°С‚СЊ СЃРїРёСЃРѕРє РёР· 1-3 РїСѓРЅРєС‚РѕРІ."
             )
         return base
 
@@ -207,6 +224,14 @@ class AIService:
             return float(raw)
         except Exception:
             return default
+
+    @staticmethod
+    def _env_csv(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+        raw = (os.getenv(name) or "").strip()
+        if not raw:
+            return tuple(default)
+        items = [item.strip().lower() for item in raw.split(",") if item.strip()]
+        return tuple(items) if items else tuple(default)
 
     @staticmethod
     def _safe_system_prompt(prompt: str) -> str:
@@ -551,12 +576,7 @@ class AIService:
             return "", counts
 
     def _parse_rag_focus(self, query: str) -> tuple[str, str]:
-        raw = (query or "").strip()
-        match = _RAG_FOCUS_PREFIX_RE.match(raw)
-        if not match:
-            return raw, "default"
-        collection = (match.group("name") or "").strip().lower()
-        cleaned = raw[match.end() :].lstrip() or raw
+        cleaned, collection = self.rag_router.parse_focus_prefix(query)
         return cleaned, collection or "default"
 
     def _rag_collection_dir(self, collection_name: str | None) -> str:
@@ -589,60 +609,107 @@ class AIService:
                 "rag_fallback_to_default": False,
             }
 
-        rag_query, collection_name = self._parse_rag_focus(query)
         registry = self._rag_collections_registry()
-        requested_collection = (collection_name or "default").strip().lower() or "default"
-        resolved_collection = requested_collection if requested_collection in registry else "default"
-        collection_dir = registry.get(resolved_collection) or self.rag_data_dir
+        route = self.rag_router.route(
+            query,
+            available_collections=set(registry.keys()),
+            max_collections=2,
+        )
+        rag_query = route.query
+        requested_collection = (route.requested_collection or "default").strip().lower() or "default"
+        selected_collections = [name for name in route.selected_collections if name in registry]
+        if not selected_collections:
+            selected_collections = ["default"]
+
         trace: dict[str, object] = {
             "rag_used": False,
-            "rag_collection": resolved_collection,
+            "rag_collection": selected_collections[0],
             "rag_requested_collection": requested_collection,
+            "rag_collections_selected": list(selected_collections),
+            "rag_router_reason": route.reason,
+            "rag_statuses": list(self.rag_response_statuses),
             "rag_hits": 0,
             "rag_top_scores": [],
             "rag_confidence": "low",
-            "rag_fallback_to_default": requested_collection not in {"", "default"} and resolved_collection == "default",
+            "rag_fallback_to_default": requested_collection not in {"", "default"} and selected_collections == ["default"],
         }
 
-        try:
-            result = self.rag_retriever.retrieve(
-                query=rag_query,
-                k=self.rag_top_k,
-                min_score=self.rag_min_score,
-                collection_dir=collection_dir,
-            )
-        except Exception as e:
-            logger.warning("RAG retrieve failed: %s", e.__class__.__name__)
-            return "", "low", 0, trace
-
-        if not result.top_chunks and resolved_collection != "default":
+        collected_hits: list[tuple[float, str, object]] = []
+        for order, collection_name in enumerate(selected_collections):
             try:
                 result = self.rag_retriever.retrieve(
                     query=rag_query,
                     k=self.rag_top_k,
                     min_score=self.rag_min_score,
-                    collection_dir=registry.get("default") or self.rag_data_dir,
+                    collection_dir=registry.get(collection_name) or self.rag_data_dir,
+                    statuses=self.rag_response_statuses,
+                    exclude_doc_types=("policy_reference",),
                 )
-                trace["rag_collection"] = "default"
-                trace["rag_fallback_to_default"] = True
+            except Exception as e:
+                logger.warning("RAG retrieve failed: %s", e.__class__.__name__)
+                continue
+            for hit in result.top_chunks:
+                score = float(getattr(hit, "score", 0.0))
+                if order == 0:
+                    score += 0.015
+                collected_hits.append((score, collection_name, hit))
+
+        if not collected_hits and selected_collections != ["default"]:
+            try:
+                fallback_result = self.rag_retriever.retrieve(
+                    query=rag_query,
+                    k=self.rag_top_k,
+                    min_score=self.rag_min_score,
+                    collection_dir=registry.get("default") or self.rag_data_dir,
+                    statuses=self.rag_response_statuses,
+                    exclude_doc_types=("policy_reference",),
+                )
             except Exception as e:
                 logger.warning("RAG retrieve fallback failed: %s", e.__class__.__name__)
-                return "", "low", 0, trace
+                fallback_result = None
+            if fallback_result and fallback_result.top_chunks:
+                selected_collections = ["default"]
+                trace["rag_collection"] = "default"
+                trace["rag_collections_selected"] = ["default"]
+                trace["rag_fallback_to_default"] = True
+                for hit in fallback_result.top_chunks:
+                    collected_hits.append((float(getattr(hit, "score", 0.0)), "default", hit))
 
-        trace["rag_confidence"] = result.confidence
-        if not result.top_chunks:
-            return "", result.confidence, 0, trace
+        if not collected_hits:
+            return "", "low", 0, trace
+
+        collected_hits.sort(key=lambda item: item[0], reverse=True)
+        top_hits = collected_hits[: self.rag_top_k]
+        top_score = float(top_hits[0][0])
+        if top_score >= 0.6:
+            confidence = "high"
+        elif top_score >= 0.25:
+            confidence = "medium"
+        else:
+            confidence = "low"
 
         trace["rag_used"] = True
-        trace["rag_hits"] = len(result.top_chunks)
-        trace["rag_top_scores"] = [float(getattr(hit, "score", 0.0)) for hit in result.top_chunks[:3]]
+        trace["rag_hits"] = len(top_hits)
+        trace["rag_top_scores"] = [round(float(item[0]), 4) for item in top_hits[:3]]
+        trace["rag_confidence"] = confidence
 
-        lines = ["Контекст из базы знаний:"]
-        for idx, chunk in enumerate(result.top_chunks, start=1):
+        lines = ["Knowledge context (facts):"]
+        for idx, (_, collection_name, hit) in enumerate(top_hits, start=1):
+            metadata = dict(getattr(hit, "metadata", {}) or {})
+            collection = str(metadata.get("collection") or collection_name)
+            doc_type = str(metadata.get("doc_type") or "card")
+            status = str(metadata.get("status") or "active")
+            slug = str(metadata.get("slug") or "")
+            section = str(metadata.get("section") or "")
+            descriptor = f"{collection}/{doc_type}/{status}"
+            if section:
+                descriptor = f"{descriptor} section={section}"
+            slug_tail = f", slug={slug}" if slug else ""
             lines.append(
-                f"{idx}. {chunk.title} ({chunk.source}, score={getattr(chunk, 'score', 0)}): {self._short(chunk.text, limit=520)}"
+                f"{idx}. [{descriptor}] {hit.title} ({hit.source}, score={getattr(hit, 'score', 0)}{slug_tail}): "
+                f"{self._short(hit.text, limit=520)}"
             )
-        return self._trim_rag_context("\n".join(lines)), result.confidence, len(result.top_chunks), trace
+        return self._trim_rag_context("\n".join(lines)), confidence, len(top_hits), trace
 
     def get_last_trace(self) -> dict[str, object]:
         return dict(self._last_trace or {})
@@ -651,6 +718,8 @@ class AIService:
         payload: dict[str, object] = {
             "enabled": bool(self.rag_enabled and self.rag_retriever is not None),
             "base_dir": self.rag_data_dir,
+            "policy_prompt_connected": bool(self.system_prompt),
+            "policy_prompt_source": self.policy_prompt_source,
             "collections": {},
         }
         if not self.rag_enabled or self.rag_retriever is None:
@@ -659,6 +728,12 @@ class AIService:
         store = self.rag_retriever.store
         collections = self._rag_collections_registry()
         payload["discovered_collections"] = sorted(collections.keys())
+        route = self.rag_router.route(query, available_collections=set(collections.keys()))
+        payload["router"] = {
+            "query": route.query,
+            "selected_collections": route.selected_collections,
+            "reason": route.reason,
+        }
         _, _, _, trace = self._rag_context_with_trace(query)
         payload["trace"] = trace
         payload["last_response_trace"] = self.get_last_trace()
@@ -666,22 +741,37 @@ class AIService:
             try:
                 docs = list(store._iter_files(collection_dir=collection_dir))
                 chunks = store.load_chunks(collection_dir=collection_dir)
+                documents = store.list_collection_documents(collection_dir=collection_dir)
+                status_counts: Counter[str] = Counter()
+                doc_type_counts: Counter[str] = Counter()
+                for item in documents:
+                    status_counts[str(item.get("status") or "active").lower()] += 1
+                    doc_type_counts[str(item.get("doc_type") or "card").lower()] += 1
                 result = self.rag_retriever.retrieve(
                     query=query,
                     k=min(3, self.rag_top_k),
                     min_score=self.rag_min_score,
                     collection_dir=collection_dir,
+                    statuses=self.rag_diagnostic_statuses,
+                    exclude_doc_types=None,
                 )
                 payload["collections"][name] = {
                     "dir": collection_dir,
                     "docs": len(docs),
+                    "documents": len(documents),
                     "chunks": len(chunks),
+                    "statuses": dict(status_counts),
+                    "doc_types": dict(doc_type_counts),
                     "confidence": result.confidence,
                     "hits": [
                         {
                             "title": hit.title,
                             "source": hit.source,
                             "score": hit.score,
+                            "collection": str((hit.metadata or {}).get("collection") or name),
+                            "doc_type": str((hit.metadata or {}).get("doc_type") or "card"),
+                            "status": str((hit.metadata or {}).get("status") or "active"),
+                            "slug": str((hit.metadata or {}).get("slug") or ""),
                             "text": self._short(hit.text, limit=280),
                         }
                         for hit in result.top_chunks[:3]
@@ -730,17 +820,18 @@ class AIService:
             clean_user_message = (user_message or "").strip()
 
         developer_prompt = (
-            "Приоритет источников ответа: "
-            "1) контекст CRM и событий, "
-            "2) контекст локальной базы знаний, "
-            "3) общие знания модели. "
-            "Не выдумывай факты о проекте, если их нет в контексте. "
-            "Не упоминай внутренние файлы, таблицы, переменные и служебные поля. "
-            "Стиль: Ассистент Ренаты, коротко, дружелюбно, с уточняющим вопросом при нехватке данных."
+            "РџСЂРёРѕСЂРёС‚РµС‚ РёСЃС‚РѕС‡РЅРёРєРѕРІ РѕС‚РІРµС‚Р°: "
+            "1) РєРѕРЅС‚РµРєСЃС‚ CRM Рё СЃРѕР±С‹С‚РёР№, "
+            "2) РєРѕРЅС‚РµРєСЃС‚ Р»РѕРєР°Р»СЊРЅРѕР№ Р±Р°Р·С‹ Р·РЅР°РЅРёР№, "
+            "3) РѕР±С‰РёРµ Р·РЅР°РЅРёСЏ РјРѕРґРµР»Рё. "
+            "РќРµ РІС‹РґСѓРјС‹РІР°Р№ С„Р°РєС‚С‹ Рѕ РїСЂРѕРµРєС‚Рµ, РµСЃР»Рё РёС… РЅРµС‚ РІ РєРѕРЅС‚РµРєСЃС‚Рµ. "
+            "РќРµ СѓРїРѕРјРёРЅР°Р№ РІРЅСѓС‚СЂРµРЅРЅРёРµ С„Р°Р№Р»С‹, С‚Р°Р±Р»РёС†С‹, РїРµСЂРµРјРµРЅРЅС‹Рµ Рё СЃР»СѓР¶РµР±РЅС‹Рµ РїРѕР»СЏ. "
+            "РЎС‚РёР»СЊ: РђСЃСЃРёСЃС‚РµРЅС‚ Р РµРЅР°С‚С‹, РєРѕСЂРѕС‚РєРѕ, РґСЂСѓР¶РµР»СЋР±РЅРѕ, СЃ СѓС‚РѕС‡РЅСЏСЋС‰РёРј РІРѕРїСЂРѕСЃРѕРј РїСЂРё РЅРµС…РІР°С‚РєРµ РґР°РЅРЅС‹С…."
         )
 
         messages: list[dict] = [
             {"role": "system", "content": self.system_prompt},
+            {"role": "system", "content": self.rag_policy_message},
             {"role": "system", "content": developer_prompt},
             {"role": "system", "content": self._sales_guidance_prompt(user_message=user_message, response_mode=response_mode)},
         ]
@@ -773,8 +864,8 @@ class AIService:
                     {
                         "role": "system",
                         "content": (
-                            "Если контекста недостаточно, используй только общие знания без конкретных утверждений "
-                            "о внутренних процессах, ценах, расписании и ссылках проекта."
+                            "When facts are missing, do not invent details. "
+                            "Say that exact information is not available yet and suggest уточнить у менеджера."
                         ),
                     }
                 )
@@ -793,10 +884,15 @@ class AIService:
             "used_events_count": int(event_counts.get("active_events", 0) if isinstance(event_counts, dict) else 0),
             "events_count": int(event_counts.get("active_events", 0) if isinstance(event_counts, dict) else 0),
             "event_counts": event_counts,
+            "policy_prompt_connected": bool(self.system_prompt),
+            "policy_prompt_source": self.policy_prompt_source,
             "rag_used": bool(rag_trace.get("rag_used")),
             "rag_collection": str(rag_trace.get("rag_collection") or "default"),
             "rag_used_collection": str(rag_trace.get("rag_collection") or "default"),
             "rag_requested_collection": str(rag_trace.get("rag_requested_collection") or "default"),
+            "rag_collections_selected": list(rag_trace.get("rag_collections_selected") or []),
+            "rag_router_reason": str(rag_trace.get("rag_router_reason") or ""),
+            "rag_statuses": list(rag_trace.get("rag_statuses") or []),
             "rag_hits": int(rag_trace.get("rag_hits", 0) or 0),
             "rag_top_scores": list(rag_trace.get("rag_top_scores") or []),
             "fallback_to_model": (not rag_context) or rag_confidence == "low",
@@ -821,13 +917,13 @@ class AIService:
             )
             content = (response.choices[0].message.content or "").strip()
             if not content:
-                return "Не получилось сформировать ответ. Попробуйте, пожалуйста, еще раз."
+                return "РќРµ РїРѕР»СѓС‡РёР»РѕСЃСЊ СЃС„РѕСЂРјРёСЂРѕРІР°С‚СЊ РѕС‚РІРµС‚. РџРѕРїСЂРѕР±СѓР№С‚Рµ, РїРѕР¶Р°Р»СѓР№СЃС‚Р°, РµС‰Рµ СЂР°Р·."
             self._last_trace["model_reply"] = True
             return content
         except Exception as e:
             logger.warning("AI request failed: %s", e.__class__.__name__)
             self._last_trace["model_error"] = e.__class__.__name__
-            return "Извините, сейчас не получилось ответить. Попробуйте чуть позже."
+            return "РР·РІРёРЅРёС‚Рµ, СЃРµР№С‡Р°СЃ РЅРµ РїРѕР»СѓС‡РёР»РѕСЃСЊ РѕС‚РІРµС‚РёС‚СЊ. РџРѕРїСЂРѕР±СѓР№С‚Рµ С‡СѓС‚СЊ РїРѕР·Р¶Рµ."
 
     async def chat(
         self,
@@ -858,8 +954,8 @@ class AIService:
 
         request_kwargs = self._build_request_kwargs(
             messages=[
-                {"role": "system", "content": "Отвечай кратко."},
-                {"role": "user", "content": "Ответь одним коротким предложением на русском."},
+                {"role": "system", "content": "РћС‚РІРµС‡Р°Р№ РєСЂР°С‚РєРѕ."},
+                {"role": "user", "content": "РћС‚РІРµС‚СЊ РѕРґРЅРёРј РєРѕСЂРѕС‚РєРёРј РїСЂРµРґР»РѕР¶РµРЅРёРµРј РЅР° СЂСѓСЃСЃРєРѕРј."},
             ],
             max_tokens=80,
             temperature=0.0,

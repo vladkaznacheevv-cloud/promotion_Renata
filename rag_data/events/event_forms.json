@@ -1,0 +1,24 @@
+﻿[
+  {
+    "slug": "event-open-lecture-march-form",
+    "title": "Форма: открытая лекция",
+    "doc_type": "form",
+    "status": "draft",
+    "updated_at": "2026-03-02",
+    "priority": 5,
+    "section": "events/forms",
+    "summary": "Форма ещё не опубликована.",
+    "registration_route": "При отсутствии формы предложить уточнить у менеджера."
+  },
+  {
+    "slug": "event-intro-gestalt-weekend-form",
+    "title": "Форма: интенсив выходного дня",
+    "doc_type": "form",
+    "status": "draft",
+    "updated_at": "2026-03-02",
+    "priority": 5,
+    "section": "events/forms",
+    "summary": "Черновик формы регистрации.",
+    "registration_route": "Пока недоступно, статус draft."
+  }
+]

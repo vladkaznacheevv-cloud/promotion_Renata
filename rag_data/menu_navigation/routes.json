@@ -1,0 +1,752 @@
+﻿{
+  "schema_version": "1.0",
+  "source": "manual",
+  "updated_at": "2026-03-07",
+  "notes": [
+    "Названия кнопок могут меняться. При обновлении интерфейса нужно синхронно обновлять этот файл.",
+    "Файл описывает навигацию по меню и переходы между разделами бота."
+  ],
+  "sections": [
+    {
+      "section_key": "main_menu",
+      "section_title": "Главное меню",
+      "section_description": "Главный экран бота с основными разделами.",
+      "status": "active",
+      "priority": 100,
+      "buttons": [
+        {
+          "button_key": "btn_game10",
+          "button_title": "Игра 10:0",
+          "aliases": ["«Игра 10:0»", "Игра 10:0"],
+          "target_type": "section",
+          "target_value": "game10_menu",
+          "opens_section": "game10_menu",
+          "action_type": "open_section",
+          "assistant_hint": "Если пользователь спрашивает про закрытую группу, игру 10:0, оплату игры или описание программы, направляй в раздел игры 10:0 и используй знания коллекции game10.",
+          "payment_hint": "Оплата игры 10:0 начинается из этого раздела через кнопку оплаты.",
+          "fallback_text": "Чтобы открыть раздел игры 10:0, нажмите кнопку «Игра 10:0» в главном меню.",
+          "status": "active",
+          "priority": 100
+        },
+        {
+          "button_key": "btn_getcourse",
+          "button_title": "Авторский курс лекций",
+          "aliases": ["Авторский курс лекций"],
+          "target_type": "section",
+          "target_value": "getcourse_menu",
+          "opens_section": "getcourse_menu",
+          "action_type": "open_section",
+          "assistant_hint": "Если пользователь спрашивает про курс, программы, лекции или GetCourse, направляй в этот раздел и используй знания коллекции getcourse_programs.",
+          "payment_hint": "Открытие курса происходит через переход на сайт GetCourse.",
+          "fallback_text": "Чтобы открыть раздел курса, нажмите кнопку «Авторский курс лекций» в главном меню.",
+          "status": "active",
+          "priority": 100
+        },
+        {
+          "button_key": "btn_events",
+          "button_title": "Мероприятия",
+          "aliases": ["Мероприятия"],
+          "target_type": "section",
+          "target_value": "events_menu",
+          "opens_section": "events_menu",
+          "action_type": "open_section",
+          "assistant_hint": "Если вопрос про актуальные мероприятия, используй раздел мероприятий и коллекцию events.",
+          "payment_hint": "Запись на конкретное мероприятие зависит от карточки мероприятия.",
+          "fallback_text": "Чтобы посмотреть список мероприятий, нажмите кнопку «Мероприятия» в главном меню.",
+          "status": "active",
+          "priority": 100
+        },
+        {
+          "button_key": "btn_consultations",
+          "button_title": "Консультации",
+          "aliases": ["Консультации"],
+          "target_type": "section",
+          "target_value": "consultations_menu",
+          "opens_section": "consultations_menu",
+          "action_type": "open_section",
+          "assistant_hint": "Если пользователь спрашивает про консультации, форматы, цены, индивидуальную или групповую запись, направляй в этот раздел и используй знания коллекции gestalt.",
+          "payment_hint": "Запись на консультацию идёт через сценарий записи, а не через мгновенную оплату.",
+          "fallback_text": "Чтобы открыть раздел консультаций, нажмите кнопку «Консультации» в главном меню.",
+          "status": "active",
+          "priority": 100
+        },
+        {
+          "button_key": "btn_manager",
+          "button_title": "Связаться с менеджером",
+          "aliases": ["Связаться с менеджером"],
+          "target_type": "section",
+          "target_value": "manager_contact_menu",
+          "opens_section": "manager_contact_menu",
+          "action_type": "open_section",
+          "assistant_hint": "Если человеку нужен живой контакт, ручная помощь, проверка доступа или нестандартное решение, направляй сюда.",
+          "payment_hint": "Если после оплаты не пришёл доступ, это основной безопасный маршрут для связи.",
+          "fallback_text": "Чтобы связаться с менеджером, нажмите кнопку «Связаться с менеджером» в главном меню.",
+          "status": "active",
+          "priority": 95
+        },
+        {
+          "button_key": "btn_help",
+          "button_title": "Помощь",
+          "aliases": ["Помощь"],
+          "target_type": "section",
+          "target_value": "help_menu",
+          "opens_section": "help_menu",
+          "action_type": "open_section",
+          "assistant_hint": "Если пользователь не понимает, как пользоваться ботом, направляй в раздел помощи.",
+          "payment_hint": "",
+          "fallback_text": "Чтобы открыть инструкцию по боту, нажмите кнопку «Помощь» в главном меню.",
+          "status": "active",
+          "priority": 85
+        }
+      ]
+    },
+    {
+      "section_key": "game10_menu",
+      "section_title": "Раздел игры 10:0",
+      "section_description": "Раздел закрытого сообщества «Игра 10:0» с описанием, оплатой и переходом к ассистенту.",
+      "status": "active",
+      "priority": 100,
+      "buttons": [
+        {
+          "button_key": "btn_game10_pay",
+          "button_title": "Оплатить 5 000 ₽",
+          "aliases": ["Оплатить 5000р", "Оплатить 5 000 ₽", "Оплатить 5000 ₽"],
+          "target_type": "section",
+          "target_value": "game10_payment_menu",
+          "opens_section": "game10_payment_menu",
+          "action_type": "open_section",
+          "assistant_hint": "Если пользователь готов вступить в игру 10:0, направляй к кнопке оплаты из раздела игры.",
+          "payment_hint": "После нажатия открывается экран оплаты с QR, ссылкой YooKassa и кнопками проверки.",
+          "fallback_text": "Чтобы оплатить участие в игре 10:0, откройте раздел игры и нажмите кнопку оплаты.",
+          "status": "active",
+          "priority": 100
+        },
+        {
+          "button_key": "btn_game10_description",
+          "button_title": "Описание программы",
+          "aliases": ["Описание программы"],
+          "target_type": "document",
+          "target_value": "game10-program-description",
+          "opens_section": "game10_description_menu",
+          "action_type": "show_info",
+          "assistant_hint": "Если пользователь просит подробнее рассказать о программе игры 10:0, направляй к описанию программы и используй знания коллекции game10.",
+          "payment_hint": "",
+          "fallback_text": "Подробное описание доступно по кнопке «Описание программы» в разделе игры 10:0.",
+          "status": "active",
+          "priority": 95
+        },
+        {
+          "button_key": "btn_game10_assistant",
+          "button_title": "Вопросы к ассистенту",
+          "aliases": ["Вопросы к ассистенту"],
+          "target_type": "assistant_mode",
+          "target_value": "assistant_game10",
+          "opens_section": "",
+          "action_type": "switch_to_assistant",
+          "assistant_hint": "Переводит пользователя в диалог с ИИ по вопросам игры 10:0.",
+          "payment_hint": "",
+          "fallback_text": "Если хотите задать вопрос по игре 10:0, нажмите «Вопросы к ассистенту».",
+          "status": "active",
+          "priority": 90
+        },
+        {
+          "button_key": "btn_game10_back_main",
+          "button_title": "В меню",
+          "aliases": ["В меню"],
+          "target_type": "section",
+          "target_value": "main_menu",
+          "opens_section": "main_menu",
+          "action_type": "go_back",
+          "assistant_hint": "Возвращает пользователя в главное меню.",
+          "payment_hint": "",
+          "fallback_text": "Чтобы вернуться в главное меню, нажмите «В меню».",
+          "status": "active",
+          "priority": 80
+        }
+      ]
+    },
+    {
+      "section_key": "game10_payment_menu",
+      "section_title": "Оплата игры 10:0",
+      "section_description": "Экран оплаты игры 10:0 с QR-кодом, ссылкой YooKassa и проверкой платежа.",
+      "status": "active",
+      "priority": 100,
+      "buttons": [
+        {
+          "button_key": "btn_game10_open_payment",
+          "button_title": "Открыть оплату",
+          "aliases": ["Открыть оплату"],
+          "target_type": "payment_route",
+          "target_value": "payment-game10-main",
+          "opens_section": "",
+          "action_type": "open_link",
+          "assistant_hint": "Если пользователь хочет перейти к оплате, укажи на кнопку «Открыть оплату».",
+          "payment_hint": "Ведёт на страницу оплаты YooKassa. Ссылка действует ограниченное время.",
+          "fallback_text": "Чтобы перейти к оплате, нажмите кнопку «Открыть оплату».",
+          "status": "active",
+          "priority": 100
+        },
+        {
+          "button_key": "btn_game10_check_payment",
+          "button_title": "✅ Я оплатил — проверить",
+          "aliases": ["Я оплатил - проверить", "✅ Я оплатил — проверить"],
+          "target_type": "payment_route",
+          "target_value": "payment-game10-check",
+          "opens_section": "",
+          "action_type": "check_payment",
+          "assistant_hint": "После оплаты пользователь должен нажать эту кнопку для проверки платежа и выдачи доступа.",
+          "payment_hint": "Если платёж подтверждён, бот должен выдать ссылку на закрытую группу.",
+          "fallback_text": "После оплаты нажмите кнопку «Я оплатил — проверить».",
+          "status": "active",
+          "priority": 100
+        },
+        {
+          "button_key": "btn_game10_refresh_payment",
+          "button_title": "Обновить ссылку",
+          "aliases": ["Обновить ссылку"],
+          "target_type": "payment_route",
+          "target_value": "payment-game10-refresh",
+          "opens_section": "",
+          "action_type": "refresh_payment",
+          "assistant_hint": "Если пользователь открыл оплату позже и ссылка устарела, направляй к обновлению ссылки.",
+          "payment_hint": "Ссылка YooKassa активна около 10 минут, потом её нужно обновить.",
+          "fallback_text": "Если ссылка на оплату устарела, нажмите «Обновить ссылку».",
+          "status": "active",
+          "priority": 95
+        },
+        {
+          "button_key": "btn_game10_payment_back_main",
+          "button_title": "В меню",
+          "aliases": ["В меню"],
+          "target_type": "section",
+          "target_value": "main_menu",
+          "opens_section": "main_menu",
+          "action_type": "go_back",
+          "assistant_hint": "Возвращает пользователя в главное меню.",
+          "payment_hint": "",
+          "fallback_text": "Чтобы вернуться в главное меню, нажмите «В меню».",
+          "status": "active",
+          "priority": 80
+        }
+      ]
+    },
+    {
+      "section_key": "game10_description_menu",
+      "section_title": "Описание программы игры 10:0",
+      "section_description": "Развёрнутое описание программы игры 10:0.",
+      "status": "draft",
+      "priority": 70,
+      "buttons": [
+        {
+          "button_key": "btn_game10_description_back",
+          "button_title": "Обратно",
+          "aliases": ["Обратно", "Назад"],
+          "target_type": "section",
+          "target_value": "game10_menu",
+          "opens_section": "game10_menu",
+          "action_type": "go_back",
+          "assistant_hint": "Возвращает пользователя в основной раздел игры 10:0.",
+          "payment_hint": "",
+          "fallback_text": "Чтобы вернуться назад, нажмите кнопку «Обратно».",
+          "status": "active",
+          "priority": 80
+        }
+      ]
+    },
+    {
+      "section_key": "getcourse_menu",
+      "section_title": "Раздел авторского курса лекций",
+      "section_description": "Раздел курса с кратким описанием, переходом на GetCourse и кнопкой вопросов к ассистенту.",
+      "status": "active",
+      "priority": 100,
+      "buttons": [
+        {
+          "button_key": "btn_getcourse_open",
+          "button_title": "Открыть GetCourse",
+          "aliases": ["Открыть GetCourse"],
+          "target_type": "external_link",
+          "target_value": "https://renataminakova.ru/",
+          "opens_section": "",
+          "action_type": "open_link",
+          "assistant_hint": "Если пользователь хочет перейти к программам или открыть платформу курса, укажи на кнопку «Открыть GetCourse».",
+          "payment_hint": "Переход ведёт на сайт с описанием продуктов и главной страницей GetCourse.",
+          "fallback_text": "Чтобы открыть GetCourse, нажмите кнопку «Открыть GetCourse».",
+          "status": "active",
+          "priority": 100
+        },
+        {
+          "button_key": "btn_getcourse_assistant",
+          "button_title": "Ассистент расскажет о курсе / Задать вопросы",
+          "aliases": [
+            "Ассистент расскажет о курсе",
+            "Задать вопросы",
+            "Ассистент расскажет о курсе / Задать вопросы"
+          ],
+          "target_type": "assistant_mode",
+          "target_value": "assistant_getcourse",
+          "opens_section": "",
+          "action_type": "switch_to_assistant",
+          "assistant_hint": "Переводит пользователя в ИИ-диалог по курсу и программам.",
+          "payment_hint": "",
+          "fallback_text": "Чтобы задать вопрос по курсу, нажмите кнопку с переходом к ассистенту.",
+          "status": "active",
+          "priority": 95
+        },
+        {
+          "button_key": "btn_getcourse_back_main",
+          "button_title": "В меню",
+          "aliases": ["В меню"],
+          "target_type": "section",
+          "target_value": "main_menu",
+          "opens_section": "main_menu",
+          "action_type": "go_back",
+          "assistant_hint": "Возвращает пользователя в главное меню.",
+          "payment_hint": "",
+          "fallback_text": "Чтобы вернуться в главное меню, нажмите «В меню».",
+          "status": "active",
+          "priority": 80
+        }
+      ]
+    },
+    {
+      "section_key": "events_menu",
+      "section_title": "Список мероприятий",
+      "section_description": "Раздел со списком актуальных мероприятий.",
+      "status": "active",
+      "priority": 100,
+      "buttons": [
+        {
+          "button_key": "btn_event_supervision_group",
+          "button_title": "Супервизорская группа с разными тренерами.",
+          "aliases": ["Супервизорская группа с разными тренерами."],
+          "target_type": "document",
+          "target_value": "event-supervision-group",
+          "opens_section": "event_card_supervision_group",
+          "action_type": "open_card",
+          "assistant_hint": "Открывает карточку конкретного мероприятия.",
+          "payment_hint": "Запись на это мероприятие идёт через кнопку «Записаться».",
+          "fallback_text": "Чтобы открыть карточку мероприятия, нажмите на его название в списке.",
+          "status": "active",
+          "priority": 100
+        },
+        {
+          "button_key": "btn_event_adult_group",
+          "button_title": "Терапевтическая группа «Я Взрослею»",
+          "aliases": ["Терапевтическая группа «Я Взрослею»"],
+          "target_type": "document",
+          "target_value": "event-ya-vzrosleyu",
+          "opens_section": "event_card_ya_vzrosleyu",
+          "action_type": "open_card",
+          "assistant_hint": "Открывает карточку мероприятия.",
+          "payment_hint": "",
+          "fallback_text": "Чтобы открыть карточку мероприятия, нажмите на его название в списке.",
+          "status": "draft",
+          "priority": 95
+        },
+        {
+          "button_key": "btn_event_fate_mel",
+          "button_title": "«Мел судьбы»",
+          "aliases": ["«Мел судьбы»", "Мел судьбы"],
+          "target_type": "document",
+          "target_value": "event-mel-sudby",
+          "opens_section": "event_card_mel_sudby",
+          "action_type": "open_card",
+          "assistant_hint": "Открывает карточку мероприятия.",
+          "payment_hint": "",
+          "fallback_text": "Чтобы открыть карточку мероприятия, нажмите на его название в списке.",
+          "status": "draft",
+          "priority": 95
+        },
+        {
+          "button_key": "btn_event_gifts_game",
+          "button_title": "Трансформационная игра «Обретение даров»",
+          "aliases": ["Трансформационная игра «Обретение даров»", "Обретение даров"],
+          "target_type": "document",
+          "target_value": "event-obretenie-darov",
+          "opens_section": "event_card_obretenie_darov",
+          "action_type": "open_card",
+          "assistant_hint": "Открывает карточку мероприятия.",
+          "payment_hint": "",
+          "fallback_text": "Чтобы открыть карточку мероприятия, нажмите на его название в списке.",
+          "status": "draft",
+          "priority": 95
+        },
+        {
+          "button_key": "btn_event_metida",
+          "button_title": "«Сны Метиды»",
+          "aliases": ["«Сны Метиды»", "Сны Метиды"],
+          "target_type": "document",
+          "target_value": "event-sny-metidy",
+          "opens_section": "event_card_sny_metidy",
+          "action_type": "open_card",
+          "assistant_hint": "Открывает карточку мероприятия.",
+          "payment_hint": "",
+          "fallback_text": "Чтобы открыть карточку мероприятия, нажмите на его название в списке.",
+          "status": "draft",
+          "priority": 95
+        },
+        {
+          "button_key": "btn_events_refresh",
+          "button_title": "Обновить",
+          "aliases": ["Обновить"],
+          "target_type": "section",
+          "target_value": "events_menu",
+          "opens_section": "events_menu",
+          "action_type": "refresh_section",
+          "assistant_hint": "Обновляет список мероприятий.",
+          "payment_hint": "",
+          "fallback_text": "Чтобы обновить список мероприятий, нажмите кнопку «Обновить».",
+          "status": "active",
+          "priority": 85
+        },
+        {
+          "button_key": "btn_events_back_main",
+          "button_title": "В меню",
+          "aliases": ["В меню"],
+          "target_type": "section",
+          "target_value": "main_menu",
+          "opens_section": "main_menu",
+          "action_type": "go_back",
+          "assistant_hint": "Возвращает пользователя в главное меню.",
+          "payment_hint": "",
+          "fallback_text": "Чтобы вернуться в главное меню, нажмите «В меню».",
+          "status": "active",
+          "priority": 80
+        }
+      ]
+    },
+    {
+      "section_key": "event_card_supervision_group",
+      "section_title": "Карточка мероприятия: Супервизорская группа с разными тренерами",
+      "section_description": "Экран конкретного мероприятия с описанием, записью и переходом к ассистенту.",
+      "status": "active",
+      "priority": 100,
+      "buttons": [
+        {
+          "button_key": "btn_event_supervision_signup",
+          "button_title": "Записаться",
+          "aliases": ["Записаться"],
+          "target_type": "form_route",
+          "target_value": "event-signup-supervision-group",
+          "opens_section": "",
+          "action_type": "start_signup",
+          "assistant_hint": "Если пользователь хочет пойти на мероприятие, направляй к кнопке «Записаться».",
+          "payment_hint": "Запись на мероприятие не описана как мгновенная оплата, поэтому не обещай онлайн-оплату без подтверждённых данных.",
+          "fallback_text": "Чтобы записаться, нажмите кнопку «Записаться».",
+          "status": "active",
+          "priority": 100
+        },
+        {
+          "button_key": "btn_event_supervision_assistant",
+          "button_title": "Вопросы к ассистенту",
+          "aliases": ["Вопросы к ассистенту"],
+          "target_type": "assistant_mode",
+          "target_value": "assistant_event_supervision_group",
+          "opens_section": "",
+          "action_type": "switch_to_assistant",
+          "assistant_hint": "Переводит пользователя в ИИ-диалог по конкретному мероприятию.",
+          "payment_hint": "",
+          "fallback_text": "Чтобы задать вопрос по мероприятию, нажмите «Вопросы к ассистенту».",
+          "status": "active",
+          "priority": 95
+        },
+        {
+          "button_key": "btn_event_supervision_back_list",
+          "button_title": "Назад к списку",
+          "aliases": ["Назад к списку"],
+          "target_type": "section",
+          "target_value": "events_menu",
+          "opens_section": "events_menu",
+          "action_type": "go_back",
+          "assistant_hint": "Возвращает пользователя к списку мероприятий.",
+          "payment_hint": "",
+          "fallback_text": "Чтобы вернуться к списку мероприятий, нажмите «Назад к списку».",
+          "status": "active",
+          "priority": 80
+        },
+        {
+          "button_key": "btn_event_supervision_back_main",
+          "button_title": "В меню",
+          "aliases": ["В меню"],
+          "target_type": "section",
+          "target_value": "main_menu",
+          "opens_section": "main_menu",
+          "action_type": "go_back",
+          "assistant_hint": "Возвращает пользователя в главное меню.",
+          "payment_hint": "",
+          "fallback_text": "Чтобы вернуться в главное меню, нажмите «В меню».",
+          "status": "active",
+          "priority": 80
+        }
+      ]
+    },
+    {
+      "section_key": "consultations_menu",
+      "section_title": "Раздел консультаций",
+      "section_description": "Раздел про консультации, гештальт-подход, форматы и запись.",
+      "status": "active",
+      "priority": 100,
+      "buttons": [
+        {
+          "button_key": "btn_consultations_formats",
+          "button_title": "Форматы и цены",
+          "aliases": ["Форматы и цены"],
+          "target_type": "section",
+          "target_value": "consultations_formats_menu",
+          "opens_section": "consultations_formats_menu",
+          "action_type": "open_section",
+          "assistant_hint": "Если пользователь хочет узнать о форматах терапии, записи или ценах, направляй в этот раздел.",
+          "payment_hint": "В этом разделе речь идёт о записи на консультацию, а не о прямой оплате через YooKassa.",
+          "fallback_text": "Чтобы открыть форматы консультаций, нажмите кнопку «Форматы и цены».",
+          "status": "active",
+          "priority": 100
+        },
+        {
+          "button_key": "btn_consultations_assistant",
+          "button_title": "Спросить ассистента",
+          "aliases": ["Спросить ассистента"],
+          "target_type": "assistant_mode",
+          "target_value": "assistant_consultations",
+          "opens_section": "",
+          "action_type": "switch_to_assistant",
+          "assistant_hint": "Переводит пользователя в ИИ-диалог по консультациям.",
+          "payment_hint": "",
+          "fallback_text": "Чтобы задать вопрос, нажмите «Спросить ассистента».",
+          "status": "active",
+          "priority": 95
+        },
+        {
+          "button_key": "btn_consultations_back_main",
+          "button_title": "В меню",
+          "aliases": ["В меню"],
+          "target_type": "section",
+          "target_value": "main_menu",
+          "opens_section": "main_menu",
+          "action_type": "go_back",
+          "assistant_hint": "Возвращает пользователя в главное меню.",
+          "payment_hint": "",
+          "fallback_text": "Чтобы вернуться в главное меню, нажмите «В меню».",
+          "status": "active",
+          "priority": 80
+        }
+      ]
+    },
+    {
+      "section_key": "consultations_formats_menu",
+      "section_title": "Форматы и цены консультаций",
+      "section_description": "Экран с форматами терапии и записью на индивидуальную или групповую программу.",
+      "status": "active",
+      "priority": 100,
+      "buttons": [
+        {
+          "button_key": "btn_signup_individual",
+          "button_title": "Записаться (индивидуально)",
+          "aliases": ["Записаться индивидуально", "Записаться (индивидуально)"],
+          "target_type": "form_route",
+          "target_value": "consultation-individual-signup",
+          "opens_section": "consultation_individual_signup_menu",
+          "action_type": "start_signup",
+          "assistant_hint": "Если пользователь хочет записаться на индивидуальную терапию, направляй к этой кнопке.",
+          "payment_hint": "Это маршрут записи, а не подтверждённый маршрут мгновенной оплаты.",
+          "fallback_text": "Чтобы записаться индивидуально, нажмите кнопку записи на индивидуальную терапию.",
+          "status": "active",
+          "priority": 100
+        },
+        {
+          "button_key": "btn_signup_group",
+          "button_title": "Записаться (группа)",
+          "aliases": ["Записаться группа", "Записаться (группа)"],
+          "target_type": "form_route",
+          "target_value": "consultation-group-signup",
+          "opens_section": "consultation_group_signup_menu",
+          "action_type": "start_signup",
+          "assistant_hint": "Если пользователь хочет записаться в групповую программу, направляй к этой кнопке.",
+          "payment_hint": "Это маршрут записи, а не подтверждённый маршрут мгновенной оплаты.",
+          "fallback_text": "Чтобы записаться в группу, нажмите кнопку записи на групповую программу.",
+          "status": "active",
+          "priority": 100
+        },
+        {
+          "button_key": "btn_consultations_formats_assistant",
+          "button_title": "Спросить ассистента",
+          "aliases": ["Спросить ассистента"],
+          "target_type": "assistant_mode",
+          "target_value": "assistant_consultations_formats",
+          "opens_section": "",
+          "action_type": "switch_to_assistant",
+          "assistant_hint": "Переводит пользователя в ИИ-диалог по форматам консультаций.",
+          "payment_hint": "",
+          "fallback_text": "Чтобы задать вопрос, нажмите «Спросить ассистента».",
+          "status": "active",
+          "priority": 90
+        },
+        {
+          "button_key": "btn_consultations_formats_back",
+          "button_title": "Назад",
+          "aliases": ["Назад"],
+          "target_type": "section",
+          "target_value": "consultations_menu",
+          "opens_section": "consultations_menu",
+          "action_type": "go_back",
+          "assistant_hint": "Возвращает пользователя в меню консультаций.",
+          "payment_hint": "",
+          "fallback_text": "Чтобы вернуться назад, нажмите кнопку «Назад».",
+          "status": "active",
+          "priority": 80
+        }
+      ]
+    },
+    {
+      "section_key": "consultation_individual_signup_menu",
+      "section_title": "Запись на индивидуальную терапию",
+      "section_description": "Экран записи на индивидуальную терапию с инструкцией отправить имя, телефон или username и email.",
+      "status": "active",
+      "priority": 95,
+      "buttons": [
+        {
+          "button_key": "btn_individual_signup_back_main",
+          "button_title": "В меню",
+          "aliases": ["В меню"],
+          "target_type": "section",
+          "target_value": "main_menu",
+          "opens_section": "main_menu",
+          "action_type": "go_back",
+          "assistant_hint": "Возвращает пользователя в главное меню.",
+          "payment_hint": "",
+          "fallback_text": "Чтобы вернуться в главное меню, нажмите «В меню».",
+          "status": "active",
+          "priority": 80
+        }
+      ]
+    },
+    {
+      "section_key": "consultation_group_signup_menu",
+      "section_title": "Запись на групповую программу",
+      "section_description": "Маршрут записи на групповую программу. Детали формы могут быть уточнены позже.",
+      "status": "draft",
+      "priority": 80,
+      "buttons": [
+        {
+          "button_key": "btn_group_signup_back_formats",
+          "button_title": "Назад",
+          "aliases": ["Назад"],
+          "target_type": "section",
+          "target_value": "consultations_formats_menu",
+          "opens_section": "consultations_formats_menu",
+          "action_type": "go_back",
+          "assistant_hint": "Возвращает пользователя к форматам консультаций.",
+          "payment_hint": "",
+          "fallback_text": "Чтобы вернуться назад, нажмите кнопку «Назад».",
+          "status": "active",
+          "priority": 80
+        }
+      ]
+    },
+    {
+      "section_key": "manager_contact_menu",
+      "section_title": "Связь с менеджером",
+      "section_description": "Раздел для передачи контактов менеджеру.",
+      "status": "active",
+      "priority": 95,
+      "buttons": [
+        {
+          "button_key": "btn_manager_leave_contacts",
+          "button_title": "Оставить контакты",
+          "aliases": ["Оставить контакты"],
+          "target_type": "form_route",
+          "target_value": "manager-contact-form",
+          "opens_section": "manager_contact_form_menu",
+          "action_type": "start_contact_share",
+          "assistant_hint": "Если пользователю нужен живой человек, помощь с доступом, оплатой или ручная проверка, направляй к кнопке «Оставить контакты».",
+          "payment_hint": "Это безопасный fallback-маршрут, если после оплаты не пришёл доступ.",
+          "fallback_text": "Чтобы менеджер связался с вами, нажмите кнопку «Оставить контакты».",
+          "status": "active",
+          "priority": 100
+        },
+        {
+          "button_key": "btn_manager_back_main",
+          "button_title": "В меню",
+          "aliases": ["В меню"],
+          "target_type": "section",
+          "target_value": "main_menu",
+          "opens_section": "main_menu",
+          "action_type": "go_back",
+          "assistant_hint": "Возвращает пользователя в главное меню.",
+          "payment_hint": "",
+          "fallback_text": "Чтобы вернуться в главное меню, нажмите «В меню».",
+          "status": "active",
+          "priority": 80
+        }
+      ]
+    },
+    {
+      "section_key": "manager_contact_form_menu",
+      "section_title": "Форма передачи контактов менеджеру",
+      "section_description": "Пользователь делится телефоном и затем почтой, после чего данные уходят в CRM менеджеру.",
+      "status": "active",
+      "priority": 95,
+      "buttons": [
+        {
+          "button_key": "btn_manager_send_phone",
+          "button_title": "Отправить номер",
+          "aliases": ["Отправить номер"],
+          "target_type": "contact_request",
+          "target_value": "phone",
+          "opens_section": "",
+          "action_type": "request_contact",
+          "assistant_hint": "Сначала пользователь отправляет номер телефона кнопкой ниже, затем указывает почту.",
+          "payment_hint": "Используется и как fallback после проблем с оплатой или доступом.",
+          "fallback_text": "Нажмите кнопку «Отправить номер», чтобы передать телефон.",
+          "status": "active",
+          "priority": 100
+        },
+        {
+          "button_key": "btn_manager_cancel",
+          "button_title": "Отмена",
+          "aliases": ["Отмена"],
+          "target_type": "section",
+          "target_value": "manager_contact_menu",
+          "opens_section": "manager_contact_menu",
+          "action_type": "cancel",
+          "assistant_hint": "Отменяет передачу контактов и возвращает назад.",
+          "payment_hint": "",
+          "fallback_text": "Чтобы отменить передачу контактов, нажмите «Отмена».",
+          "status": "active",
+          "priority": 80
+        }
+      ]
+    },
+    {
+      "section_key": "help_menu",
+      "section_title": "Помощь",
+      "section_description": "Инструкция по использованию бота.",
+      "status": "active",
+      "priority": 80,
+      "buttons": [
+        {
+          "button_key": "btn_help_back_main",
+          "button_title": "В меню",
+          "aliases": ["В меню"],
+          "target_type": "section",
+          "target_value": "main_menu",
+          "opens_section": "main_menu",
+          "action_type": "go_back",
+          "assistant_hint": "Возвращает пользователя в главное меню.",
+          "payment_hint": "",
+          "fallback_text": "Чтобы вернуться в главное меню, нажмите «В меню».",
+          "status": "active",
+          "priority": 80
+        }
+      ],
+      "help_content": {
+        "commands": [
+          "/start — перезапуск",
+          "Мероприятия — список ближайших мероприятий",
+          "Консультации — гештальт и запись",
+          "Ассистент Ренаты — вопросы"
+        ],
+        "fallback_text": "Если не получается, пользователь может написать в чат, и ему помогут."
+      }
+    }
+  ]
+}

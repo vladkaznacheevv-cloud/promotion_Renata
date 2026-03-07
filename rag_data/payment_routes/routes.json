@@ -1,0 +1,212 @@
+﻿{
+  "schema_version": "1.0",
+  "source": "manual",
+  "updated_at": "2026-03-07",
+  "notes": [
+    "Сейчас подтверждённый маршрут оплаты детально описан только для продукта «Игра 10:0».",
+    "Названия кнопок и техническая реализация могут обновляться. При изменениях нужно синхронно обновлять этот файл."
+  ],
+  "routes": [
+    {
+      "route_key": "payment-game10-main",
+      "product_key": "game10-main",
+      "product_title": "Игра 10:0",
+      "collection": "game10",
+      "status": "active",
+      "payment_type": "online_checkout",
+      "provider": "YooKassa",
+      "price": {
+        "amount": 5000,
+        "currency": "RUB",
+        "display": "5 000 ₽"
+      },
+      "entry_point": {
+        "from_section": "game10_menu",
+        "button_key": "btn_game10_pay",
+        "button_title": "Оплатить 5 000 ₽"
+      },
+      "payment_screen": {
+        "section_key": "game10_payment_menu",
+        "elements": [
+          "QR-код",
+          "ссылка на оплату YooKassa",
+          "кнопка «Открыть оплату»",
+          "кнопка «Я оплатил — проверить»",
+          "кнопка «Обновить ссылку»",
+          "кнопка «В меню»"
+        ],
+        "user_message": "Оплатите 5000 ₽. После оплаты доступ откроется автоматически. После оплаты бот пришлёт кнопку для вступления в закрытый канал."
+      },
+      "open_payment": {
+        "button_key": "btn_game10_open_payment",
+        "button_title": "Открыть оплату",
+        "action_type": "open_link",
+        "provider": "YooKassa",
+        "link_type": "dynamic_checkout_url",
+        "link_ttl_minutes": 10,
+        "assistant_hint": "Если пользователь готов платить, направляй его к кнопке «Открыть оплату». Не придумывай или не пересказывай саму ссылку, если она не выдана системой."
+      },
+      "verification": {
+        "button_key": "btn_game10_check_payment",
+        "button_title": "✅ Я оплатил — проверить",
+        "action_type": "check_payment_status",
+        "success_result": "Если платёж найден и подтверждён, бот выдаёт ссылку на вход в закрытую группу.",
+        "failure_result": "Если платёж ещё не найден, пользователь может повторить проверку позже или обратиться к менеджеру."
+      },
+      "refresh": {
+        "button_key": "btn_game10_refresh_payment",
+        "button_title": "Обновить ссылку",
+        "action_type": "refresh_checkout_link",
+        "reason": "Ссылка YooKassa действует ограниченное время.",
+        "assistant_hint": "Если пользователь вернулся позже и ссылка устарела, направляй его к кнопке «Обновить ссылку»."
+      },
+      "post_payment_access": {
+        "access_type": "invite_link",
+        "delivery_channel": "telegram_bot",
+        "delivery_trigger": "successful_payment_check",
+        "success_message": "После успешной проверки оплаты бот отправляет кнопку или ссылку для вступления в закрытую группу."
+      },
+      "fallback_if_no_access": {
+        "recommended_route": "manager-contact-form",
+        "recommended_section": "manager_contact_menu",
+        "assistant_message": "Если после оплаты доступ не пришёл, нужно нажать «Связаться с менеджером», оставить контакты, и менеджер свяжется с пользователем."
+      }
+    },
+    {
+      "route_key": "payment-game10-check",
+      "product_key": "game10-main",
+      "product_title": "Игра 10:0",
+      "collection": "game10",
+      "status": "active",
+      "payment_type": "payment_verification",
+      "provider": "YooKassa",
+      "entry_point": {
+        "from_section": "game10_payment_menu",
+        "button_key": "btn_game10_check_payment",
+        "button_title": "✅ Я оплатил — проверить"
+      },
+      "assistant_hint": "Используется после оплаты для ручного запуска проверки платежа со стороны пользователя.",
+      "result_logic": {
+        "on_success": "Выдать ссылку на закрытую группу.",
+        "on_pending_or_fail": "Сообщить, что оплата пока не подтверждена, предложить повторить позже или обратиться к менеджеру."
+      }
+    },
+    {
+      "route_key": "payment-game10-refresh",
+      "product_key": "game10-main",
+      "product_title": "Игра 10:0",
+      "collection": "game10",
+      "status": "active",
+      "payment_type": "payment_link_refresh",
+      "provider": "YooKassa",
+      "entry_point": {
+        "from_section": "game10_payment_menu",
+        "button_key": "btn_game10_refresh_payment",
+        "button_title": "Обновить ссылку"
+      },
+      "assistant_hint": "Используется, если ссылка на оплату устарела.",
+      "constraints": {
+        "original_link_ttl_minutes": 10
+      }
+    },
+    {
+      "route_key": "payment-getcourse-entry",
+      "product_key": "getcourse-main",
+      "product_title": "Авторский курс лекций",
+      "collection": "getcourse_programs",
+      "status": "active",
+      "payment_type": "external_platform_entry",
+      "provider": "GetCourse / website",
+      "entry_point": {
+        "from_section": "getcourse_menu",
+        "button_key": "btn_getcourse_open",
+        "button_title": "Открыть GetCourse"
+      },
+      "external_link": {
+        "url": "https://renataminakova.ru/",
+        "description": "Главная страница с описанием продуктов и входом в GetCourse."
+      },
+      "assistant_hint": "Сейчас подтверждён переход на сайт. Не обещай конкретный сценарий оплаты внутри GetCourse, если он не описан в знаниях."
+    },
+    {
+      "route_key": "signup-event-supervision-group",
+      "product_key": "event-supervision-group",
+      "product_title": "Супервизорская группа с разными тренерами",
+      "collection": "events",
+      "status": "active",
+      "payment_type": "signup_only",
+      "provider": "internal_bot_flow",
+      "entry_point": {
+        "from_section": "event_card_supervision_group",
+        "button_key": "btn_event_supervision_signup",
+        "button_title": "Записаться"
+      },
+      "assistant_hint": "Это подтверждённый маршрут записи на мероприятие, но не подтверждённый маршрут мгновенной оплаты. Не обещай онлайн-оплату, если она не описана отдельно."
+    },
+    {
+      "route_key": "consultation-individual-signup",
+      "product_key": "consultation-individual",
+      "product_title": "Индивидуальная терапия",
+      "collection": "gestalt",
+      "status": "active",
+      "payment_type": "signup_only",
+      "provider": "internal_bot_flow",
+      "entry_point": {
+        "from_section": "consultations_formats_menu",
+        "button_key": "btn_signup_individual",
+        "button_title": "Записаться (индивидуально)"
+      },
+      "signup_flow": {
+        "instructions": [
+          "Пользователь отправляет одним сообщением имя.",
+          "Указывает телефон или @username.",
+          "Указывает email.",
+          "Email может быть уже сохранён, тогда повторять его не нужно."
+        ],
+        "destination": "CRM / менеджер"
+      },
+      "assistant_hint": "Это маршрут записи, а не подтверждённый маршрут мгновенной оплаты."
+    },
+    {
+      "route_key": "consultation-group-signup",
+      "product_key": "consultation-group",
+      "product_title": "Групповая терапия",
+      "collection": "gestalt",
+      "status": "draft",
+      "payment_type": "signup_only",
+      "provider": "internal_bot_flow",
+      "entry_point": {
+        "from_section": "consultations_formats_menu",
+        "button_key": "btn_signup_group",
+        "button_title": "Записаться (группа)"
+      },
+      "assistant_hint": "Маршрут записи есть, но детали сценария пока не полностью описаны. Не придумывай дополнительные шаги."
+    },
+    {
+      "route_key": "manager-contact-form",
+      "product_key": "manager-contact",
+      "product_title": "Связь с менеджером",
+      "collection": "payment_routes",
+      "status": "active",
+      "payment_type": "fallback_contact_route",
+      "provider": "internal_bot_flow",
+      "entry_point": {
+        "from_section": "manager_contact_menu",
+        "button_key": "btn_manager_leave_contacts",
+        "button_title": "Оставить контакты"
+      },
+      "contact_flow": {
+        "step_1": "Пользователь отправляет номер телефона кнопкой «Отправить номер».",
+        "step_2": "Далее указывает почту.",
+        "step_3": "Контакты передаются в CRM менеджеру."
+      },
+      "recommended_use_cases": [
+        "после оплаты не пришёл доступ",
+        "нужна помощь живого менеджера",
+        "нестандартная ситуация",
+        "ручная проверка"
+      ],
+      "assistant_hint": "Это основной безопасный fallback-маршрут, если нет доступа после оплаты или нужна помощь менеджера."
+    }
+  ]
+}

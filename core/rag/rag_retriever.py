@@ -10,7 +10,7 @@ from pathlib import Path
 from core.rag.rag_schema import RagHit, RagRetrieveResult
 from core.rag.rag_store import RagStore
 
-_TOKEN_RE = re.compile(r"[a-zA-Zа-яА-ЯёЁ0-9]{2,}")
+_TOKEN_RE = re.compile(r"[a-zA-Z\u0430-\u044f\u0410-\u042f\u0451\u04010-9]{2,}")
 _SPACES_RE = re.compile(r"\s+")
 
 
@@ -40,6 +40,20 @@ def _env_float(name: str, default: float) -> float:
         return float(raw)
     except Exception:
         return default
+
+
+def _normalize_values(values: tuple[str, ...] | list[str] | set[str] | None) -> set[str] | None:
+    if values is None:
+        return None
+    normalized = {str(item).strip().lower() for item in values if str(item).strip()}
+    return normalized or None
+
+
+def _safe_priority(value: object) -> int:
+    try:
+        return int(float(str(value)))
+    except Exception:
+        return 0
 
 
 @dataclass(slots=True)
@@ -91,6 +105,8 @@ class RagRetriever:
         k: int | None = None,
         min_score: float | None = None,
         collection_dir: str | None = None,
+        statuses: tuple[str, ...] | list[str] | set[str] | None = ("active",),
+        exclude_doc_types: tuple[str, ...] | list[str] | set[str] | None = None,
     ) -> RagRetrieveResult:
         cache_key = self._cache_key(collection_dir)
         if collection_dir is None:
@@ -107,6 +123,8 @@ class RagRetriever:
         top_k = k if k is not None else _env_int("RAG_TOP_K", 6)
         top_k = max(1, min(top_k, 20))
         threshold = min_score if min_score is not None else _env_float("RAG_MIN_SCORE", 0.08)
+        allowed_statuses = _normalize_values(statuses)
+        excluded_doc_types = _normalize_values(exclude_doc_types)
 
         query_tokens = _tokenize(query)
         if not query_tokens:
@@ -115,6 +133,15 @@ class RagRetriever:
         query_tf = Counter(query_tokens)
         scored: list[tuple[float, int]] = []
         for idx, tf in enumerate(tf_by_chunk):
+            chunk = chunks[idx]
+            metadata = getattr(chunk, "metadata", {}) or {}
+            status = str(metadata.get("status") or "active").strip().lower()
+            if allowed_statuses is not None and status not in allowed_statuses:
+                continue
+            doc_type = str(metadata.get("doc_type") or "").strip().lower()
+            if excluded_doc_types and doc_type in excluded_doc_types:
+                continue
+
             raw_score = 0.0
             for token, q_count in query_tf.items():
                 d_count = tf.get(token, 0)
@@ -126,6 +153,9 @@ class RagRetriever:
                 continue
             norm = 1.0 + 0.015 * len(chunks[idx].tokens)
             score = raw_score / norm
+            priority = _safe_priority(metadata.get("priority"))
+            if priority > 0:
+                score *= 1.0 + min(priority, 10) * 0.04
             if score >= threshold:
                 scored.append((score, idx))
 
@@ -136,6 +166,7 @@ class RagRetriever:
                 title=chunks[idx].title,
                 text=chunks[idx].text,
                 score=round(score, 4),
+                metadata=dict(getattr(chunks[idx], "metadata", {}) or {}),
             )
             for score, idx in scored[:top_k]
         ]

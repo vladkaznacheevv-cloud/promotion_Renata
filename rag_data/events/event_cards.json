@@ -1,0 +1,74 @@
+﻿[
+  {
+    "slug": "event-open-lecture-march",
+    "title": "Открытая лекция: ресурс и границы",
+    "doc_type": "card",
+    "status": "active",
+    "updated_at": "2026-03-02",
+    "priority": 8,
+    "section": "events",
+    "summary": "Публичная онлайн-встреча с разбором типовых запросов.",
+    "schedule": "Дата и слот указываются в карточке мероприятия.",
+    "registration_route": "Раздел Мероприятия -> карточка -> кнопка записи."
+  },
+  {
+    "slug": "event-intro-gestalt-weekend",
+    "title": "Интенсив выходного дня: введение в гештальт",
+    "doc_type": "card",
+    "status": "active",
+    "updated_at": "2026-03-02",
+    "priority": 7,
+    "section": "events",
+    "summary": "Временное мероприятие по базовым принципам подхода.",
+    "schedule": "Публикуется в карточке при подтверждении дат.",
+    "registration_route": "Раздел Мероприятия -> карточка интенсива -> форма/заявка."
+  },
+  {
+    "slug": "event-community-live-qa",
+    "title": "Q&A эфир для сообщества",
+    "doc_type": "card",
+    "status": "active",
+    "updated_at": "2026-03-02",
+    "priority": 6,
+    "section": "events",
+    "summary": "Эфир с ответами на вопросы участников.",
+    "schedule": "Текущая дата доступна в карточке события.",
+    "registration_route": "Раздел Мероприятия -> карточка эфира -> кнопка участия."
+  },
+  {
+    "slug": "event-fam-systems-lab",
+    "title": "Лаборатория семейных сценариев",
+    "doc_type": "card",
+    "status": "draft",
+    "updated_at": "2026-03-02",
+    "priority": 5,
+    "section": "events",
+    "summary": "Черновик карточки будущего мероприятия.",
+    "schedule": "В разработке.",
+    "registration_route": "Форма пока не опубликована."
+  },
+  {
+    "slug": "event-business-psychology-club",
+    "title": "Клуб психологии лидерства",
+    "doc_type": "card",
+    "status": "active",
+    "updated_at": "2026-03-02",
+    "priority": 7,
+    "section": "events",
+    "summary": "Серия временных встреч по лидерству и управлению состоянием.",
+    "schedule": "Следующая встреча отображается в карточке.",
+    "registration_route": "Раздел Мероприятия -> Клуб лидерства -> запись."
+  },
+  {
+    "slug": "event-winter-retreat-archive",
+    "title": "Зимний ретрит (архив)",
+    "doc_type": "card",
+    "status": "archived",
+    "updated_at": "2026-01-15",
+    "priority": 1,
+    "section": "events",
+    "summary": "Завершённое мероприятие.",
+    "schedule": "Архив.",
+    "registration_route": "Недоступно для новых заявок."
+  }
+]

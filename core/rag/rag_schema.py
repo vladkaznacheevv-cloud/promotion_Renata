@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(slots=True)
@@ -10,6 +10,7 @@ class RagChunk:
     text: str
     normalized: str
     tokens: tuple[str, ...]
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -18,6 +19,7 @@ class RagHit:
     title: str
     text: str
     score: float
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
