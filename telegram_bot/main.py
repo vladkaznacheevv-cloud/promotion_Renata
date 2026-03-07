@@ -358,6 +358,12 @@ def _clear_payment_runtime_state (context :ContextTypes .DEFAULT_TYPE )->None :
     context .user_data .pop (LAST_GAME10_PAYMENT_UI_KEY ,None )
 
 
+def _is_game10_payment_flow_active (context :ContextTypes .DEFAULT_TYPE )->bool :
+    if context .user_data .get (PAYMENT_CONTACT_FLOW_KEY ):
+        return True
+    return str (context .user_data .get (PAYMENT_PENDING_ACTION_KEY )or "").strip ()=="game10_payment"
+
+
 def _start_payment_contact_flow_state (context :ContextTypes .DEFAULT_TYPE ,*,variant :str )->None :
     context .user_data [PAYMENT_CONTACT_FLOW_KEY ]=True
     context .user_data [PAYMENT_PENDING_ACTION_KEY ]="game10_payment"
@@ -679,6 +685,8 @@ refresh_hint :bool =False ,
     amount_rub =amount_rub ,
     variant =payment_variant ,
     )
+    context .user_data [PAYMENT_PENDING_ACTION_KEY ]="game10_payment"
+    logger .info ("payment_flow: payment link sent for game10")
 
 
 def _build_qr_png (value :str )->BytesIO |None :
@@ -1605,13 +1613,14 @@ async def handle_contact_phone (update :Update ,context :ContextTypes .DEFAULT_T
         phone =(contact .phone_number or "").strip ()
         if not phone :
             await _show_screen (update ,context ,"Не удалось прочитать номер. Отправьте контакт ещё раз.",reply_markup =get_payment_contact_choice_kb ())
-            return
+            raise ApplicationHandlerStop
         if not await _save_contact_field (update ,context ,phone =phone ):
-            return
+            raise ApplicationHandlerStop
+        logger .info ("payment_flow: contact received for game10")
         await _send_reply_keyboard_remove (update ,context )
         await _show_screen (update ,context ,PAYMENT_CONTACT_SAVED_SCREEN ,reply_markup =get_back_to_menu_kb ())
         await _run_game10_payment_create_flow (update ,context )
-        return
+        raise ApplicationHandlerStop
 
     waiting_phone =bool (context .user_data .get (WAITING_CONTACT_PHONE_KEY ))
     if not waiting_phone :
@@ -1645,7 +1654,7 @@ async def handle_contact_phone_text (update :Update ,context :ContextTypes .DEFA
         if payment_mode == "email":
             return
         if not update .message or not update .message .text :
-            return
+            raise ApplicationHandlerStop
         if payment_mode != "phone":
             text =(update .message .text or "").strip ()
             if text .lower ()=="отмена":
@@ -1653,27 +1662,29 @@ async def handle_contact_phone_text (update :Update ,context :ContextTypes .DEFA
                 _clear_payment_contact_flow (context )
                 await _show_main_menu_bottom (update ,context ,text =PAYMENT_CANCELLED_SCREEN )
             else :
+                logger .warning ("payment_flow: contact handler fell through unexpectedly")
                 await _request_payment_contact_screen (update ,context ,variant =_payment_variant_normalized (context .user_data .get (PAYMENT_VARIANT_KEY )))
-            return
+            raise ApplicationHandlerStop
     if context .user_data .get (PAYMENT_CONTACT_FLOW_KEY )and str (context .user_data .get (PAYMENT_CONTACT_MODE_KEY )or "")=="phone":
         if not update .message or not update .message .text :
-            return
+            raise ApplicationHandlerStop
         text =(update .message .text or "").strip ()
         if text .lower ()=="отмена":
             await _send_reply_keyboard_remove (update ,context )
             _clear_payment_contact_flow (context )
             await _show_main_menu_bottom (update ,context ,text =PAYMENT_CANCELLED_SCREEN )
-            return
+            raise ApplicationHandlerStop
         normalized =re .sub (r"[^\\d+]","",text )
         if len (re .sub (r"\\D","",normalized ))<10 :
             await _show_screen (update ,context ,"Номер выглядит некорректно. Нажмите кнопку отправки контакта или введите номер ещё раз.",reply_markup =get_payment_contact_choice_kb ())
-            return
+            raise ApplicationHandlerStop
         if not await _save_contact_field (update ,context ,phone =normalized ):
-            return
+            raise ApplicationHandlerStop
+        logger .info ("payment_flow: contact received for game10")
         await _send_reply_keyboard_remove (update ,context )
         await _show_screen (update ,context ,PAYMENT_CONTACT_SAVED_SCREEN ,reply_markup =get_back_to_menu_kb ())
         await _run_game10_payment_create_flow (update ,context )
-        return
+        raise ApplicationHandlerStop
     if not context .user_data .get (WAITING_CONTACT_PHONE_KEY ):
         return 
     if not update .message or not update .message .text :
@@ -1728,6 +1739,7 @@ async def handle_contact_email_text (update :Update ,context :ContextTypes .DEFA
             reply_markup =get_payment_contact_choice_kb (),
             )
             raise ApplicationHandlerStop
+        logger .info ("payment_flow: contact received for game10")
         await _send_reply_keyboard_remove (update ,context )
         await _show_screen (
         update ,
@@ -2781,6 +2793,8 @@ async def handle_navigation_text_message (update :Update ,context :ContextTypes 
     _apply_focus_timeout (context )
     if context .user_data .get (WAITING_LEAD_KEY ):
         return
+    if _is_game10_payment_flow_active (context ):
+        return
     if context .user_data .get (AI_MODE_KEY ):
         return
     intent =_extract_navigation_intent_from_text_message (update )
@@ -2793,6 +2807,8 @@ async def handle_navigation_text_message (update :Update ,context :ContextTypes 
 async def handle_ai_message (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     _apply_focus_timeout (context )
     if context .user_data .get (WAITING_LEAD_KEY ):
+        return
+    if _is_game10_payment_flow_active (context ):
         return
     if context .user_data .get (WAITING_CONTACT_PHONE_KEY )or context .user_data .get (WAITING_CONTACT_EMAIL_KEY ):
         return
@@ -2834,6 +2850,8 @@ async def handle_ai_message (update :Update ,context :ContextTypes .DEFAULT_TYPE
 async def handle_text_outside_assistant (update :Update ,context :ContextTypes .DEFAULT_TYPE ):
     _apply_focus_timeout (context )
     if context .user_data .get (WAITING_LEAD_KEY ):
+        return
+    if _is_game10_payment_flow_active (context ):
         return
     if context .user_data .get (WAITING_CONTACT_PHONE_KEY )or context .user_data .get (WAITING_CONTACT_EMAIL_KEY ):
         return
