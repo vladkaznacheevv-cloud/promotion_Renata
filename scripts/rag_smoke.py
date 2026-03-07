@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -14,6 +15,11 @@ from core.rag import RagRetriever, RagRouter, RagStore
 DEFAULT_QUERIES = (
     "что такое игра 10:0",
     "как оплатить игру 10:0",
+    "как оплатить?",
+    "где кнопка оплаты игры 10:0",
+    "как открыть оплату?",
+    "куда нажать для оплаты?",
+    "как оплатить программу 10:0?",
     "что делать после оплаты",
     "не пришёл доступ после оплаты",
     "как открыть getcourse",
@@ -25,18 +31,46 @@ DEFAULT_QUERIES = (
 )
 
 
+_PAYMENT_INTENT_MARKERS = (
+    "оплат",
+    "как оплатить",
+    "открыть оплату",
+    "ссылка на оплату",
+    "yookassa",
+    "юкасса",
+    "qr",
+    "обновить ссылку",
+    "я оплатил",
+    "после оплаты",
+    "не пришел доступ",
+    "доступ не пришел",
+)
+
+
 def _safe_print(value: str) -> None:
     encoding = sys.stdout.encoding or "utf-8"
     text = (value or "").encode(encoding, errors="replace").decode(encoding, errors="replace")
     print(text)
 
 
+def _normalize_query_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9а-я]+", " ", (value or "").lower().replace("ё", "е")).strip()
+
+
+def _is_payment_intent(value: str) -> bool:
+    normalized = _normalize_query_text(value)
+    if not normalized:
+        return False
+    return any(marker in normalized for marker in _PAYMENT_INTENT_MARKERS)
+
+
 def _run_query(*, query: str, store: RagStore, retriever: RagRetriever, router: RagRouter, top_k: int) -> None:
     collections = store.list_collections(store.data_dir)
     route = router.route(query, available_collections=set(collections.keys()), max_collections=2)
     selected = [name for name in route.selected_collections if name in collections] or ["default"]
+    payment_intent = _is_payment_intent(route.query)
     _safe_print(f"query={query}")
-    _safe_print(f"router_reason={route.reason} selected={selected}")
+    _safe_print(f"router_reason={route.reason} selected={selected} payment_intent={payment_intent}")
     combined = []
     for name in selected:
         result = retriever.retrieve(
@@ -48,7 +82,15 @@ def _run_query(*, query: str, store: RagStore, retriever: RagRetriever, router: 
         )
         for hit in result.top_chunks:
             combined.append((float(hit.score), name, hit))
-    combined.sort(key=lambda item: item[0], reverse=True)
+    if payment_intent:
+        combined.sort(
+            key=lambda item: (
+                0 if str((item[2].metadata or {}).get("collection") or item[1]).strip().lower() == "payment_routes" else 1,
+                -item[0],
+            )
+        )
+    else:
+        combined.sort(key=lambda item: item[0], reverse=True)
     hits = combined[: max(1, min(top_k, 10))]
     _safe_print(f"hits={len(hits)}")
     for idx, (_, name, hit) in enumerate(hits, start=1):

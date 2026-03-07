@@ -86,3 +86,75 @@ def test_ai_service_autodiscovers_nested_collection(monkeypatch, tmp_path):
     assert trace["rag_collection"] == "programs/supervision"
     snapshot = service.rag_debug_snapshot("супервизорская группа")
     assert "programs/supervision" in snapshot.get("discovered_collections", [])
+
+
+def test_ai_service_prioritizes_payment_routes_for_payment_intent(monkeypatch, tmp_path):
+    rag_root = tmp_path / "rag_data"
+    _write_doc(
+        rag_root / "game10" / "overview.md",
+        "# Game10\n\nИгра 10:0 игра 10:0 игра 10:0. Это описание программы и контента сообщества.",
+    )
+    _write_doc(
+        rag_root / "payment_routes" / "payment_routes.json",
+        """{
+  "updated_at": "2026-03-07",
+  "routes": [
+    {
+      "route_key": "payment-game10-main",
+      "product_key": "game10-main",
+      "product_title": "Игра 10:0",
+      "status": "active",
+      "payment_type": "online_checkout",
+      "provider": "YooKassa",
+      "entry_point": {
+        "from_section": "game10_menu",
+        "button_title": "Оплатить 5 000 ₽"
+      },
+      "payment_screen": {
+        "elements": ["QR-код", "кнопка «Открыть оплату»"]
+      },
+      "open_payment": {
+        "button_title": "Открыть оплату",
+        "provider": "YooKassa",
+        "link_ttl_minutes": 10
+      },
+      "verification": {
+        "button_title": "Я оплатил — проверить",
+        "success_result": "Бот отправляет ссылку на закрытую группу."
+      },
+      "refresh": {
+        "button_title": "Обновить ссылку"
+      },
+      "fallback_if_no_access": {
+        "assistant_message": "Если доступ не пришёл, перейдите в «Связаться с менеджером»."
+      }
+    }
+  ]
+}""",
+    )
+
+    monkeypatch.setenv("RAG_ENABLED", "true")
+    monkeypatch.setenv("RAG_DATA_DIR", str(rag_root))
+    service = AIService(api_key=None)
+    service.client = _DummyClient()
+    service._event_context = _empty_event_context  # type: ignore[method-assign]
+
+    response = asyncio.run(service.get_response("как оплатить игру 10:0?", include_events=True))
+    assert response == "ok"
+
+    calls = service.client.chat.completions.calls
+    assert calls, "AI client should receive a request"
+    system_texts = [str(msg.get("content") or "") for msg in calls[-1]["messages"] if msg.get("role") == "system"]
+    rag_context = next((text for text in system_texts if "Knowledge context (facts):" in text), "")
+    assert rag_context
+    rag_lines = [line for line in rag_context.splitlines() if line.strip()]
+    assert len(rag_lines) >= 2
+    assert "[payment_routes/" in rag_lines[1]
+    assert "assistant_steps:" in rag_context
+    assert "entry_button_title:" in rag_context
+    assert "exact information is not available yet" not in "\n".join(system_texts)
+
+    trace = service.get_last_trace()
+    assert trace.get("payment_intent") is True
+    assert trace.get("payment_routes_prioritized") is True
+    assert trace.get("payment_route_actionable") is True

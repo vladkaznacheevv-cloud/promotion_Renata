@@ -379,6 +379,116 @@ class RagStore:
             section = self._infer_route_section(entry)
             if section:
                 entry.setdefault("section", section)
+            payment_provider = _scalar_to_text(entry.get("provider"))
+            entry_point = entry.get("entry_point")
+            payment_screen = entry.get("payment_screen")
+            open_payment = entry.get("open_payment")
+            verification = entry.get("verification")
+            refresh = entry.get("refresh")
+            post_payment_access = entry.get("post_payment_access")
+            fallback_if_no_access = entry.get("fallback_if_no_access")
+
+            entry_from_section = ""
+            entry_button_title = ""
+            if isinstance(entry_point, dict):
+                entry_from_section = _scalar_to_text(entry_point.get("from_section") or entry_point.get("section_key"))
+                entry_button_title = _scalar_to_text(entry_point.get("button_title"))
+            if entry_from_section:
+                entry.setdefault("entry_from_section", entry_from_section)
+            if entry_button_title:
+                entry.setdefault("entry_button_title", entry_button_title)
+
+            payment_screen_elements = ""
+            if isinstance(payment_screen, dict):
+                payment_screen_elements = _scalar_to_text(payment_screen.get("elements"))
+            if payment_screen_elements:
+                entry.setdefault("payment_screen_elements", payment_screen_elements)
+                entry.setdefault("payment_screen_has_qr", "yes" if "qr" in _normalize_text(payment_screen_elements) else "no")
+
+            open_payment_button_title = ""
+            open_payment_provider = ""
+            open_payment_link_type = ""
+            link_ttl_minutes = ""
+            if isinstance(open_payment, dict):
+                open_payment_button_title = _scalar_to_text(open_payment.get("button_title"))
+                open_payment_provider = _scalar_to_text(open_payment.get("provider"))
+                open_payment_link_type = _scalar_to_text(open_payment.get("link_type"))
+                link_ttl_minutes = _scalar_to_text(open_payment.get("link_ttl_minutes"))
+            payment_provider = payment_provider or open_payment_provider
+            if payment_provider:
+                entry.setdefault("payment_provider", payment_provider)
+            if open_payment_button_title:
+                entry.setdefault("open_payment_button_title", open_payment_button_title)
+            if open_payment_provider:
+                entry.setdefault("open_payment_provider", open_payment_provider)
+            if open_payment_link_type:
+                entry.setdefault("open_payment_link_type", open_payment_link_type)
+            if link_ttl_minutes:
+                entry.setdefault("link_ttl_minutes", link_ttl_minutes)
+
+            verification_button_title = ""
+            verification_success_result = ""
+            if isinstance(verification, dict):
+                verification_button_title = _scalar_to_text(verification.get("button_title"))
+                verification_success_result = _scalar_to_text(verification.get("success_result"))
+            if verification_button_title:
+                entry.setdefault("verification_button_title", verification_button_title)
+            if verification_success_result:
+                entry.setdefault("verification_success_result", verification_success_result)
+
+            refresh_button_title = ""
+            refresh_reason = ""
+            if isinstance(refresh, dict):
+                refresh_button_title = _scalar_to_text(refresh.get("button_title"))
+                refresh_reason = _scalar_to_text(refresh.get("reason"))
+            if refresh_button_title:
+                entry.setdefault("refresh_button_title", refresh_button_title)
+            if refresh_reason:
+                entry.setdefault("refresh_reason", refresh_reason)
+
+            post_payment_success_message = ""
+            if isinstance(post_payment_access, dict):
+                post_payment_success_message = _scalar_to_text(post_payment_access.get("success_message"))
+            if post_payment_success_message:
+                entry.setdefault("post_payment_success_message", post_payment_success_message)
+
+            fallback_no_access_message = ""
+            fallback_contact_route = ""
+            if isinstance(fallback_if_no_access, dict):
+                fallback_no_access_message = _scalar_to_text(fallback_if_no_access.get("assistant_message"))
+                fallback_contact_route = _scalar_to_text(
+                    fallback_if_no_access.get("recommended_route") or fallback_if_no_access.get("recommended_section")
+                )
+            if fallback_no_access_message:
+                entry.setdefault("fallback_no_access_message", fallback_no_access_message)
+            if fallback_contact_route:
+                entry.setdefault("fallback_contact_route", fallback_contact_route)
+
+            assistant_steps_parts: list[str] = []
+            if product_title:
+                assistant_steps_parts.append(f"product={product_title}")
+            if entry_from_section:
+                assistant_steps_parts.append(f"entry_section={entry_from_section}")
+            if entry_button_title:
+                assistant_steps_parts.append(f"entry_button={entry_button_title}")
+            if payment_screen_elements:
+                assistant_steps_parts.append(f"payment_screen={payment_screen_elements}")
+            if open_payment_button_title:
+                assistant_steps_parts.append(f"open_payment={open_payment_button_title}")
+            if payment_provider:
+                assistant_steps_parts.append(f"provider={payment_provider}")
+            if link_ttl_minutes:
+                assistant_steps_parts.append(f"link_ttl_minutes={link_ttl_minutes}")
+            if refresh_button_title:
+                assistant_steps_parts.append(f"refresh={refresh_button_title}")
+            if verification_button_title:
+                assistant_steps_parts.append(f"verification={verification_button_title}")
+            if post_payment_success_message:
+                assistant_steps_parts.append(f"access={post_payment_success_message}")
+            if fallback_no_access_message:
+                assistant_steps_parts.append(f"no_access={fallback_no_access_message}")
+            if assistant_steps_parts:
+                entry.setdefault("assistant_steps", " | ".join(assistant_steps_parts))
             entries.append(entry)
         return entries
 
@@ -407,6 +517,23 @@ class RagStore:
             "product_key",
             "product_title",
             "payment_type",
+            "payment_provider",
+            "assistant_steps",
+            "entry_from_section",
+            "entry_button_title",
+            "payment_screen_elements",
+            "payment_screen_has_qr",
+            "open_payment_button_title",
+            "open_payment_provider",
+            "open_payment_link_type",
+            "link_ttl_minutes",
+            "refresh_button_title",
+            "refresh_reason",
+            "verification_button_title",
+            "verification_success_result",
+            "post_payment_success_message",
+            "fallback_no_access_message",
+            "fallback_contact_route",
             "summary",
             "description",
             "content",

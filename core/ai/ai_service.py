@@ -32,6 +32,46 @@ _DEFAULT_SYSTEM_PROMPT = (
 )
 
 _MOJIBAKE_RE = re.compile(r"(?:\u00D0.|\u00D1.|\u0420[\u0410-\u044FA-Za-z]|\u0421[\u0410-\u044FA-Za-z])")
+_PAYMENT_INTENT_MARKERS = (
+    "оплат",
+    "как оплатить",
+    "открыть оплату",
+    "ссылка на оплату",
+    "yookassa",
+    "юкасса",
+    "qr",
+    "обновить ссылку",
+    "я оплатил",
+    "после оплаты",
+    "не пришел доступ",
+    "доступ не пришел",
+)
+_PAYMENT_ROUTE_FACT_MARKERS = (
+    ("entry_point.button_title", "entry_button_title"),
+    ("payment_screen.elements", "payment_screen_elements", "open_payment.button_title", "open_payment_button_title"),
+    ("verification.button_title", "verification_button_title"),
+)
+_PAYMENT_ROUTE_FOLLOWUP_MARKERS = (
+    "refresh.button_title",
+    "refresh_button_title",
+    "post_payment_access.success_message",
+    "post_payment_success_message",
+    "fallback_if_no_access.assistant_message",
+    "fallback_no_access_message",
+)
+_PAYMENT_ROUTE_SUMMARY_PREFIXES = (
+    "assistant_steps:",
+    "entry_from_section:",
+    "entry_button_title:",
+    "payment_screen_elements:",
+    "open_payment_button_title:",
+    "payment_provider:",
+    "link_ttl_minutes:",
+    "refresh_button_title:",
+    "verification_button_title:",
+    "post_payment_success_message:",
+    "fallback_no_access_message:",
+)
 
 
 class AIService:
@@ -337,6 +377,78 @@ class AIService:
             return ""
         return re.sub(r"[^a-z0-9\u0430-\u044f]+", " ", value.lower().replace("\u0451", "\u0435")).strip()
 
+    @classmethod
+    def _is_payment_intent_query(cls, query: str | None) -> bool:
+        normalized = cls._normalize_query_text(query)
+        if not normalized:
+            return False
+        return any(marker in normalized for marker in _PAYMENT_INTENT_MARKERS)
+
+    @staticmethod
+    def _is_payment_routes_hit(collection_name: str, hit: object) -> bool:
+        metadata = dict(getattr(hit, "metadata", {}) or {})
+        collection = str(metadata.get("collection") or collection_name).strip().lower()
+        return collection == "payment_routes"
+
+    @staticmethod
+    def _payment_route_rank(hit: object) -> int:
+        text = str(getattr(hit, "text", "") or "").lower().replace("ё", "е")
+        rank = 0
+        if "payment_type: online_checkout" in text:
+            rank += 4
+        if "entry_button_title:" in text or "entry_point.button_title" in text:
+            rank += 2
+        if "open_payment_button_title:" in text or "open_payment.button_title" in text:
+            rank += 2
+        if "verification_button_title:" in text or "verification.button_title" in text:
+            rank += 1
+        if "fallback_no_access_message:" in text or "fallback_if_no_access.assistant_message" in text:
+            rank += 1
+        return rank
+
+    @classmethod
+    def _payment_route_has_actionable_facts(cls, *, top_hits: list[tuple[float, str, object]]) -> bool:
+        payment_text_parts: list[str] = []
+        for _, collection_name, hit in top_hits:
+            if not cls._is_payment_routes_hit(collection_name, hit):
+                continue
+            payment_text_parts.append(str(getattr(hit, "text", "") or ""))
+            if len(payment_text_parts) >= 3:
+                break
+        if not payment_text_parts:
+            return False
+
+        haystack = " ".join(payment_text_parts).lower().replace("ё", "е")
+        for group in _PAYMENT_ROUTE_FACT_MARKERS:
+            if not any(marker in haystack for marker in group):
+                return False
+        return any(marker in haystack for marker in _PAYMENT_ROUTE_FOLLOWUP_MARKERS)
+
+    @staticmethod
+    def _payment_route_excerpt(text: str, *, limit: int = 720) -> str:
+        raw = (text or "").strip()
+        if not raw:
+            return ""
+        lines = [line.strip() for line in raw.splitlines() if line.strip()]
+        lowered = [line.lower().replace("ё", "е") for line in lines]
+        selected: list[str] = []
+        for prefix in _PAYMENT_ROUTE_SUMMARY_PREFIXES:
+            for idx, line in enumerate(lowered):
+                if not line.startswith(prefix):
+                    continue
+                picked = lines[idx]
+                if picked not in selected:
+                    selected.append(picked)
+                break
+        if selected:
+            text_out = " | ".join(selected)
+            if len(text_out) <= limit:
+                return text_out
+            return text_out[:limit].rstrip() + "..."
+        if len(raw) <= limit:
+            return raw
+        return raw[:limit].rstrip() + "..."
+
     def _event_match_score(self, event: Event, query: str | None) -> int:
         normalized_query = self._normalize_query_text(query)
         if not normalized_query:
@@ -607,6 +719,9 @@ class AIService:
                 "rag_top_scores": [],
                 "rag_confidence": "low",
                 "rag_fallback_to_default": False,
+                "payment_intent": False,
+                "payment_routes_prioritized": False,
+                "payment_route_actionable": False,
             }
 
         registry = self._rag_collections_registry()
@@ -616,6 +731,7 @@ class AIService:
             max_collections=2,
         )
         rag_query = route.query
+        payment_intent = self._is_payment_intent_query(rag_query)
         requested_collection = (route.requested_collection or "default").strip().lower() or "default"
         selected_collections = [name for name in route.selected_collections if name in registry]
         if not selected_collections:
@@ -632,6 +748,9 @@ class AIService:
             "rag_top_scores": [],
             "rag_confidence": "low",
             "rag_fallback_to_default": requested_collection not in {"", "default"} and selected_collections == ["default"],
+            "payment_intent": payment_intent,
+            "payment_routes_prioritized": False,
+            "payment_route_actionable": False,
         }
 
         collected_hits: list[tuple[float, str, object]] = []
@@ -678,7 +797,21 @@ class AIService:
         if not collected_hits:
             return "", "low", 0, trace
 
-        collected_hits.sort(key=lambda item: item[0], reverse=True)
+        if payment_intent:
+            def _payment_sort_key(item: tuple[float, str, object]) -> tuple[int, float]:
+                score, collection_name, hit = item
+                is_payment_route = self._is_payment_routes_hit(collection_name, hit)
+                boosted = score + (float(self._payment_route_rank(hit)) if is_payment_route else 0.0)
+                return (0 if is_payment_route else 1, -boosted)
+
+            collected_hits.sort(
+                key=_payment_sort_key
+            )
+            trace["payment_routes_prioritized"] = any(
+                self._is_payment_routes_hit(collection_name, hit) for _, collection_name, hit in collected_hits
+            )
+        else:
+            collected_hits.sort(key=lambda item: item[0], reverse=True)
         top_hits = collected_hits[: self.rag_top_k]
         top_score = float(top_hits[0][0])
         if top_score >= 0.6:
@@ -687,11 +820,23 @@ class AIService:
             confidence = "medium"
         else:
             confidence = "low"
+        payment_route_actionable = False
+        if payment_intent:
+            payment_route_actionable = self._payment_route_has_actionable_facts(top_hits=top_hits)
+            if payment_route_actionable and confidence == "low":
+                confidence = "medium"
 
         trace["rag_used"] = True
+        if top_hits:
+            top_metadata = dict(getattr(top_hits[0][2], "metadata", {}) or {})
+            top_collection = str(top_metadata.get("collection") or top_hits[0][1] or "default").strip().lower() or "default"
+            if top_collection in {".", "./"}:
+                top_collection = "default"
+            trace["rag_collection"] = top_collection
         trace["rag_hits"] = len(top_hits)
         trace["rag_top_scores"] = [round(float(item[0]), 4) for item in top_hits[:3]]
         trace["rag_confidence"] = confidence
+        trace["payment_route_actionable"] = payment_route_actionable
 
         lines = ["Knowledge context (facts):"]
         for idx, (_, collection_name, hit) in enumerate(top_hits, start=1):
@@ -705,9 +850,12 @@ class AIService:
             if section:
                 descriptor = f"{descriptor} section={section}"
             slug_tail = f", slug={slug}" if slug else ""
+            excerpt = self._short(hit.text, limit=520)
+            if payment_intent and self._is_payment_routes_hit(collection_name, hit):
+                excerpt = self._payment_route_excerpt(hit.text, limit=720)
             lines.append(
                 f"{idx}. [{descriptor}] {hit.title} ({hit.source}, score={getattr(hit, 'score', 0)}{slug_tail}): "
-                f"{self._short(hit.text, limit=520)}"
+                f"{excerpt}"
             )
         return self._trim_rag_context("\n".join(lines)), confidence, len(top_hits), trace
 
@@ -849,6 +997,9 @@ class AIService:
             "rag_top_scores": [],
             "rag_confidence": "low",
             "rag_fallback_to_default": False,
+            "payment_intent": False,
+            "payment_routes_prioritized": False,
+            "payment_route_actionable": False,
         }
 
         if include_events:
@@ -859,7 +1010,8 @@ class AIService:
             if rag_context:
                 messages.append({"role": "system", "content": rag_context})
 
-            if not rag_context or rag_confidence == "low":
+            payment_route_actionable = bool(rag_trace.get("payment_route_actionable"))
+            if not rag_context or (rag_confidence == "low" and not payment_route_actionable):
                 messages.append(
                     {
                         "role": "system",
@@ -895,7 +1047,11 @@ class AIService:
             "rag_statuses": list(rag_trace.get("rag_statuses") or []),
             "rag_hits": int(rag_trace.get("rag_hits", 0) or 0),
             "rag_top_scores": list(rag_trace.get("rag_top_scores") or []),
-            "fallback_to_model": (not rag_context) or rag_confidence == "low",
+            "rag_confidence": str(rag_trace.get("rag_confidence") or rag_confidence or "low"),
+            "payment_intent": bool(rag_trace.get("payment_intent")),
+            "payment_routes_prioritized": bool(rag_trace.get("payment_routes_prioritized")),
+            "payment_route_actionable": bool(rag_trace.get("payment_route_actionable")),
+            "fallback_to_model": (not rag_context) or (rag_confidence == "low" and not bool(rag_trace.get("payment_route_actionable"))),
             "rag_fallback_to_default": bool(rag_trace.get("rag_fallback_to_default")),
             "response_mode": response_mode,
         }

@@ -49,6 +49,15 @@ def test_router_keeps_primary_product_collection_before_payment_support():
     assert "payment_routes" in result.selected_collections
 
 
+def test_router_routes_qr_and_yookassa_query_to_payment_routes():
+    router = RagRouter()
+    result = router.route(
+        "где qr и ссылка на оплату yookassa",
+        available_collections={"default", "payment_routes", "game10"},
+    )
+    assert result.selected_collections[0] == "payment_routes"
+
+
 def test_router_routes_consultation_query_to_gestalt():
     router = RagRouter()
     result = router.route(

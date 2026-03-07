@@ -98,6 +98,11 @@ def test_payment_routes_json_is_expanded_and_filters_statuses(tmp_path):
     active_chunks = [c for c in chunks if (c.metadata or {}).get("slug") == "payment-game10-main"]
     assert active_chunks
     assert active_chunks[0].metadata.get("section") == "game10_menu"
+    active_text = active_chunks[0].text.lower().replace("ё", "е")
+    assert "assistant_steps:" in active_text
+    assert "entry_button_title: оплатить 5 000 ₽".lower().replace("ё", "е") in active_text
+    assert "verification_button_title:" in active_text
+    assert "fallback_no_access_message:" in active_text
 
     retriever = RagRetriever(store=store)
     result = retriever.retrieve(
@@ -109,3 +114,11 @@ def test_payment_routes_json_is_expanded_and_filters_statuses(tmp_path):
     statuses = {(hit.metadata or {}).get("status") for hit in result.top_chunks}
     assert statuses == {"active"}
     assert any((hit.metadata or {}).get("slug") == "payment-game10-main" for hit in result.top_chunks)
+
+    pay_result = retriever.retrieve(
+        query="как оплатить игру 10:0",
+        collection_dir=str(root / "payment_routes"),
+        statuses=("active",),
+    )
+    assert pay_result.top_chunks
+    assert (pay_result.top_chunks[0].metadata or {}).get("slug") == "payment-game10-main"
